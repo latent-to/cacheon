@@ -223,6 +223,10 @@ normal grader, evidence import and settlement still consume the completed result
 
 ### Interrupted replay controllers
 
+When either paired engine fails, the peer leaves its startup or response wait
+and follows its normal owned-container teardown. The original failure remains
+the verdict cause; an operator does not need to kill the still-starting peer.
+
 New commissions use speed policy 18. Before the next paired replay window starts,
 the runner saves `speed_window_N.json` with both completed reads, raw host request
 evidence, device preflight and active receipts, and the actual host clock and lane

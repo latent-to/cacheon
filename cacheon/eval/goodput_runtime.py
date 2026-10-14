@@ -39,13 +39,16 @@ class ReadSchedule:
                 self.failure = exc
             self.condition.notify_all()
 
+    def check_failed(self) -> None:
+        """Let a peer leave its pipe wait while the original failure keeps priority."""
+        with self.condition:
+            if self.failure is not None:
+                raise CrossoverRuntimeError(f"resident peer failed: {self.failure}") from self.failure
+
     def get(self, key: str, *, deadline: float, clock) -> object:
         with self.condition:
             while key not in self.values:
-                if self.failure is not None:
-                    raise CrossoverRuntimeError(
-                        f"resident peer failed: {self.failure}"
-                    ) from self.failure
+                self.check_failed()
                 remaining = deadline - float(clock())
                 if not math.isfinite(remaining) or remaining <= 0:
                     raise CrossoverRuntimeError(
@@ -423,7 +426,8 @@ def _run_orientation(plan, *, baseline_executor, candidate_executor, model_mount
                 raise
         try:
             execution = executor.execute_opened(arm.launch, arm.binding, model_mount, session_plan,
-                                                deadline=deadline, driver=drive)
+                                                deadline=deadline, driver=drive,
+                                                check_cancelled=schedule.check_failed)
             if index == 1:
                 schedule.put("candidate_closed", (execution, executor.prove_quiescent()))
             return execution

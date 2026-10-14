@@ -1393,6 +1393,7 @@ class OCIEngineExecutor:
         *,
         deadline: float,
         opened_driver: OpenedSessionDriver | None,
+        check_cancelled: Callable[[], None] | None = None,
     ) -> EngineExecutionEvidence:
         if not self._lock.acquire(blocking=False):
             raise OCIBackendError("one executor instance cannot run concurrent sessions")
@@ -1429,26 +1430,13 @@ class OCIEngineExecutor:
                     if opened_driver is None:
                         session = self.session_runner(plan, **kwargs)
                     else:
+                        if check_cancelled is not None:
+                            check_cancelled()
+                        transport.check_cancelled = check_cancelled
                         controller = OpenedOuterSession(plan, **kwargs)
-                        controller.start()
-                        from cacheon.eval.replay_checkpoint import bind_snapshot
-                        bind_snapshot(controller, conditioner, launch, identity, preflight, mount,
-                                      self.config.runtime.digest, recovered, checkpoint_metadata)
-                        try:
-                            session = opened_driver(controller)
-                            if not controller.closed:
-                                raise OCIBackendError(
-                                    "opened session driver returned without closing the engine"
-                                )
-                            if (
-                                type(session) is not SessionExecutionEvidence
-                                or session.session_id != controller.session_id
-                            ):
-                                raise OCIBackendError(
-                                    "opened session driver returned another session receipt"
-                                )
-                        finally:
-                            controller.abort()
+                        from cacheon.eval.replay_checkpoint import _drive_opened
+                        session = _drive_opened(controller, opened_driver, conditioner, launch, identity,
+                            preflight, mount, self.config.runtime.digest, recovered, checkpoint_metadata)
                     return session, conditioner.require_complete()
                 finally:
                     conditioner.cancel()
@@ -1522,6 +1510,7 @@ class OCIEngineExecutor:
         *,
         deadline: float,
         driver: OpenedSessionDriver,
+        check_cancelled: Callable[[], None] | None = None,
     ) -> EngineExecutionEvidence:
         """Drive a resident engine incrementally while retaining normal teardown."""
 
@@ -1534,6 +1523,7 @@ class OCIEngineExecutor:
             plan,
             deadline=deadline,
             opened_driver=driver,
+            check_cancelled=check_cancelled,
         )
 
     def execute_reference(

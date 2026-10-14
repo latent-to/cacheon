@@ -19,6 +19,23 @@ from cacheon.eval.speed_verdict import SpeedStageDecision
 from cacheon.stack_identity import canonical_json_bytes
 
 
+def _drive_opened(controller, driver, *snapshot_args):
+    """Keep opened-controller startup and failure inside the ordinary teardown path."""
+    from cacheon.eval.oci_backend import OCIBackendError
+
+    try:
+        controller.start()
+        bind_snapshot(controller, *snapshot_args)
+        session = driver(controller)
+        if not controller.closed:
+            raise OCIBackendError("opened session driver returned without closing the engine")
+        if type(session) is not SessionExecutionEvidence or session.session_id != controller.session_id:
+            raise OCIBackendError("opened session driver returned another session receipt")
+        return session
+    finally:
+        controller.abort()
+
+
 def bind_snapshot(controller, conditioner, launch, identity, preflight, mount,
                   resource_policy, recovered, metadata):
     """Expose a host-owned prefix without closing the running engine."""

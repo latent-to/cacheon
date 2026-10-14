@@ -60,7 +60,18 @@ async def _ready(transport, *, writing: bool, deadline: float) -> None:
 
     try:
         add(fd, ready)
-        await asyncio.wait_for(future, transport._remaining(deadline))
+        check = getattr(transport, "check_cancelled", None)
+        if check is None:
+            await asyncio.wait_for(future, transport._remaining(deadline))
+        else:
+            # A failed candidate must not leave its peer loading a model until READY.
+            # The wait raises in its owning thread; the OCI manager still owns teardown.
+            while not future.done():
+                check()
+                await asyncio.wait((future,), timeout=min(0.1, transport._remaining(deadline)))
+            check()
+            transport._remaining(deadline)
+            await future
     except asyncio.TimeoutError:
         direction = "request write" if writing else "response read"
         raise OuterSessionTimeoutError(f"session {direction} timed out") from None
