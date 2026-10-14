@@ -260,7 +260,9 @@ worker. These files contain private validator inputs and must not be published.
 When a new commissioned worker replaces an old epoch, the recoverable dispatcher
 first imports any complete result already on the CPU using its original authority.
 Otherwise it retires the old lease, retains its carrier, and seals a new request
-with the CPU-held checkpoint digest. A late old-worker result cannot commit under
+with the CPU-held checkpoint digest. The relay archives terminal, unleased carriers
+before checking the current epoch, so an imported old-worker result cannot block
+the replacement's queue. A late old-worker result cannot commit under
 the replacement lease. Checkpoint lookup follows the submitted cohort and lane
 across commissioning generations. The worker then compares the executable code,
 model, workload and grading rules, and reconstructs the original stack metadata

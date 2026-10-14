@@ -488,17 +488,23 @@ def cpu_serve(
                 worker_hold_state = _observe_worker_hold(
                     worker_hold_state, heartbeat, spool_root, registration
                 )
+                active = heartbeat.get("active_request_id")
+                # A replacement imports old results before this relay can
+                # authenticate their old-epoch carriers (2026-10-14).
+                if archive_intake_db:
+                    for job_dir in outbox.iterdir():
+                        if (job_dir / "REQUEST_READY").is_file():
+                            request = load_json(job_dir / "request.json")
+                            if active != request["request_id"]:
+                                _archive_completed_request(job_dir, request, archive_intake_db)
                 queue = iter_queue(
                     outbox, registration, identity=identity, credential=credential
                 )
-                active = heartbeat.get("active_request_id")
                 for job_dir, request in queue:
                     request_id = request["request_id"]
                     state_path = job_dir / "dispatch-state.json"
                     state = load_json(state_path) if state_path.exists() else None
                     if state is not None and state.get("state") == "result_received":
-                        if archive_intake_db and active != request_id:
-                            _archive_completed_request(job_dir, request, archive_intake_db)
                         continue
                     local_result = results / request_id
                     if (local_result / "RESULT_READY").is_file():

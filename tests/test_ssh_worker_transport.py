@@ -186,7 +186,7 @@ def test_failed_worker_polls_do_not_refresh_the_last_worker_heartbeat(tmp_path, 
     ("failed", 1, True, False), ("failed", 0, False, False),
     (None, 0, True, False),
 ])
-def test_archive_only_terminal_unleased_results(tmp_path, status, active, ready, archived):
+def test_archive_only_terminal_unleased_results(tmp_path, monkeypatch, status, active, ready, archived):
     db = tmp_path / "intake.sqlite3"
     with sqlite3.connect(db) as con:
         con.executescript("CREATE TABLE reservations(reservation_id, status); "
@@ -203,7 +203,21 @@ def test_archive_only_terminal_unleased_results(tmp_path, status, active, ready,
     result.mkdir(parents=True)
     if ready:
         (result / "RESULT_READY").touch()
-    transport._archive_completed_request(job, request, str(db))
+    if archived:
+        from tests.test_remote_worker_request_plan import _authority
+        worker = _authority(tmp_path / "replacement")
+        (job / "REQUEST_READY").touch()
+        monkeypatch.setenv("CACHEON_SPOOL_ARCHIVE_INTAKE_DB", str(db))
+        ticks = iter([True, False])
+        monkeypatch.setattr(transport, "registration_is_current", lambda *args: next(ticks))
+        monkeypatch.setattr(transport, "remote_heartbeat",
+                            lambda *args: {"state": "idle", "active_request_id": None})
+        transport.cpu_serve(registration_path=worker.registration_path,
+                            current_registration_path=worker.registration_path,
+                            spool_root=tmp_path, site=transport.RemotePodSite("/pod", "/pod/service.py"),
+                            poll_seconds=0)
+    else:
+        transport._archive_completed_request(job, request, str(db))
     assert job.exists() is not archived
     assert result.exists()
     if archived:
