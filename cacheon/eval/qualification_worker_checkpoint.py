@@ -415,18 +415,25 @@ def configure_continuation(value, continuation, baseline_executor, candidate_exe
             replacement, continuation, baseline_executor, candidate_executor)
     pointer = continuation.directory.parent / "imports" / (continuation.request_digest + ".json")
     continuation.worker_recovery = {}
-    continuation.speed_windows = ()
+    windows = {}
     if pointer.exists():
         imported = load_json(pointer)
         snapshot = read_snapshot(pointer.parent / (imported["sha256"] + ".json.gz"), imported["sha256"])
         stages = restore_stages(value, continuation, snapshot)
-        continuation.speed_windows = tuple(stages[name].continuation._load(name)
-            for name in sorted(stages) if name.startswith("speed_window_"))
+        windows = {int(name.rsplit("_", 1)[1]): stages[name].continuation._load(name)
+                   for name in stages if name.startswith("speed_window_")}
         if "speed" in stages:
             continuation.worker_recovery = stages
             _publish_recovery(value, continuation, imported["sha256"], snapshot["stages"])
         elif "speed_first" in stages:
             continuation._record("speed_first", stages["speed_first"].continuation._load("speed_first"))
+    for i in range(1, 6):
+        raw = continuation._load(f"speed_window_{i}")
+        if raw is not None:
+            if i in windows and windows[i] != raw:
+                raise QualificationContinuationError("local and imported replay windows differ")
+            windows[i] = raw
+    continuation.speed_windows = tuple(windows[i] for i in sorted(windows))
     publish_snapshot(continuation)
 
 

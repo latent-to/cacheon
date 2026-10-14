@@ -116,6 +116,9 @@ def test_resume_reuses_every_acknowledged_window_across_lanes_and_clocks(tmp_pat
         run(plan, scope)
     records = tuple(scope._load(f"speed_window_{i}") for i in range(1, kill_after+1))
     assert all(records)
+    checkpoint.configure_continuation(value, scope, SimpleNamespace(device_policy=_policy()),
+                                       SimpleNamespace(device_policy=_policy()))
+    assert scope.speed_windows == records
     import json
     pointer = json.loads((scope.checkpoint_root / (scope.request_digest + ".json")).read_bytes())
     snapshot = checkpoint.read_snapshot(scope.checkpoint_root / (pointer["sha256"] + ".json.gz"), pointer["sha256"])
