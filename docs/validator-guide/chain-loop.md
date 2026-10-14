@@ -74,12 +74,12 @@ Several terminal paths are omitted from the diagram for readability: an operator
 explicitly expire sufficiently old inactive work, copy reconciliation can turn a later
 submission into `failed`, and bounded retry exhaustion leads to `held`.
 
-The lease layer caps authenticated pre-resident qualification retries at three
-infrastructure releases. Releases whose reasons begin with `operator` (a deliberate
-operator disposition) remain exempt. The count covers releases
-since the reservation's most recent completed lease,
-so a successful stage resets it and a fleet-wide transient does not permanently
-poison rows that later succeed. At the cap the reservation is parked as `held` with
+The lease layer caps ordinary qualification infrastructure failures at three
+releases since the reservation's most recent completed lease. Deliberate
+`operator` dispositions are exempt. Worker replacements are also exempt when
+the store verifies that the new epoch differs from the retired request's sealed
+epoch. Repeated spot losses do not consume the broken-worker retry budget, and
+successful completion resets the count. At the cap the reservation is `held` with
 reason `systemic_release_cap:<count>` and waits for the operator `release_hold`
 disposition. Infrastructure failures are never converted into a candidate verdict.
 

@@ -1013,19 +1013,12 @@ class EvaluationRecoveryStoreMixin:
         current_block: int,
         live_worker_epoch: str = "",
     ) -> EvaluationLease:
-        """Requeue one published request the worker terminated with an unproven
-        infrastructure result (no authenticated refusal, no completed
-        response).  The dead request retires with its recovery and a fresh
-        claim mints a fresh request.  Also accepts a recovery already parked
-        HELD under the pre-change worker-infrastructure reason or under the
-        authority-changed reason (both mean the retained request is durably
-        dead), migrating it into the same requeue; a completed-product hold
-        joins them only when the caller names the live worker epoch and the
-        retained request plan provably binds a different one -- the store
-        verifies the mismatch against its own sealed plan, so an orphan of a
-        torn-down epoch migrates while a live-epoch hold stays parked.
-        Repeats are bounded by the systemic release cap, so an unfixed
-        infrastructure fault parks for the operator instead of free-looping."""
+        """Retire an infrastructure request before a fresh lease can claim it.
+
+        A completed-product hold requires a different live worker epoch.
+        Worker replacements prove that mismatch against the sealed plan and
+        are exempt from the cap; other failures still park for operator recovery.
+        """
 
         from cacheon.chain.execution_disposition import (
             AUTHORITY_CHANGED_HOLD_REASON,
@@ -1063,6 +1056,11 @@ class EvaluationRecoveryStoreMixin:
             or len(failure_code) > 256
             or any(ord(char) < 32 or ord(char) == 127 for char in failure_code)
             or not (recovery.phase is RecoveryPhase.REQUEST_READY or held_migration)
+            or (failure_code == "worker_replaced" and (
+                not isinstance(live_worker_epoch, str)
+                or re.fullmatch(r"[0-9a-f]{32}", live_worker_epoch) is None
+                or self.reopen_recovery_request_plan(recovery).worker_epoch == live_worker_epoch
+            ))
         ):
             raise _intake_error("worker infrastructure recovery release is forbidden")
         lease = self._release_recovery(
