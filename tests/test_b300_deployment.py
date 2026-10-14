@@ -440,6 +440,24 @@ def test_glm_engine_profile_is_data_not_an_evaluator_branch() -> None:
     assert definition.data_parallel_size(config) == 4
 
 
+def test_dsv41_baseline_recipe_reaches_the_sealed_engine() -> None:
+    from cacheon.eval.oci_session_protocol import EngineSessionConfig
+
+    recipe = json.loads((Path(__file__).parents[1] / "examples/arena_inputs/dsv41flash/engine-config.json").read_text())
+    row = _m3_engine_config()
+    owned = set(row) - {"engine_kwargs"} | {"max_running_requests"}
+    row.update({key: value for key, value in recipe.items() if key in owned})
+    row["engine_kwargs"] = {key: value for key, value in recipe.items() if key not in owned}
+    config = deployment._engine_template({"engine_config": row})
+    assert config.max_running_requests == 48
+    assert dict(config.engine_kwargs) == row["engine_kwargs"]
+    assert dict(config.engine_env) == recipe["engine_env"]
+    assert EngineSessionConfig.from_dict(config.to_dict()) == config
+    without_limit = {key: value for key, value in row.items() if key != "max_running_requests"}
+    assert deployment._engine_template({"engine_config": without_limit}).max_running_requests is None
+    assert config.digest != deployment._engine_template({"engine_config": without_limit}).digest
+
+
 def test_workload_parser_seals_cell_against_batches() -> None:
     prompt = {
         "prompt_seed_scheme": "sealed-prompts-v1",

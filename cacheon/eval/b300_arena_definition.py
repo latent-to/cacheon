@@ -170,7 +170,7 @@ def engine_template(prompt: dict[str, object]) -> EngineSessionConfig:
     """Parse model/runtime choices; launch- and target-derived fields stay owned."""
 
     row = _mapping(prompt.get("engine_config"), "arena engine config")
-    if set(row) != _ARENA_ENGINE_FIELDS:
+    if set(row) - {"max_running_requests"} != _ARENA_ENGINE_FIELDS:
         raise B300DeploymentError("arena engine config fields are not closed")
     engine_kwargs = _mapping(row.get("engine_kwargs"), "arena engine kwargs")
     forbidden = set(engine_kwargs) & _DERIVED_ENGINE_KWARGS
@@ -182,8 +182,7 @@ def engine_template(prompt: dict[str, object]) -> EngineSessionConfig:
         return EngineSessionConfig(
             model_path=CONTAINER_MODEL_PATH,
             disable_cuda_graph=False,
-            max_running_requests=None,
-            **row,  # type: ignore[arg-type]
+            **{"max_running_requests": None, **row},  # type: ignore[arg-type]
         )
     except (TypeError, ValueError) as exc:
         raise B300DeploymentError(

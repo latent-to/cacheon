@@ -1,9 +1,9 @@
 # DeepSeek-V4.1-Flash development check inputs
 
-Use these inputs with the commissioned `deepseek-ai/DeepSeek-V4.1-Flash`
-checkpoint (revision `2cba9e42aa026125f3ed06c6d98c1db82f7ca027`) and the SGLang
-0.5.21 image on two B300 GPUs (TP2 with expert parallelism 2), the topology the
-arena serves. Keep this folder
+Use these inputs with the commissioned `nvidia/DeepSeek-V4.1-Flash-NVFP4`
+checkpoint (revision `3431dde3247c13b5957f682b1e3c6fcae2566079`) and the
+[SGLang fork at `5e72ce5491a27a7751e039487dc9e6fd8cd375c6`](https://github.com/latent-to/sglang/commit/5e72ce5491a27a7751e039487dc9e6fd8cd375c6)
+on two B300 GPUs (TP2 with expert parallelism 1). Keep this folder
 outside the submitted bundle. Mount it read-only at `/arena`, the model at
 `/model`, and a writable result/cache directory at `/work`.
 
@@ -12,8 +12,11 @@ The runtime selects its attention, MoE and FP8 backends from the model; the
 `deterministic` as false and the audit relies on the paired replay and the row
 tolerance instead. DSpark is the checkpoint's own speculative decoder: block
 size five, no separate draft model and no step count. Prefix caching stays
-enabled, matching the agent-replay runtime. The development config caps running
-requests at 24 per lane to bound graph setup. Qualification owns its sealed
+enabled, matching the agent-replay runtime. The development config permits 48
+running requests, uses 16K breakable prefill graphs, bounded decoder replay,
+64-row decode graphs and prefill/decode interval 96. The commissioned arena can
+seal `max_running_requests` independently of its replay concurrency; omitting it
+retains the engine default. Qualification owns its sealed
 workload and configuration; this check does not produce a speed score.
 
 The checkpoint's Engram hash-memory tables do not fit beside the weights at TP2,
@@ -26,26 +29,24 @@ huge pages SGLang requests; a paired qualification runs two engines, and a box
 with two pairs needs twice that again. The sealed arena configuration carries the
 same two variables.
 
-Build the pinned image from the repository root with the selected revision:
+Build the fork's Dockerfile at the selected commit and set `FORK_IMAGE` to its
+image reference. Then build the qualification image from this repository root:
 
 ```bash
 build_dir=$(mktemp -d)
 mkdir "$build_dir/src"
 git archive HEAD | tar -x -C "$build_dir/src"
-docker build -t cacheon-dsv41flash \
+docker build --build-arg SGLANG_IMAGE="${FORK_IMAGE:?Set the built fork image}" -t cacheon-dsv41flash \
   -f examples/arena_inputs/dsv41flash/Dockerfile "$build_dir"
 ```
 
-Inside that image, run `python -m cacheon.cli compat --sglang-version 0.5.21`
+Inside that image, run
+`python -m cacheon.cli compat --sglang-version 0.0.0.dev1+g684fea8af`
 before the development check.
 
-For a commissioned SGLang fork, first build that fork's Dockerfile at the
-selected source commit, then pass that image with
-`docker build --build-arg SGLANG_IMAGE=<FORK_IMAGE> ...` to the command above.
 Retain its source revision and inspected image ID with the build. The image
 build makes the copied SGLang package readable and checks imports as UID 65534;
-a root-only import check does not establish runtime access. The default remains
-the pinned 0.5.21 release. The new worker must pass
+a root-only import check does not establish runtime access. The new worker must pass
 commissioning against its installed SGLang version and receive fresh image,
 runtime and service identities; prior runtime results do not qualify it.
 
