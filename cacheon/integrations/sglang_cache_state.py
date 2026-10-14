@@ -186,12 +186,12 @@ class PrefixStateAudit:
         self._swa(req, ids, row, record=False)
         self.guard.publish()
 
-    def matched(self, params, result):
+    def matched(self, params, result, device_length):
         """Check a served prefix before the first forward consumes its short-lived state."""
         req = params.req
         if audit._rate() <= 0 or req is None:
             return
-        length = len(result.device_indices) + result.host_hit_length
+        length = device_length + result.host_hit_length
         if not length:
             return
         if self.ring is not None:
@@ -201,28 +201,37 @@ class PrefixStateAudit:
                 self.guard.refuse("a request-local ring requires replay of its trailing window")
             return
         ids = list(params.key.raw_token_ids())
-        if result.host_hit_length or result.swa_host_hit_length:
-            self.pending[req.rid] = (req, ids, length)
+        if result.host_hit_length or result.swa_host_hit_length or not hasattr(result, "device_indices"):
+            self.pending[req.rid] = (req, ids, length, bool(result.host_hit_length or result.swa_host_hit_length))
         else:
             self._check(req, ids, result.device_indices)
+
+    def prefix(self, req, indices, cache):
+        """Check the lazy prefix when the runtime resolves the slots it will consume."""
+        pending = self.pending.pop(req.rid, None)
+        if pending is not None:
+            _, ids, length, host = pending
+            if len(indices) < length:
+                self.guard.refuse("a host load returned fewer prefix slots than it claimed")
+            if host and self.guard.device.type == "cuda":
+                controller = getattr(cache, "cache_controller", None)
+                transfer = getattr(controller, "l2_transfer_engine", None)
+                stream = getattr(transfer, "host_to_device_stream", None)
+                if stream is None:
+                    raise RuntimeError("tree_cache: no native transfer stream for the hybrid host audit")
+                # Wait only on the submitted copies, never on unrelated model/NCCL streams.
+                self.torch.cuda.current_stream(self.guard.device).wait_stream(stream)
+            self._check(req, ids, indices[:length])
+            self.guard.poll(block=True)
 
     def ready(self, cache):
         """Drain submitted native loads only in the untimed audit, then check their destinations."""
         if not self.pending:
             return
-        if self.guard.device.type == "cuda":
-            controller = getattr(cache, "cache_controller", None)
-            transfer = getattr(controller, "l2_transfer_engine", None)
-            stream = getattr(transfer, "host_to_device_stream", None)
-            if stream is None:
-                raise RuntimeError("tree_cache: no native transfer stream for the hybrid host audit")
-            # Wait only on the submitted copies, never on unrelated model/NCCL streams.
-            self.torch.cuda.current_stream(self.guard.device).wait_stream(stream)
-        for req, ids, length in self.pending.values():
-            if len(req.prefix_indices) < length:
-                self.guard.refuse("a host load returned fewer prefix slots than it claimed")
-            self._check(req, ids, req.prefix_indices[:length])
-        self.pending.clear()
+        for req, *_ in tuple(self.pending.values()):
+            if hasattr(req, "prefix_len"):
+                continue  # The nightly resolves lazy slots at prefix_device_indices.
+            self.prefix(req, req.prefix_indices, cache)
         self.guard.poll(block=True)
 
     def settled(self, req, row):

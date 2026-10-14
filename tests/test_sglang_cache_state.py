@@ -49,6 +49,32 @@ def _query(guard, cache, tokens, row):
     guard.matched(cache, params, NS(device_indices=row, host_hit_length=0, swa_host_hit_length=0), NS)
 
 
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_lazy_prefix_state_is_checked_when_the_runtime_resolves_its_slots(corrupt):
+    from tests.test_sglang_cache_seam import LazyMatchResult
+
+    swa = NS(size=64, page_size=PAGE, kv_buffer=[torch.zeros(64 // PAGE + 1, PAGE * 2)])
+    guard = _Guard(_window_engine(swa))
+    cache, tokens, row = _cache(guard), list(range(16)), torch.arange(PAGE, PAGE + 16)
+    req = _request("source", tokens, 0)
+    guard.requests.req_to_token[0, :16] = row.int()
+    guard.handoff(cache, req, tokens, finished=True)
+    query = _request("lazy", tokens + [99], 1)
+    query.prefix_len = len(row)
+    params = NS(key=Key(tokens + [99]), req=query)
+    guard.matched(cache, params, LazyMatchResult(len(row), None), LazyMatchResult)
+    assert query.rid in guard.hybrid.pending
+    guard.hybrid.ready(cache)
+    assert query.rid in guard.hybrid.pending
+    if corrupt:
+        swa.kv_buffer[0][2].add_(1)
+        with pytest.raises(RuntimeError, match="sliding-window"):
+            guard.hybrid.prefix(query, row, cache)
+    else:
+        guard.hybrid.prefix(query, row, cache)
+        assert query.rid not in guard.hybrid.pending
+
+
 @pytest.mark.parametrize("state_buffer", ["kv", "index"])
 @pytest.mark.parametrize("corrupt", [False, True])
 @pytest.mark.parametrize("evicted,hit", [(True, 16), (False, 16), (False, 8)])

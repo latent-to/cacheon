@@ -299,8 +299,9 @@ before handing it to the cache, verify device hits before use, and verify host
 restores after the native transfer stream completes. Unfinished requests retain
 their live ring state. These checks sample up to four layers per transferable
 state field. The handoffs
-`match_prefix`, `cache_unfinished_req`, `cache_finished_req`,
-`ready_to_load_host_cache` and `reset` may be overridden in the class but not replaced on
+`match_prefix`, `cache_unfinished_req`, `cache_finished_req`, `insert_req`,
+`checkpoint`, `prefix_device_indices`, `on_release`, `ready_to_load_host_cache`
+and `reset` may be overridden in the class but not replaced on
 the instance or class later.
 
 Every candidate refusal and every raise in a method the bundle defines stops the
