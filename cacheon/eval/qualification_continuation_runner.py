@@ -82,6 +82,12 @@ def run_continuation_quality_stage(
         # Charge completed work before launch, excluding downtime between durable
         # stages. An expired operator session must not buy a replacement B/C/B'.
         used = speed.completed_monotonic_s - speed.started_monotonic_s
+        if lifecycle.crossover.replay_windows:
+            import json
+            from cacheon.eval.replay_checkpoint import retained_seconds
+            windows = lifecycle.crossover.replay_windows
+            used += retained_seconds(windows, before=speed.started_monotonic_s,
+                                     boot=json.loads(windows[-1])["origin"]["boot"])
         if audit_state is not None:
             used += audit_state.audit_completed - audit_state.audit_started
         remaining = value.resident_speed_plan.policy.max_qualification_seconds - used

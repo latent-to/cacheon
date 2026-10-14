@@ -68,7 +68,7 @@ def test_replacement_reference_uses_its_actual_launch_and_frozen_math(tmp_path, 
         changed.setattr(fixtures, "_case", moved_case)
         changed.setattr(fixtures, "_local_binding", moved_binding)
         second = fixtures._harness(tmp_path / "replacement")
-        replacement = second.factory.plan_builder(second.cohort, secret)
+        replacement = second.factory.plan_builder(second.cohort, b"replacement-reference-fresh-private-seed")
     scope = QualificationContinuationStore(tmp_path / "checkpoint").scope(
         request_digest=_d("original-request"), authority_digest=runner.qualification_authority_digest(value),
         source_digest=value.prepared.source.digest)
@@ -98,7 +98,8 @@ def test_replacement_reference_uses_its_actual_launch_and_frozen_math(tmp_path, 
 
 
 @pytest.mark.parametrize("profile", ["ordinary", "glm"])
-def test_recommissioned_arena_reconstructs_the_original_measured_work(tmp_path, monkeypatch, profile):
+@pytest.mark.parametrize("stage", ["speed", "speed_window_1"])
+def test_recommissioned_arena_reconstructs_the_original_measured_work(tmp_path, monkeypatch, profile, stage):
     from types import SimpleNamespace
     import tests.test_b300_registered_qualification as fixtures
     import tests.test_marginal_runtime as runtime_fixtures
@@ -114,11 +115,19 @@ def test_recommissioned_arena_reconstructs_the_original_measured_work(tmp_path, 
     secret = b"recommissioned-arena-regression-seed"
     original = first.factory.plan_builder(first.cohort, secret)
     original_digest = runtime_fixtures._digest
+    fixture_digest = fixtures._h
     with monkeypatch.context() as changed:
         changed.setattr(runtime_fixtures, "_digest", lambda value:
-            original_digest("new-worker-arena") if value == "arena" else original_digest(value))
+            original_digest("new-worker-" + value) if value in ("arena", "resources") else original_digest(value))
+        changed.setattr(fixtures, "_h", lambda value: fixture_digest("new-worker-" + value)
+            if value in ("resident-candidate-runtime-policy", "resident-baseline-runtime-policy") else fixture_digest(value))
         second = fixtures._harness(tmp_path / "replacement", source)
         replacement = second.factory.plan_builder(second.cohort, b"replacement-prebuilt-plan-private-seed")
+    if stage != "speed":
+        def portable(value):
+            return replace(value, resident_speed_plan=replace(value.resident_speed_plan,
+                policy=replace(value.resident_speed_plan.policy, version=18, max_stage_seconds=600)))
+        original, replacement = portable(original), portable(replacement)
     assert replacement.prepared.source.digest != original.prepared.source.digest
     scope = QualificationContinuationStore(tmp_path / "checkpoint").scope(
         request_digest=_d("request"), authority_digest=runner.qualification_authority_digest(original),
@@ -127,7 +136,18 @@ def test_recommissioned_arena_reconstructs_the_original_measured_work(tmp_path, 
     monkeypatch.setattr(checkpoint, "_clock_domain", lambda: "original-boot")
     origin = checkpoint.capture_origin(original, scope, executor, executor)
     scope.checkpoint_origin = origin
-    scope.record_resident_speed(_retained_speed(original, tmp_path / "speed"))
+    if stage == "speed":
+        scope.record_resident_speed(_retained_speed(original, tmp_path / "speed"))
+    else:
+        from cacheon.eval import replay_checkpoint as progress
+        from cacheon.eval.goodput_runtime import _orientation_plan
+        from tests.test_replay_checkpoint import _execution
+        plan = original.resident_speed_plan
+        part = _orientation_plan(plan, plan.baseline.session_plan.replay.windows // 2)
+        runs = tuple(_execution(original, arm, role, 1, role, tmp_path / "speed", 10.0)
+            for arm, role in ((part.baseline, "incumbent"), (part.candidate, "candidate")))
+        scope._record(stage, progress._record(plan, runs, 1, 0,
+            part.baseline.session_plan.replay.windows, progress._origin(plan), 10.0, 1))
     pointer = json.loads((scope.checkpoint_root / (scope.request_digest + ".json")).read_bytes())
     store = QualificationContinuationStore(tmp_path / "replacement-checkpoint")
     imported = store.root / "imports"
@@ -146,6 +166,12 @@ def test_recommissioned_arena_reconstructs_the_original_measured_work(tmp_path, 
     assert recovered.factory.build().selection_secret == secret
     assert recovered.factory.build().commitment == original.commitment
     assert store.worker_replacements[request] == replacement
+    if stage != "speed":
+        resumed = store.scope(request_digest=request, authority_digest=runner.qualification_authority_digest(original),
+                              source_digest=original.prepared.source.digest)
+        checkpoint.configure_continuation(recovered.factory.build(), resumed, executor, executor)
+        assert resumed.speed_windows == (scope._load(stage),)
+        assert len(progress._reads(resumed.speed_windows, original.resident_speed_plan).incumbent) == 1
     restored = checkpoint.restore_origin(replacement, origin)
     assert runner.qualification_authority_digest(restored) == runner.qualification_authority_digest(original)
     assert restored.prepared.source == original.prepared.source

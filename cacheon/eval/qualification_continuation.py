@@ -35,6 +35,7 @@ from cacheon.stack_identity import (
 
 RECORD_SCHEMA = "cacheon.eval.qualification-continuation-record.v2"
 _STAGES = ("speed_first", "speed", "audit_armed", "audit_completed", "t_armed", "quality", "final", "recovery")
+_STAGES += tuple(f"speed_window_{i}" for i in range(1, 6))
 
 
 def _decimal(value: object, where: str) -> str:
@@ -350,6 +351,8 @@ class QualificationContinuation:
         self._record(
             "speed", {"mode": "resident", "crossover": self._codec.encode(crossover)}
         )
+        from cacheon.eval.qualification_worker_checkpoint import completed_speed
+        completed_speed(self)
 
     def load_resident_speed(self) -> ResidentCrossoverEvidence | None:
         payload = self._load("speed")

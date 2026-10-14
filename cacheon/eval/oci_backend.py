@@ -845,7 +845,7 @@ class EngineExecutionEvidence:
     runtime_argv_sha256: str
     recovered_lease_ids: tuple[str, ...]
     device_receipts: tuple[
-        DeviceStateReceipt, DeviceStateActiveReceipt, DeviceStateReceipt
+        DeviceStateReceipt, DeviceStateActiveReceipt, DeviceStateReceipt | None
     ]
     session: SessionExecutionEvidence
 
@@ -1214,7 +1214,7 @@ class OCIEngineExecutor:
         preflight: RuntimePreflightReceipt,
         model_root: Path,
         session_protocol: str,
-        run: Callable[[AttachedSessionTransport, float, str], object],
+        run: Callable[[AttachedSessionTransport, float, str, tuple], object],
     ) -> _RawRuntimeExecution:
         """Own the common prebuild/lease/mount/teardown shell for ordinary and T."""
 
@@ -1331,7 +1331,8 @@ class OCIEngineExecutor:
             transport = transport_type(
                 self.manager, lease, argv, clock=self.manager.clock
             )
-            value = run(transport, session_deadline, launch_id)
+            value = run(transport, session_deadline, launch_id,
+                        (prebuild, publication.publication_digest, argv_digest, pre_receipt))
         except BaseException as exc:
             primary = exc
         finally:
@@ -1406,6 +1407,7 @@ class OCIEngineExecutor:
                 transport: AttachedSessionTransport,
                 session_deadline: float,
                 launch_id: str,
+                checkpoint_metadata,
             ) -> tuple[SessionExecutionEvidence, DeviceStateActiveReceipt]:
                 conditioner = _FinalWarmupConditioner(
                     self.device_guard,
@@ -1429,6 +1431,9 @@ class OCIEngineExecutor:
                     else:
                         controller = OpenedOuterSession(plan, **kwargs)
                         controller.start()
+                        from cacheon.eval.replay_checkpoint import bind_snapshot
+                        bind_snapshot(controller, conditioner, launch, identity, preflight, mount,
+                                      self.config.runtime.digest, recovered, checkpoint_metadata)
                         try:
                             session = opened_driver(controller)
                             if not controller.closed:
@@ -1475,11 +1480,7 @@ class OCIEngineExecutor:
             receipts = (raw.pre_receipt, active_receipt, raw.post_receipt)
             _validate_device_receipts(receipts, launch_id=raw.launch_id)
             return EngineExecutionEvidence(
-                (
-                    "cacheon.oci-engine-execution.v1"
-                    if opened_driver is None
-                    else "cacheon.oci-resident-engine-execution.v1"
-                ),
+                "cacheon.oci-engine-execution.v1" if opened_driver is None else "cacheon.oci-resident-engine-execution.v1",
                 launch.digest,
                 identity,
                 preflight.sha256,
@@ -1507,10 +1508,7 @@ class OCIEngineExecutor:
         """Execute one complete ordinary session (the historical API)."""
 
         return self._execute_ordinary(
-            launch,
-            binding,
-            mount,
-            plan,
+            launch, binding, mount, plan,
             deadline=deadline,
             opened_driver=None,
         )
@@ -1565,6 +1563,7 @@ class OCIEngineExecutor:
                 transport: AttachedSessionTransport,
                 session_deadline: float,
                 _launch_id: str,
+                _checkpoint_metadata,
             ) -> ReferenceSessionEvidence:
                 if type(transport) is not AttachedReferenceTransport:
                     raise OCIBackendError("reference runtime received the wrong transport")

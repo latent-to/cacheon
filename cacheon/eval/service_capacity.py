@@ -312,6 +312,7 @@ def statistical_grade(
     contract: ServiceContract, expected: dict[str, tuple[int, int]], *,
     window_noise: float, boot_noise: float, error_rate: float, max_windows: int,
     attainment_tolerance: float, attainment_margin: float, futility_margin: float = 0.0,
+    orientations: tuple[int, ...] = (),
 ) -> ServiceVerdict:
     """Pool fixed-work costs within each orientation and spend one sealed error budget.
 
@@ -327,8 +328,10 @@ def statistical_grade(
         or any(not math.isfinite(v) or v < 0 for v in (window_noise, boot_noise))
         or window_noise == boot_noise == 0):
         raise ServiceEvidenceError("statistical comparison has invalid reads or uncertainty")
-    groups: dict[tuple[str, str], list[tuple[float, float]]] = {}
-    for cand, inc in zip(candidate, incumbent, strict=True):
+    if orientations and orientations != tuple(int(i >= max_windows // 2) for i in range(len(candidate))):
+        raise ServiceEvidenceError("portable comparison changed its sealed orientation order")
+    groups: dict[object, list[tuple[float, float]]] = {}
+    for index, (cand, inc) in enumerate(zip(candidate, incumbent, strict=True)):
         if ((cand.arm, inc.arm) != ("candidate", "incumbent")
             or (cand.window, cand.load) != (inc.window, inc.load) or cand.lane == inc.lane):
             raise ServiceEvidenceError("statistical reads are not paired on disjoint lanes")
@@ -336,9 +339,10 @@ def statistical_grade(
         b = fixed_work_rate(inc, expected, wall_time=True)
         if c.turns != b.turns:
             raise ServiceEvidenceError("paired windows completed different timed work")
-        groups.setdefault((inc.lane, cand.lane), []).append((b.elapsed_s, c.elapsed_s))
-    orientations = tuple(groups)
-    if len(groups) > 2 or (len(groups) == 2 and orientations[0] != orientations[1][::-1]):
+        key = orientations[index] if orientations else (inc.lane, cand.lane)
+        groups.setdefault(key, []).append((b.elapsed_s, c.elapsed_s))
+    lanes = tuple(groups)
+    if not orientations and (len(groups) > 2 or (len(groups) == 2 and lanes[0] != lanes[1][::-1])):
         raise ServiceEvidenceError("statistical comparison did not swap the same physical lanes")
     estimates, variances = [], []
     for pairs in groups.values():

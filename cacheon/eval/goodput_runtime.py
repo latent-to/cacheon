@@ -129,6 +129,7 @@ class GoodputReadSet:
     candidate: tuple[LoadRead, ...]
     expected: tuple[tuple[str, int, int], ...]
     window_limit: int = field(default=0, metadata={"wire_optional": True})
+    orientations: tuple[int, ...] = field(default=(), metadata={"wire_optional": True})
 
     def __post_init__(self):
         if (not self.incumbent or len(self.incumbent) != len(self.candidate)
@@ -138,6 +139,9 @@ class GoodputReadSet:
         if (type(self.window_limit) is not int or self.window_limit < 0
             or (self.window_limit and not len(self.incumbent) <= self.window_limit <= 5)):
             raise ValueError("goodput read budget is invalid")
+        if self.orientations and self.orientations != tuple(
+                int(i >= self.window_limit // 2) for i in range(len(self.incumbent))):
+            raise ValueError("portable replay changed its sealed orientation order")
         work = {root: (main, inner) for root, main, inner in self.expected}
         for baseline, candidate in zip(self.incumbent, self.candidate, strict=True):
             if (baseline.arm != "incumbent" or candidate.arm != "candidate"
@@ -155,6 +159,7 @@ class GoodputReadSet:
             window_noise=policy.null_noise, boot_noise=policy.boot_noise,
             error_rate=policy.error_rate, max_windows=max_windows or self.window_limit or len(self.candidate),
             futility_margin=policy.futility_margin,
+            **({"orientations": self.orientations} if self.orientations else {}),
         )
         grader = service_capacity.statistical_grade if statistic else service_capacity.grade
         result = grader(
@@ -254,6 +259,11 @@ def run_goodput_pair(plan, *, baseline_executor, candidate_executor, model_mount
     tokenizers = tuple(AutoTokenizer.from_pretrained(
         arm.session_plan.replay.tokenizer_path, trust_remote_code=True, local_files_only=True,
     ) for arm in (plan.baseline, plan.candidate))
+    if plan.policy.version == 18:
+        from cacheon.eval.replay_checkpoint import run_pair
+        return run_pair(plan, baseline_executor=baseline_executor, candidate_executor=candidate_executor,
+            model_mount=model_mount, deadline=deadline, clock=clock, quality_control=quality_control,
+            continuation=continuation, tokenizers=tokenizers)
     if not plan.policy.goodput.error_rate:
         raise ValueError("V16 replay is regrade-only; new runs require the statistical policy")
     from cacheon.eval.crossover_runtime import ResidentCrossoverEvidence, _expected_lane_digest
@@ -321,7 +331,7 @@ def run_goodput_pair(plan, *, baseline_executor, candidate_executor, model_mount
 
 
 def _run_orientation(plan, *, baseline_executor, candidate_executor, model_mount, deadline, clock,
-                     quality_control, tokenizers, full_plan, prior=None):
+                     quality_control, tokenizers, full_plan, prior=None, orientation=None, on_window=None):
     """Keep each pair resident through its timed reads and any selected quality controls."""
     from cacheon.eval.agent_replay import run_replay
     from cacheon.eval.crossover_runtime import _lane_digest
@@ -348,6 +358,8 @@ def _run_orientation(plan, *, baseline_executor, candidate_executor, model_mount
         return GoodputReadSet(
             (() if prior is None else prior.incumbent) + tuple(baseline),
             (() if prior is None else prior.candidate) + tuple(candidate), expected, maximum,
+            (() if orientation is None else
+             (() if prior is None else prior.orientations) + (orientation,) * len(baseline)),
         )
 
     def execute(index, executor, arm):
@@ -376,6 +388,12 @@ def _run_orientation(plan, *, baseline_executor, candidate_executor, model_mount
                             grade = read_set(completed["incumbent"], completed["candidate"]).grade(
                                 plan.policy.goodput, max_windows=maximum)
                             proceed = grade.decision is SpeedStageDecision.NO_DECISION
+                        if proceed and on_window is not None:
+                            schedule.put(f"{window}:checkpoint:{prefix}", controller.checkpoint_execution())
+                            peer_snapshot = schedule.get(f"{window}:checkpoint:{peer}", deadline=deadline, clock=clock)
+                            if index == 0:
+                                on_window((schedule.values[f"{window}:checkpoint:{prefix}"], peer_snapshot),
+                                          started, plan, window - 1)
                     key = f"{load}:{window}:{'ready' if proceed else 'stop'}:"
                     schedule.put(key + prefix)
                     schedule.get(key + peer, deadline=deadline, clock=clock)
@@ -487,13 +505,13 @@ def regrade_goodput_execution(evidence, plan):
     return evidence.goodput.grade(plan.policy.goodput)
 
 
-def _validate_replay_sessions(sessions, replay):
+def _validate_replay_sessions(sessions, replay, *, checkpoint=False):
     """Share raw-request validation between orientation recovery and final regrading."""
     from cacheon.eval.crossover_runtime import _validate_execution_binding, _expected_lane_digest
 
     (load,) = replay.loads
     for reads, execution, arm, controls in sessions:
-        _validate_execution_binding(execution, arm)
+        _validate_execution_binding(execution, arm, checkpoint=checkpoint)
         session = execution.session
         if reads != session.replay_reads or not 1 <= len(reads) <= arm.session_plan.replay.windows:
             raise CrossoverRuntimeError("goodput reads differ from their completed engine session")
@@ -521,7 +539,7 @@ def _validate_replay_sessions(sessions, replay):
                     or record.request_end_ns != offset + round(row.response_completed_at * 1e9)
                     or (record.prompt_tokens, record.output_tokens) != (prompt.prompt_tokens, len(prompt.output_ids))
                     or row.token_numerator != record.output_tokens
-                    or row.response_completed_at > session.session_completed_at):
+                    or row.response_completed_at > (session.checkpointed_at if checkpoint else session.session_completed_at)):
                     raise CrossoverRuntimeError("goodput record does not regrade from its host request")
         for control, row in zip(controls, session.batches[warmup + measured:], strict=True):
             if (len(row.evidence.prompts) != 1 or row.audit_receipts

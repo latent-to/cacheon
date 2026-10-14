@@ -223,26 +223,31 @@ normal grader, evidence import and settlement still consume the completed result
 
 ### Interrupted replay controllers
 
-When the ordinary qualification runner receives its authenticated continuation
-scope, it writes `speed_first.json` after both engines complete the first lane
-orientation and close, before launching the swapped orientation. This extends
-the existing continuation record with the two complete engine executions and
-their quiescence receipts; it does not introduce a new speed policy or verdict.
-The record also binds the original speed plan, start time and host boot ID.
+New commissions use speed policy 18. Before the next paired replay window starts,
+the runner saves `speed_window_N.json` with both completed reads, raw host request
+evidence, device preflight and active receipts, and the actual host clock and lane
+identities. Engines remain resident. A checkpoint explicitly records that teardown
+has not happened; it never substitutes a completed-session or post-drain receipt.
+The terminal window commits with its complete speed stage, after any selected
+quality controls and normal engine teardown.
 
-An explicit reinvocation of the same sealed qualification and continuation
-scope regrades the retained raw requests, reuses the first orientation and
-executes the swapped orientation. Partial swapped windows are not combined
-with a new engine lifetime. No first-orientation record means that orientation
-must execute in full. An existing malformed, incomplete or mismatched record
-holds before new execution rather than buying another first orientation.
+A replacement regrades the saved windows and executes only the remaining sealed
+windows. It reloads the model and repeats the interrupted, unacknowledged window.
+Completed reads keep their original timestamps and physical bindings, including
+when the replacement has different GPU IDs or a different monotonic clock origin.
+Model, image, workload, contribution, GPU operating configuration and numerical
+policy must match. The precommitted orientation sequence, equal orientation weights,
+stopping boundaries and error budget remain fixed. Boot uncertainty remains fully
+charged per orientation; additional hosts do not divide it away. Acknowledged
+execution counts toward the sealed stage and qualification budgets; downtime is excluded.
 
-Reusing an unfinished speed stage requires the same physical allocation and
-clock domain. Its original wall-clock budget includes interruption downtime.
-Opposite lane orientations from different allocations cannot be combined.
+Historical policy-17 runs retain their original scoring contract. Their
+`speed_first.json` resumes only on the original allocation and boot; their complete
+speed stages remain portable. Policy 18 adds portability without relabeling those
+older measurements.
 
-The standing CPU relay also saves compressed checkpoints of completed speed,
-audit, and pristine-T stages. Each checkpoint preserves the original plan,
+The standing CPU relay saves compressed checkpoints of replay windows and completed
+speed, audit, and pristine-T stages. Each checkpoint preserves the original plan,
 calibration, private selection state, stage records, and clock domains. It becomes
 available for replacement only after the CPU has copied, verified and fsynced it.
 The relay's `checkpoints/` directory must live on storage independent of the GPU
@@ -260,9 +265,8 @@ work; changed computation refuses recovery before GPU execution. Existing checkp
 indexes are reopened through their original authenticated requests without replacing
 the saved bytes. Completed stages retain their original work and hardware
 receipts; replacement driver or power settings do not invalidate that evidence.
-Missing stages use the replacement's commissioned hardware. A first-orientation-only
-snapshot restarts speed when its boot, plan or device contract changes. Interrupted
-audit or pristine T repeats that stage; completed predecessors remain reusable.
+Missing stages use the replacement's commissioned hardware. Interrupted audit or
+pristine T repeats that stage; completed predecessors remain reusable.
 
 Clock-domain changes do not rewrite old timestamps. The result carries an optional
 worker-recovery artifact and per-stage clock domains; regrading checks them against

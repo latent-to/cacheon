@@ -164,6 +164,7 @@ def _previous_work_checkpoint(transport, body):
             fail("retained checkpoint differs from its original request")
         stages = snapshot["stages"]
         progress = tuple(name in stages for name in ("quality", "audit", "speed", "speed_first"))
+        progress += (sum(name.startswith("speed_window_") for name in stages),)
         matches.append((progress, load_json(job / "request.json")["queued_at_unix_ns"], ready))
     return max(matches, key=lambda row: row[:2])[2] if matches else None
 

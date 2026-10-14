@@ -56,10 +56,14 @@ Cacheon deliberately separates economic identity from process identity.
 
 The **execution unit** is a complete engine. Production version-3 qualification
 materializes the exact incumbent and one-target-transition candidate engines and
-measures them with the paired replay: speed policy 17 launches separate
+measures them with the paired replay: speed policy 18 launches separate
 baseline and candidate engine processes on two disjoint TP lanes, replays the
 same sealed agent workload on both concurrently, then boots fresh engines with the
-lanes exchanged so a stable lane factor cancels out of the score. The candidate
+lanes exchanged so a stable lane factor cancels out of an uninterrupted score.
+Completed paired windows survive worker replacement with their original physical
+bindings and clock domains; the replacement continues the sealed orientation
+sequence with the full calibrated boot uncertainty. Historical policy-17 evidence
+retains its original contract. The candidate
 then runs in a separate eager, untimed audit role A, and
 pristine T runs candidate-free; candidate code never shares the controller's
 trust domain.

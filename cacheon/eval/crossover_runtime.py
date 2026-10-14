@@ -1,7 +1,7 @@
 """Bounded production speed stage with two resident TP lanes.
 
 Stock and candidate load once on disjoint lanes and replay the sealed session
-slice in paired windows (speed policies 16 and 17; ``goodput_runtime`` runs the
+slice in paired windows (speed policies 16–18; ``goodput_runtime`` runs the
 windows and ``service_capacity`` grades them). Audit and pristine T are later
 stages and must not run unless this returns PASS.
 
@@ -256,11 +256,13 @@ def _execution_digest(value: EngineExecutionEvidence) -> str:
     )
 
 
-def _validate_execution_binding(execution: EngineExecutionEvidence, arm: ResidentArmPlan) -> None:
+def _validate_execution_binding(execution: EngineExecutionEvidence, arm: ResidentArmPlan,
+                                *, checkpoint: bool = False) -> None:
     """Bind either measurement schedule to the same launched engine and physical lane."""
     session, plan = execution.session, arm.session_plan
     if (
-        execution.schema != "cacheon.oci-resident-engine-execution.v1"
+        execution.schema != ("cacheon.oci-resident-engine-checkpoint.v1" if checkpoint else
+                             "cacheon.oci-resident-engine-execution.v1")
         or execution.launch_digest != arm.launch.digest
         or execution.resource_policy_digest != arm.runtime_resource_policy_digest
         or type(session) is not SessionExecutionEvidence
@@ -271,8 +273,12 @@ def _validate_execution_binding(execution: EngineExecutionEvidence, arm: Residen
     ):
         raise CrossoverRuntimeError("resident execution differs from its sealed arm")
     receipts = execution.device_receipts
+    if checkpoint:
+        if len(receipts) != 3 or receipts[2] is not None:
+            raise CrossoverRuntimeError("open replay checkpoint cannot claim a post-drain receipt")
+        receipts = receipts[:2]
     physical = arm.binding.physical_hardware.physical_gpu_ids
-    if type(receipts) is not tuple or len(receipts) != 3:
+    if type(receipts) is not tuple or len(receipts) != (2 if checkpoint else 3):
         raise CrossoverRuntimeError("resident execution lacks device receipt coverage")
     if all(value.isdecimal() for value in physical) and any(
         tuple(row.selected_physical_gpu_ids) != tuple(map(int, physical))
@@ -316,6 +322,7 @@ class ResidentCrossoverEvidence:
     reference_inputs: tuple[ReferencePromptInput, ...] = dataclass_field(default=(), metadata={"wire_optional": True})
     quality_entropy: SelectionEntropyReceipt | None = dataclass_field(default=None, metadata={"wire_optional": True})
     prior_executions: tuple[EngineExecutionEvidence, ...] = dataclass_field(default=(), metadata={"wire_optional": True})
+    replay_windows: tuple[str, ...] = dataclass_field(default=(), metadata={"wire_optional": True})
 
     def __post_init__(self) -> None:
         version = (
@@ -327,7 +334,9 @@ class ResidentCrossoverEvidence:
                    and len(self.goodput.incumbent) == self.goodput.window_limit // 2)
         if ((version == 17 and not stopped and (len(self.prior_executions) != 2
                                or any(type(v) is not EngineExecutionEvidence for v in self.prior_executions)))
-            or (version != 17 and self.prior_executions)):
+            or (version != 17 and self.prior_executions)
+            or (bool(self.replay_windows) != (version == 18))
+            or (type(self.goodput) is GoodputReadSet and bool(self.goodput.orientations) != (version == 18))):
             raise CrossoverRuntimeError("swapped replay requires both first-orientation executions")
         for field in (
             "plan_digest",
@@ -373,6 +382,9 @@ class ResidentCrossoverEvidence:
     def regrade(self, plan: ResidentCrossoverPlan) -> SpeedupVerdict:
         """Recompute the grade only from the sealed plan and the retained turn records."""
 
+        if self.policy.version == 18:
+            from cacheon.eval.replay_checkpoint import regrade
+            return regrade(self, plan)
         final_plan = plan
         if plan.policy.version == 17 and self.prior_executions:
             from cacheon.eval.goodput_runtime import _orientation_plan
@@ -436,6 +448,7 @@ class ResidentCrossoverEvidence:
                 "goodput": self.goodput.to_dict(),
                 **({"prior_executions": [_execution_digest(row) for row in self.prior_executions]}
                    if self.prior_executions else {}),
+                **({"replay_windows": self.replay_windows} if self.replay_windows else {}),
                 **({"prompt_pairs": self.prompt_pairs,
                     "reference_inputs": [{"prompt": row.prompt_digest,
                                           "input": hashlib.sha256(row.input_bytes).hexdigest(),

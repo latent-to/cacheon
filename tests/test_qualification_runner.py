@@ -571,7 +571,7 @@ def _install_resident_runner_path(
 
     # A replay crossover: paired reads, the control-selection entropy the continuation must find
     # unchanged, and the candidate-lane receipt it is bound to (V17 swaps lanes; 2026-09-30).
-    crossover = SimpleNamespace(goodput=SimpleNamespace(), quality_entropy=harness.entropy)
+    crossover = SimpleNamespace(goodput=SimpleNamespace(), quality_entropy=harness.entropy, replay_windows=())
     crossover.candidate_quiescence = harness.entropy_teardown = _quiescence(9, 2.9)
 
     class FakeResidentLifecycle:

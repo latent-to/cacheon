@@ -1,8 +1,8 @@
-"""Portable completed stages for the authenticated qualification worker.
+"""Portable completed replay windows and stages for the qualification worker.
 
 The original physical speed plan remains measurement authority. A replacement
 worker may execute missing stages under its own commissioned allocation; it
-cannot rename old devices or combine an unfinished crossover with new timings.
+cannot rename old devices or include an unfinished window in a score.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ RECOVERY_DOMAIN = "qualification.worker-recovery"
 RECOVERY_SCHEMA = "cacheon.qualification.worker-recovery.v1"
 MAX_CHECKPOINT_BYTES = 128 << 20
 _COMPLETE = {
+    **{f"speed_window_{i}": (f"speed_window_{i}",) for i in range(1, 6)},
     "speed_first": ("speed_first",),
     "speed": ("speed",),
     "audit": ("audit_armed", "audit_completed"),
@@ -108,6 +109,8 @@ def _contract_fields(value, *, portable=False):
     if portable:
         def stack(manifest):
             return {key: item for key, item in manifest.to_dict().items() if key != "arena_digest"}
+        if result["speed_policy"]["version"] in (17, 18):
+            result["speed_policy"]["version"] = 17  # Retained stages regrade under their own exact version.
         for audit in result["audit"]:
             audit.pop("validator_seed")
         source = value.prepared.source
@@ -157,6 +160,7 @@ def capture_origin(value, continuation, baseline_executor, candidate_executor):
         "calibration_ref": value.calibration_artifact_ref.to_dict(),
         "calibration_bytes": json.loads(reopen_evidence(value.evidence_root, value.calibration_artifact_ref)),
         "speed_policy": value.resident_speed_plan.policy.to_dict(),
+        "audit_policies": [row.to_dict() for row in value.audit_policies],
     }
 
 
@@ -194,13 +198,37 @@ def _restore_binding(template, row):
     return launch, binding
 
 
+def restore_speed_plan(plan, origin):
+    """Reopen physical measurement identities without relabeling retained timings."""
+    from cacheon.eval.oci_backend import expected_runtime_preflight
+    from cacheon.eval.resident_speed_policy import ResidentSpeedPolicy
+    arms = []
+    for template, row in zip((plan.baseline, plan.candidate), origin["arms"], strict=True):
+        launch, binding = _restore_binding(template.binding, row)
+        old, new = launch.to_dict(), template.launch.to_dict()
+        old["hardware"].pop("device_policy_digest")
+        new["hardware"].pop("device_policy_digest")
+        for field in ("arena_digest", "stack_digest", "tree_digest", "native_build_spec_digest",
+                      "resource_policy_digest", "controller_distribution_digest"):
+            old.pop(field)
+            new.pop(field)
+        if old != new:
+            raise QualificationContinuationError("worker checkpoint changed its executable envelope")
+        arms.append(replace(template, launch=launch, binding=binding,
+                            session_plan=replace(template.session_plan, launch_digest=launch.digest,
+                                expected_preflight=expected_runtime_preflight(launch, binding.runtime_preflight_receipt)),
+                            executor_namespace_digest=row["namespace"],
+                            runtime_resource_policy_digest=row["runtime_policy"],
+                            device_configuration_digest=row["configuration"]))
+    return replace(plan, baseline=arms[0], candidate=arms[1],
+                   policy=ResidentSpeedPolicy.from_dict(origin["speed_policy"]))
+
+
 def restore_origin(value, origin):
     """Reconstruct the original read-only authority using current immutable trees."""
-    from cacheon.eval.crossover_runtime import ResidentCrossoverPlan
     from cacheon.eval.oci_backend import expected_runtime_preflight
     from cacheon.eval.qualification_runner import qualification_authority_digest
     from cacheon.eval.resident_audit_authority import ResidentAuditExecutionAuthority
-    from cacheon.eval.resident_speed_policy import ResidentSpeedPolicy
     from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence
     from cacheon.engine_tree import reopen_materialized_engine_tree
     from cacheon.stack_manifest import EvaluationStackManifest
@@ -219,28 +247,10 @@ def restore_origin(value, origin):
 
     def session(template, launch, binding):
         return replace(template, launch_digest=launch.digest,
-                       expected_preflight=expected_runtime_preflight(
-                           launch, binding.runtime_preflight_receipt))
+                       expected_preflight=expected_runtime_preflight(launch, binding.runtime_preflight_receipt))
 
-    arms = []
-    for template, row in zip((value.resident_speed_plan.baseline,
-                              value.resident_speed_plan.candidate), origin["arms"], strict=True):
-        launch, binding = _restore_binding(template.binding, row)
-        old, new = launch.to_dict(), template.launch.to_dict()
-        old["hardware"].pop("device_policy_digest")
-        new["hardware"].pop("device_policy_digest")
-        for field in ("arena_digest", "stack_digest", "tree_digest", "native_build_spec_digest",
-                      "resource_policy_digest", "controller_distribution_digest"):
-            old.pop(field)
-            new.pop(field)
-        if old != new:
-            raise QualificationContinuationError("worker checkpoint changed its executable envelope")
-        arms.append(replace(template, launch=launch, binding=binding,
-                            session_plan=session(template.session_plan, launch, binding),
-                            executor_namespace_digest=row["namespace"],
-                            runtime_resource_policy_digest=row["runtime_policy"],
-                            device_configuration_digest=row["configuration"]))
-    baseline, candidate = arms
+    speed_plan = restore_speed_plan(value.resident_speed_plan, origin)
+    candidate = speed_plan.candidate
     base_launch, base_binding = _restore_binding(
         value.prepared.incumbent_binding.launch_binding, origin["baseline"])
     source = replace(value.prepared.source,
@@ -260,7 +270,10 @@ def restore_origin(value, origin):
     pristine_launch, pristine_binding = _restore_binding(value.pristine_binding, origin["pristine"])
     audit = value.resident_audit_plan
     audit_policy = audit.audit_policy
-    if "selection_secret" in origin:
+    if "audit_policies" in origin:
+        from cacheon.eval.oci_session_protocol import SlotAuditPolicy
+        audit_policy, = (SlotAuditPolicy.from_dict(row) for row in origin["audit_policies"])
+    elif "selection_secret" in origin:
         from cacheon.eval.b300_registered_qualification import AUDIT_SEED_DOMAIN
 
         audit_policy = replace(audit_policy, validator_seed=hashlib.sha256(
@@ -283,8 +296,7 @@ def restore_origin(value, origin):
         calibration_context=context, calibration_manifest=calibration,
         calibration_threshold_policy=threshold, calibration_artifact_ref=calibration_ref,
         audit_policies=(audit_policy,),
-        resident_speed_plan=ResidentCrossoverPlan(value.resident_speed_plan.selected_delta_digest,
-            baseline, candidate, ResidentSpeedPolicy.from_dict(origin["speed_policy"])),
+        resident_speed_plan=speed_plan,
         resident_audit_plan=ResidentAuditExecutionAuthority.derive(
             candidate.launch, candidate.binding, candidate.session_plan,
             audit_policy=audit_policy, max_new_tokens=audit.plan.max_new_tokens,
@@ -296,6 +308,8 @@ def restore_origin(value, origin):
         pristine_launch=pristine_launch, pristine_binding=pristine_binding,
         reference_preflight=expected_runtime_preflight(pristine_launch,
                                                        pristine_binding.runtime_preflight_receipt),
+        expected_launch_resource_policy_digest=candidate.launch.resource_policy_digest,
+        expected_runtime_resource_policy_digest=candidate.runtime_resource_policy_digest,
         expected_device_policy_digest=base_launch.hardware.device_policy_digest)
     if (_contract_fields(value, portable=True) != _contract_fields(restored, portable=True)
             or _contract(restored) != origin["contract"] or restored.prepared.source.digest != origin["source"]):
@@ -363,6 +377,8 @@ def restore_stages(value, continuation, snapshot):
     restored = {}
     for stage, row in stages.items():
         origin = row["origin"]
+        if stage.startswith("speed_window_") and origin["devices"] != current["devices"]:
+            raise QualificationContinuationError("replay continuation changed its GPU operating configuration")
         if stage == "speed_first" and "speed" not in stages and (
             origin["boot"] != current["boot"] or origin["devices"] != current["devices"]
             or row["records"]["speed_first"]["payload"]["plan_digest"] != value.resident_speed_plan.digest
@@ -390,9 +406,7 @@ def restore_stages(value, continuation, snapshot):
 def configure_continuation(value, continuation, baseline_executor, candidate_executor):
     """Install the authenticated imported checkpoint in the ordinary runner."""
     from cacheon.chain.remote_worker_spool import load_json
-    from cacheon.eval.evidence_store import publish_evidence
-    from cacheon.eval.qualification_runner import qualification_authority_digest
-
+    continuation.checkpoint_value = value
     continuation.checkpoint_origin = capture_origin(
         value, continuation, baseline_executor, candidate_executor)
     replacement = getattr(continuation, "replacement_execution", None)
@@ -401,30 +415,46 @@ def configure_continuation(value, continuation, baseline_executor, candidate_exe
             replacement, continuation, baseline_executor, candidate_executor)
     pointer = continuation.directory.parent / "imports" / (continuation.request_digest + ".json")
     continuation.worker_recovery = {}
+    continuation.speed_windows = ()
     if pointer.exists():
         imported = load_json(pointer)
         snapshot = read_snapshot(pointer.parent / (imported["sha256"] + ".json.gz"), imported["sha256"])
         stages = restore_stages(value, continuation, snapshot)
+        continuation.speed_windows = tuple(stages[name].continuation._load(name)
+            for name in sorted(stages) if name.startswith("speed_window_"))
         if "speed" in stages:
             continuation.worker_recovery = stages
-            public = {
-                "schema": RECOVERY_SCHEMA, "checkpoint": imported["sha256"],
-                "authority": qualification_authority_digest(value),
-                "origins": {name: _public_origin(row["origin"]) for name, row in snapshot["stages"].items()
-                            if name != "speed_first"},
-                "records": {name: {stage: record["record_digest"]
-                                    for stage, record in row["records"].items()}
-                            for name, row in snapshot["stages"].items() if name != "speed_first"},
-                "replacement_boot": continuation.checkpoint_origin["boot"],
-                "replacement": _public_origin(continuation.checkpoint_origin.get(
-                    "execution", continuation.checkpoint_origin)),
-            }
-            continuation.worker_recovery_reference = publish_evidence(
-                value.evidence_root, canonical_json_bytes(public), domain=RECOVERY_DOMAIN,
-                media_type="application/json", schema=RECOVERY_SCHEMA)
+            _publish_recovery(value, continuation, imported["sha256"], snapshot["stages"])
         elif "speed_first" in stages:
             continuation._record("speed_first", stages["speed_first"].continuation._load("speed_first"))
     publish_snapshot(continuation)
+
+
+def _publish_recovery(value, continuation, digest, stages):
+    from cacheon.eval.evidence_store import publish_evidence
+    from cacheon.eval.qualification_runner import qualification_authority_digest
+
+    stages = {name: row for name, row in stages.items() if name in ("speed", "audit", "quality")}
+    public = {"schema": RECOVERY_SCHEMA, "checkpoint": digest,
+        "authority": qualification_authority_digest(value),
+        "origins": {name: _public_origin(row["origin"]) for name, row in stages.items()},
+        "records": {name: {stage: record["record_digest"] for stage, record in row["records"].items()}
+                    for name, row in stages.items()},
+        "replacement_boot": continuation.checkpoint_origin["boot"],
+        "replacement": _public_origin(continuation.checkpoint_origin.get("execution", continuation.checkpoint_origin))}
+    continuation.worker_recovery_reference = publish_evidence(value.evidence_root,
+        canonical_json_bytes(public), domain=RECOVERY_DOMAIN, media_type="application/json", schema=RECOVERY_SCHEMA)
+
+
+def completed_speed(continuation):
+    """Use replacement audit/T bindings after the resumed windows finish."""
+    if not getattr(continuation, "speed_windows", ()) or continuation.replacement_execution is None:
+        return
+    value, origin = continuation.checkpoint_value, continuation.checkpoint_origin
+    continuation.worker_recovery["speed"] = SimpleNamespace(value=value, continuation=continuation, origin=origin)
+    record = json.loads((continuation.directory / "speed.json").read_bytes())
+    pointer = json.loads((continuation.checkpoint_root / (continuation.request_digest + ".json")).read_bytes())
+    _publish_recovery(value, continuation, pointer["sha256"], {"speed": {"origin": origin, "records": {"speed": record}}})
 
 
 def _public_origin(origin):
@@ -446,7 +476,7 @@ def prepare_work(work, store, request_digest):
         return work
     imported = load_json(pointer)
     snapshot = read_snapshot(pointer.parent / (imported["sha256"] + ".json.gz"), imported["sha256"])
-    stage = snapshot["stages"].get("speed")
+    stage = snapshot["stages"].get("speed") or snapshot["stages"].get("speed_window_1")
     if stage is None:
         return work
     origin = stage["origin"]
