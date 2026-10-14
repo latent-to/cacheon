@@ -26,12 +26,6 @@ huge pages SGLang requests; a paired qualification runs two engines, and a box
 with two pairs needs twice that again. The sealed arena configuration carries the
 same two variables.
 
-Everything in this folder was derived from the 0.5.21 source and the published
-recipes before the image was run; the first boot on the commissioned lane
-confirms the image layout the Dockerfile assumes, the memory fraction, the host
-memory and huge pages the Engram tables pin, and the page geometry of the index
-cache (64 or 128 slots, by the installed DeepGEMM).
-
 Build the pinned image from the repository root with the selected revision:
 
 ```bash
@@ -48,8 +42,10 @@ before the development check.
 For a commissioned SGLang fork, first build that fork's Dockerfile at the
 selected source commit, then pass that image with
 `docker build --build-arg SGLANG_IMAGE=<FORK_IMAGE> ...` to the command above.
-Retain its source revision and inspected image ID with the build. The default
-remains the pinned 0.5.21 release. The new worker must pass
+Retain its source revision and inspected image ID with the build. The image
+build makes the copied SGLang package readable and checks imports as UID 65534;
+a root-only import check does not establish runtime access. The default remains
+the pinned 0.5.21 release. The new worker must pass
 commissioning against its installed SGLang version and receive fresh image,
 runtime and service identities; prior runtime results do not qualify it.
 

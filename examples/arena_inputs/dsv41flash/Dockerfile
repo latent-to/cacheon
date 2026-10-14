@@ -10,4 +10,8 @@ RUN rmdir /usr/local/lib/python3.12/dist-packages \
 COPY src /opt/cacheon-source
 RUN /opt/sglang/bin/python -m pip install --no-deps --no-build-isolation --no-index /opt/cacheon-source \
  && printf 'import cacheon.bootstrap\n' > /usr/local/lib/python3.12/dist-packages/cacheon.pth
-RUN /usr/bin/python3.12 -I -c 'import cacheon, cacheon.bootstrap, sglang, torch; print(cacheon.__file__, sglang.__version__, torch.__version__)'
+# Private archive extraction can leave copied fork directories root-only.
+RUN chmod -R a+rX /sgl-workspace/sglang/python/sglang
+USER 65534:65534
+RUN HOME=/tmp /usr/bin/python3.12 -I -c 'import cacheon, cacheon.bootstrap, sglang, torch; from sglang.srt.environ import envs; print(cacheon.__file__, sglang.__version__, torch.__version__)'
+USER 0:0
