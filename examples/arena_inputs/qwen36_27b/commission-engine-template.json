@@ -1,0 +1,23 @@
+{
+  "dtype": "bfloat16",
+  "deterministic": false,
+  "attention_backend": null,
+  "mem_fraction_static": 0.85,
+  "log_level": "info",
+  "tp_size": 1,
+  "moe_runner_backend": null,
+  "disable_custom_all_reduce": false,
+  "engine_kwargs": {
+    "quantization": "fp8",
+    "context_length": 262144,
+    "chunked_prefill_size": 4096,
+    "cuda_graph_bs_decode": [
+      1,
+      2,
+      4,
+      8
+    ],
+    "disable_radix_cache": false
+  },
+  "engine_env": {}
+}
