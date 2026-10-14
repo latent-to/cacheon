@@ -225,6 +225,57 @@ def test_schedule_cannot_reprice_existing_submissions(tmp_path, monkeypatch, cha
             _project(primary, ArenaAllocation.from_dict(raw), journal, 22)
 
 
+@pytest.mark.parametrize("change", ["append", "retroactive", "past_boundary", "path", "digest", "missing"])
+def test_add_source_preserves_accepted_terms_and_rolls_back_failures(tmp_path, monkeypatch, change):
+    _, journal, configs = _fixture(tmp_path, monkeypatch)
+    raw = {"activation_block": 20, "burn_hotkey": "validator",
+           "sources": {"a": "/configs/a.json"},
+           "history": [{"from_block": block, "weights_ppm": {"a": 1_000_000}}
+                       for block in (0, 20)]}
+    _register(tmp_path, ArenaAllocation.from_dict(raw), journal)
+    _advance(tmp_path, 22)
+    with intake._store(tmp_path / "a") as primary:
+        _project(primary, ArenaAllocation.from_dict(raw), journal, 22)
+    raw["sources"]["b"] = "/configs/b.json"
+    for row in raw["history"]:
+        row["weights_ppm"]["b"] = 0
+    raw["history"].append({"from_block": 30, "weights_ppm": {"a": 900_000, "b": 100_000}})
+    if change == "retroactive":
+        raw["history"][1]["weights_ppm"] = {"a": 900_000, "b": 100_000}
+    elif change == "past_boundary":
+        raw["history"][-1]["from_block"] = 22
+    elif change == "path":
+        configs["/configs/moved.json"] = configs["/configs/a.json"]
+        raw["sources"]["a"] = "/configs/moved.json"
+    elif change == "digest":
+        configs["/configs/a.json"].digest = intake._h("changed-source")
+    elif change == "missing":
+        configs["/configs/b.json"].intake_db = tmp_path / "missing.sqlite3"
+    schedule = ArenaAllocation.from_dict(raw)
+    with intake._store(tmp_path / "a") as primary:
+        before = primary._db.execute("SELECT value FROM metadata WHERE key='static_arena_allocation'").fetchone()[0]
+        if change != "append":
+            with pytest.raises(IntakeError):
+                _project(primary, schedule, journal, 22)
+            assert primary._db.execute("SELECT value FROM metadata WHERE key='static_arena_allocation'").fetchone()[0] == before
+            return
+        projected = _project(primary, schedule, journal, 22)
+        assert dict(projected.weights_ppm) == {"minera": 1_000_000}
+        assert schedule.terms_at(29) == {"a": 1_000_000, "b": 0}
+        assert schedule.terms_at(30) == {"a": 900_000, "b": 100_000}
+    with intake._store(tmp_path / "b") as secondary:
+        intake._qualified_settlement_candidate(secondary, marker="c", arena_marker="c",
+                                               index=2, submission_block=30, retained_block=30)
+    _advance(tmp_path, 30)
+    with intake._store(tmp_path / "a") as primary:
+        projected = _project(primary, schedule, journal, 30)
+        report = json.loads(reopen_evidence(primary.path.parent / "weight-allocation-evidence",
+                                           projected.allocation_evidence))
+        assert sorted(value[1] for value in report["submission_terms"].values()) == [0, 100_000, 1_000_000]
+    with intake._store(tmp_path / "a") as primary:
+        assert _project(primary, schedule, journal, 30) == projected
+
+
 @pytest.mark.parametrize("shared_hotkey", [False, True])
 def test_confirmation_starts_only_rewarded_claim_clocks(tmp_path, monkeypatch, shared_hotkey):
     schedule, journal_path, _ = _fixture(tmp_path, monkeypatch, shared_hotkey=shared_hotkey)
