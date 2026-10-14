@@ -72,6 +72,33 @@ def test_result_deadline_distinguishes_qualification_wait_from_screen_failure(tm
         assert type(caught.value) is transport.RemoteEvaluationDispatcherError
 
 
+def test_interrupted_result_download_is_fetched_again(tmp_path, monkeypatch):
+    import hashlib
+
+    data = b"complete result archive"
+    ready = {"state": "ready", "archive_sha256": hashlib.sha256(data).hexdigest(), "archive_size": len(data)}
+    monkeypatch.setattr(transport, "remote_json", lambda *_args: ready)
+    monkeypatch.setattr(transport, "verify_result_ready", lambda row, *_args: row)
+    copies = []
+
+    def copy(_registration, local, _remote, *, upload):
+        copies.append(local)
+        local.write_bytes(data if len(copies) > 1 else data[:5])
+        if len(copies) == 1:
+            raise transport.RemoteWorkerError("connection dropped mid-stream")
+
+    def extracted(*_args):
+        raise LookupError("verified archive reached extraction")
+
+    monkeypatch.setattr(transport, "copy_remote_file", copy)
+    monkeypatch.setattr(transport, "safe_extract", extracted)
+    for expected in ("connection dropped", "differ from pod receipt", "reached extraction"):
+        with pytest.raises((transport.RemoteWorkerError, LookupError), match=expected):
+            transport.pull_result({}, transport.RemotePodSite("/pod", "/pod/service.py"), tmp_path,
+                                  {"request_id": "r" * 64}, tmp_path / "results", identity=None, credential=None)
+    assert len(copies) == 2 and copies[1].read_bytes() == data
+
+
 @pytest.mark.parametrize("copy_operation", ["transfer_request", "pull_result"])
 @pytest.mark.parametrize("interrupted", [False, True])
 def test_cpu_relay_heartbeat_survives_long_copy_and_stops_on_exit(

@@ -284,6 +284,9 @@ def pull_result(
         copy_remote_file(registration, archive,
                          f"{site.pod_root}/outgoing/{request_id}.{archive_sha}.tar", upload=False)
     if archive.stat().st_size != archive_size or file_sha256(archive) != archive_sha:
+        # A dropped transfer leaves partial bytes here; kept, they would skip
+        # every later download and wedge this result and the queue behind it.
+        archive.unlink()
         fail("result archive bytes differ from pod receipt")
     temporary = results_root / f".{request_id}.extracting"
     if temporary.exists():
