@@ -201,6 +201,30 @@ These controls act on the complete commissioned allocation: a TP1 pair has two
 GPUs, while a TP4 pair has eight. Capacity is a ceiling, so stopping a worker does
 not require changing the arena manifest or affect other workers.
 
+### Reserving GPUs for inference
+
+For the Qwen TP1 arena, keep an explicit mapping from each physical GPU to its
+pair's supervisor, relay and pod service, derived from READY and registration.
+An eight-GPU host can commission only devices 0 and 1 for evaluation and leave
+2 through 7 for serving. Spare devices must remain outside every worker's lane
+bindings; the evaluation runtime does not expand into unused devices.
+
+To reserve a GPU already assigned to evaluation, request a stop on the owning
+pair's supervisor using the drain procedure above. It stops accepting new
+evaluations and finishes the active one before releasing the allocation. Wait
+for result import and GPU teardown before starting inference, and keep that
+supervisor stopped for the whole serving reservation. Other disjoint workers
+can continue evaluating. Stopping only the relay or pod service does not pause
+new claims and can strand an active evaluation.
+
+For example, reserving GPU 0 pauses the worker bound to GPUs 0 and 1; GPU 1
+cannot continue that paired evaluation alone. Use either released GPU for
+serving, or recommission a different disjoint pair to recover evaluation
+capacity. Do not edit the physical bindings of an active or retained job.
+To resume the original pair, stop inference on its devices, confirm both are
+idle, then start its pod service, relay and supervisor in that order. A stopped
+supervisor is the reservation control; it is not a host-wide GPU access lock.
+
 Completed jobs release their pair immediately. An authenticated terminal
 infrastructure HOLD also releases its pair while retaining the unresolved
 submission; it is not a candidate FAIL. Later jobs continue, but their final
