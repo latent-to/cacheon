@@ -252,11 +252,11 @@ When a new commissioned worker replaces an old epoch, the recoverable dispatcher
 first imports any complete result already on the CPU using its original authority.
 Otherwise it retires the old lease, retains its carrier, and seals a new request
 with the CPU-held checkpoint digest. A late old-worker result cannot commit under
-the replacement lease. The replacement verifies the original work and device
-contract before execution, keeps completed stages under their original authority,
-and runs missing stages with its own hardware receipts. An interrupted speed stage
-restarts in full when the allocation changes. An interrupted audit or pristine T
-restarts that stage; completed predecessor stages remain reusable.
+the replacement lease. Completed stages retain their original work and hardware
+receipts; replacement driver or power settings do not invalidate that evidence.
+Missing stages use the replacement's commissioned hardware. A first-orientation-only
+snapshot restarts speed when its boot, plan or device contract changes. Interrupted
+audit or pristine T repeats that stage; completed predecessors remain reusable.
 
 Clock-domain changes do not rewrite old timestamps. The result carries an optional
 worker-recovery artifact and per-stage clock domains; regrading checks them against

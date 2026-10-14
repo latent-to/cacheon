@@ -278,8 +278,13 @@ def restore_stages(value, continuation, snapshot):
     restored = {}
     for stage, row in stages.items():
         origin = row["origin"]
-        if origin["devices"] != current["devices"]:
-            raise QualificationContinuationError("replacement worker differs from the commissioned device contract")
+        if stage == "speed_first" and "speed" not in stages and (
+            origin["boot"] != current["boot"] or origin["devices"] != current["devices"]
+            or row["records"]["speed_first"]["payload"]["plan_digest"] != value.resident_speed_plan.digest
+        ):
+            # The next snapshot retains no unfinished measurement under a
+            # different physical allocation. Its original remains on CPU.
+            continue
         original = restore_origin(value, origin)
         parent = QualificationContinuationStore(continuation.directory / "parents").scope(
             request_digest=origin["request"], authority_digest=origin["authority"],
@@ -293,7 +298,7 @@ def restore_stages(value, continuation, snapshot):
             parent._record(name, record["payload"])
         restored[stage] = SimpleNamespace(value=original, continuation=parent, origin=origin,
             execution=restore_origin(value, origin.get("execution", origin)))
-    continuation.restored_stages = stages
+    continuation.restored_stages = {name: stages[name] for name in restored}
     return restored
 
 
@@ -333,15 +338,7 @@ def configure_continuation(value, continuation, baseline_executor, candidate_exe
                 value.evidence_root, canonical_json_bytes(public), domain=RECOVERY_DOMAIN,
                 media_type="application/json", schema=RECOVERY_SCHEMA)
         elif "speed_first" in stages:
-            first = stages["speed_first"]
-            if (first.origin["boot"] == continuation.checkpoint_origin["boot"]
-                    and first.value.resident_speed_plan.digest == value.resident_speed_plan.digest):
-                record = first.continuation._load("speed_first")
-                continuation._record("speed_first", record)
-            else:
-                # The next snapshot retains no unfinished measurement under a
-                # different physical allocation. Its original remains on CPU.
-                continuation.restored_stages = {}
+            continuation._record("speed_first", stages["speed_first"].continuation._load("speed_first"))
     publish_snapshot(continuation)
 
 

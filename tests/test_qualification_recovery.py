@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 import hashlib
+import json
 
 import pytest
 
@@ -228,21 +229,16 @@ def test_correction_rejects_foreign_or_weaker_evidence(tmp_path, tamper):
         _checked(value, payload)
 
 
-@pytest.mark.parametrize("replace_audit", [True, False])
-def test_recovery_preserves_parent_and_is_idempotent(tmp_path, monkeypatch, replace_audit):
-    from types import SimpleNamespace
-    from cacheon.eval import qualification_recovery as recovery
+def _retained_speed(value, tmp_path):
+    """Build typed completed replay evidence shared by the recovery regressions."""
     from cacheon.eval.crossover_runtime import ResidentCrossoverEvidence
     from cacheon.eval.oci_process import OCIQuiescenceReceipt
-    from cacheon.eval.qualification_continuation import QualificationContinuationStore, AuditContinuation
     from cacheon.eval.scoring import SpeedupVerdict, marginal_workload_digest
     from cacheon.eval.speed_verdict import SpeedStageDecision
     from tests.test_dashboard_replay import _witness
     from tests.test_qualification_continuation import _typed_execution
 
-    value, authority, execution, audit, old, _payload = _correction(tmp_path)
-    # The retained policy-17 speed record of this sealed replay plan. `_speed` is
-    # stubbed below, so the record need only be exact durable evidence.
+    # These typed fixtures exercise persistence; replay grading has separate tests.
     plan = value.resident_speed_plan
     runs = {(name, index): replace(
         _typed_execution(arm.launch, arm.binding, value.model_mount, arm.session_plan,
@@ -253,7 +249,7 @@ def test_recovery_preserves_parent_and_is_idempotent(tmp_path, monkeypatch, repl
         "cacheon.oci-quiescence.v1", "lane", "a" * 32, arm.executor_namespace_digest,
         sequence, 5.0 + sequence, (), (), ())
     verdict = SpeedupVerdict(1.1, 0.01, 1.0, True, True, 2)
-    speed = ResidentCrossoverEvidence(
+    return ResidentCrossoverEvidence(
         plan.digest, plan.selected_delta_digest, plan.policy,
         marginal_workload_digest(plan.baseline.session_plan), plan.baseline_lane_digest,
         plan.candidate_lane_digest, runs["baseline", 1], runs["candidate", 1],
@@ -262,6 +258,16 @@ def test_recovery_preserves_parent_and_is_idempotent(tmp_path, monkeypatch, repl
         goodput=_witness(statistical=True).goodput,
         prior_executions=(runs["baseline", 0], runs["candidate", 0]),
     )
+
+
+@pytest.mark.parametrize("replace_audit", [True, False])
+def test_recovery_preserves_parent_and_is_idempotent(tmp_path, monkeypatch, replace_audit):
+    from types import SimpleNamespace
+    from cacheon.eval import qualification_recovery as recovery
+    from cacheon.eval.qualification_continuation import QualificationContinuationStore, AuditContinuation
+
+    value, authority, execution, audit, old, _payload = _correction(tmp_path)
+    speed = _retained_speed(value, tmp_path)
     execution = replace(execution, device_receipts=tuple(
         replace(row, started_monotonic_s=row.started_monotonic_s + 100,
                 completed_monotonic_s=row.completed_monotonic_s + 100)
@@ -295,6 +301,67 @@ def test_recovery_preserves_parent_and_is_idempotent(tmp_path, monkeypatch, repl
     assert child.load_final() is None
     assert child.load_quality() is None
     assert child.recovery_reference == reference
+
+
+@pytest.mark.parametrize("complete", [False, True])
+@pytest.mark.parametrize("change,new_boot", [
+    ({}, False), ({}, True), ({"driver_version": "580.173.02"}, False),
+    ({"driver_version": "580.173.02"}, True), ({"power_limit_mw": 1_100_000}, True),
+])
+def test_worker_replacement_restores_completed_work_or_restarts_partial_speed(
+    tmp_path, monkeypatch, complete, change, new_boot,
+):
+    from types import SimpleNamespace
+    import tests.test_b300_registered_qualification as fixtures
+    from cacheon.eval import qualification_worker_checkpoint as checkpoint
+    from cacheon.eval.qualification_continuation import QualificationContinuationStore
+    from tests.test_device_state import _policy
+    from tests.test_qualification_runner import _quiescence
+
+    harness = fixtures._harness(tmp_path / "plan")
+    value = harness.factory.plan_builder(harness.cohort, b"worker-replacement-regression-private-seed")
+    speed = _retained_speed(value, tmp_path / "speed")
+    executor = SimpleNamespace(device_policy=_policy())
+    def scope(root, request, plan=value):
+        return QualificationContinuationStore(root).scope(
+            request_digest=_d(request), authority_digest=runner.qualification_authority_digest(plan),
+            source_digest=plan.prepared.source.digest)
+
+    original = scope(tmp_path / "original", "original-request")
+    monkeypatch.setattr(checkpoint, "_clock_domain", lambda: "old-boot")
+    checkpoint.configure_continuation(value, original, executor, executor)
+    if complete:
+        original.record_resident_speed(speed)
+    else:
+        original.record_speed_orientation(value.resident_speed_plan.digest, "old-boot", 0.0,
+            speed.prior_executions, (_quiescence(1, 5.0), _quiescence(2, 6.0)))
+    pointer = json.loads((original.checkpoint_root / (original.request_digest + ".json")).read_bytes())
+    retained = original.checkpoint_root / (pointer["sha256"] + ".json.gz")
+    raw = retained.read_bytes()
+    replacement_value = (harness.factory.plan_builder(harness.cohort,
+        b"replacement-request-fresh-selection-seed") if not complete and (new_boot or change) else value)
+    replacement = scope(tmp_path / "replacement", "replacement-request", replacement_value)
+    imported = replacement.directory.parent / "imports"
+    imported.mkdir()
+    (imported / retained.name).write_bytes(raw)
+    (imported / (replacement.request_digest + ".json")).write_text(json.dumps({"sha256": pointer["sha256"]}))
+    executor.device_policy = replace(executor.device_policy, expected_gpus=tuple(
+        replace(gpu, **change) for gpu in executor.device_policy.expected_gpus))
+    clock = "new-boot" if new_boot else "old-boot"
+    monkeypatch.setattr(checkpoint, "_clock_domain", lambda: clock)
+    checkpoint.configure_continuation(replacement_value, replacement, executor, executor)
+    assert retained.read_bytes() == raw
+    if complete:
+        restored = replacement.worker_recovery["speed"]
+        assert restored.continuation.load_resident_speed() == speed
+        assert restored.origin["boot"] == "old-boot"
+        assert replacement.worker_recovery_reference is not None
+    elif new_boot or change:
+        assert replacement.load_speed_orientation(value.resident_speed_plan.digest, clock) is None
+        assert replacement.restored_stages == {}
+    else:
+        assert replacement.load_speed_orientation(value.resident_speed_plan.digest, clock) == (
+            original.load_speed_orientation(value.resident_speed_plan.digest, clock))
 
 
 @pytest.mark.parametrize("failure", ["budget", "clock_reset"])

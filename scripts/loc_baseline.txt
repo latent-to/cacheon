@@ -2,14 +2,14 @@
 # Raising a ceiling is a reviewed decision made in the same diff
 # that needs it; lowering one locks in a deletion. check_loc_ratchet.py
 # Spot recovery: +109 orientation reuse; +809 worker replacement runtime lines.
-# Docs +61; fixture updates +3. No new permanent test module.
+# Docs +61; fixture updates +3; replacement regression +67. No new test module.
 (root) 1158
 .github 345
 bundles 2398
-cacheon 91113
+cacheon 91110
 cacheon_kernels 936
 dashboard 4270
 docs 12555
 examples 387
 scripts 2117
-tests 66047
+tests 66114
