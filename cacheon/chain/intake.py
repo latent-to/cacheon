@@ -819,6 +819,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         finalized_block: int,
         finalized_block_hash: str,
         eval_cost_amount_tao_rao: int = 0,
+        eval_cost_paid_amounts: dict[str, int] | None = None,
     ) -> tuple[IntakeReservation, ...]:
         rows = tuple(arrivals)
         if any(type(row) is not FinalizedArrival for row in rows):
@@ -836,6 +837,12 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
             or eval_cost_amount_tao_rao < 0
         ):
             raise IntakeError("eval cost amount cannot be negative")
+        paid_amounts = {} if eval_cost_paid_amounts is None else eval_cost_paid_amounts
+        if (type(paid_amounts) is not dict
+            or set(paid_amounts) - {row.reservation_id for row in rows}
+            or any(type(value) is not int or value < eval_cost_amount_tao_rao
+                   for value in paid_amounts.values())):
+            raise IntakeError("verified payment amounts differ from finalized arrivals")
         if any(row.block > finalized_block for row in rows):
             raise IntakeError("unfinalized arrival reached durable intake")
 
@@ -960,7 +967,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                             arrival.reservation_id,
                             arrival.content_hash,
                             arrival.hotkey,
-                            eval_cost_amount_tao_rao,
+                            paid_amounts.get(arrival.reservation_id, eval_cost_amount_tao_rao),
                         ),
                     )
                 elif (

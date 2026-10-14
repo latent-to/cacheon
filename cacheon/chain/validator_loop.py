@@ -268,13 +268,20 @@ def run_pass(
             after_block=None if cursor is None else cursor[0],
         )
         result = PassResult(snapshot.finalized_block, snapshot.finalized_block_hash)
+        payments = {}
+
+        def payment_lookup(block, index):
+            key = (block, index)
+            if key not in payments:
+                payments[key] = read_eval_cost_payment(subtensor, block, index)
+            return payments[key]
+
+        admission_fee = eval_cost_policy.admission_policy()
         arrivals = _finalized_arrivals(
             snapshot,
             netuid=netuid,
-            eval_cost_policy=eval_cost_policy,
-            payment_lookup=lambda block, index: read_eval_cost_payment(
-                subtensor, block, index
-            ),
+            eval_cost_policy=admission_fee,
+            payment_lookup=payment_lookup,
             owner_lookup=lambda block: read_subnet_owner_coldkey(
                 subtensor, netuid, block=block
             ),
@@ -284,7 +291,12 @@ def run_pass(
             arrivals,
             finalized_block=snapshot.finalized_block,
             finalized_block_hash=snapshot.finalized_block_hash.lower(),
-            eval_cost_amount_tao_rao=eval_cost_policy.amount_rao,
+            eval_cost_amount_tao_rao=admission_fee.amount_rao,
+            eval_cost_paid_amounts={
+                row.reservation_id: proof.amount_rao for row in arrivals
+                if row.valid and (proof := payments.get(
+                    (row.payment_block, row.payment_extrinsic_index))) is not None
+            },
         )
         # Idempotent per pass; it keeps all downstream qualification and
         # settlement bounded by the finalized-block SLA.
@@ -318,6 +330,25 @@ def run_pass(
                 rejected = store.mark_failed(active.reservation_id, f"manifest:{exc}")
                 result.rejected[rejected.reservation_id] = rejected.reason
                 continue
+            # Routing is known only after fetch verifies the proposal hash. A
+            # lower-priced arena cannot subsidize another arena's GPU work.
+            # An admitted payment-free row already consumed its one-use credit.
+            if eval_cost_policy.arena_amounts_rao and active.arrival.payment_block > 0:
+                try:
+                    invalid = _eval_cost_invalid_reason(
+                        active.arrival, netuid=netuid,
+                        policy=eval_cost_policy.for_arena(selected_arena),
+                        payment_lookup=payment_lookup,
+                        owner_lookup=lambda block: read_subnet_owner_coldkey(
+                            subtensor, netuid, block=block),
+                    )
+                except EvalCostFetchError as exc:
+                    store.mark_transport_retry(active.reservation_id, str(exc))
+                    continue
+                if invalid:
+                    rejected = store.mark_failed(active.reservation_id, invalid)
+                    result.rejected[rejected.reservation_id] = rejected.reason
+                    continue
             try:
                 publication = publish_worker_bundle(
                     private,

@@ -1668,6 +1668,12 @@ def cmd_chain_validate(args: argparse.Namespace) -> int:
     try:
         eval_cost_policy = EvalCostPolicy(
             amount_rao=int(getattr(args, "eval_cost_tao_rao", 0)),
+            arena_amounts_rao=tuple(
+                (arena, int(amount)) for arena, amount in (
+                    item.rsplit("=", 1)
+                    for item in getattr(args, "eval_cost_arena_tao_rao", ())
+                )
+            ),
             payment_window_blocks=int(
                 getattr(args, "eval_cost_payment_window_blocks", 7_200)
             ),
@@ -1675,7 +1681,7 @@ def cmd_chain_validate(args: argparse.Namespace) -> int:
                 getattr(args, "eval_cost_quote_ttl_blocks", 300)
             ),
         )
-    except EvalCostError as exc:
+    except (EvalCostError, ValueError) as exc:
         print(f"REFUSED: {exc}")
         return 2
     res = run_validator(
@@ -2707,6 +2713,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="required TAO transfer amount per admission; 0 disables the gate; 500000000 (0.5 TAO) matches the published v1 quote; destination is the current subnet owner coldkey",
+    )
+    sp.add_argument(
+        "--eval-cost-arena-tao-rao", action="append", default=[], metavar="ARENA=RAO",
+        help="positive fee override for a hash-verified bundle arena (repeatable); requires a positive default fee",
     )
     sp.add_argument(
         "--eval-cost-payment-window-blocks",

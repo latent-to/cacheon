@@ -19,6 +19,7 @@ matches the owner at the inclusion block.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, replace as _replace
 from typing import Mapping, Sequence
 
@@ -130,6 +131,7 @@ class EvalCostPolicy:
     destination: str = ""
     payment_window_blocks: int = DEFAULT_EVAL_COST_PAYMENT_WINDOW_BLOCKS
     quote_ttl_blocks: int = DEFAULT_EVAL_COST_QUOTE_TTL_BLOCKS
+    arena_amounts_rao: tuple[tuple[str, int], ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.amount_rao) is not int or self.amount_rao < 0:
@@ -145,6 +147,25 @@ class EvalCostPolicy:
             raise EvalCostError("eval-cost payment window must be a positive integer")
         if type(self.quote_ttl_blocks) is not int or self.quote_ttl_blocks <= 0:
             raise EvalCostError("eval-cost quote TTL must be a positive integer")
+        if (type(self.arena_amounts_rao) is not tuple
+            or any(type(row) is not tuple or len(row) != 2
+                   or type(row[0]) is not str
+                   or re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,255}", row[0]) is None
+                   or type(row[1]) is not int or row[1] <= 0
+                   for row in self.arena_amounts_rao)
+            or len({row[0] for row in self.arena_amounts_rao}) != len(self.arena_amounts_rao)
+            or (self.arena_amounts_rao and self.amount_rao <= 0)):
+            raise EvalCostError("arena fees require unique arena IDs and positive RAO amounts")
+
+    def for_arena(self, arena: str) -> EvalCostPolicy:
+        """Resolve the fee from the hash-verified bundle's arena selector."""
+        return _replace(self, amount_rao=dict(self.arena_amounts_rao).get(arena, self.amount_rao),
+                        arena_amounts_rao=())
+
+    def admission_policy(self) -> EvalCostPolicy:
+        """Require payment before fetching; publication verifies the selected arena fee."""
+        return _replace(self, amount_rao=min((self.amount_rao, *(fee for _, fee in self.arena_amounts_rao))),
+                        arena_amounts_rao=())
 
 
 @dataclass(frozen=True)

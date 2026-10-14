@@ -430,6 +430,11 @@ consumes them. The audit file is a redacted, fsynced JSONL chronology;
 it does not contain URLs, hotkeys, candidate bytes, or exception messages, and it does
 not replace SQLite as transition authority.
 
+Repeat `--eval-cost-arena-tao-rao ARENA=RAO` to override the positive default fee
+for specific arenas. Intake verifies the lowest configured fee before fetch,
+then the hash-verified manifest's arena fee before publication. See
+[arena fees](../validator-guide/arena-service.md#registry-and-cli-boundary).
+
 Qualification and settlement do not run in this command; invoking it without
 `--intake-only` refuses to start. The standing supervisor
 (`python -m cacheon.chain.standing_cpu_supervisor`) owns both against a commissioned
