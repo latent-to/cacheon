@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import threading
+import time
 from urllib.parse import urlencode
 
 from fastapi import HTTPException, Request
@@ -137,31 +139,45 @@ def load_sources(path, network, netuid, enrich):
     return raw["default"], result
 
 
-def process_matches(role, default=(), *, proc_root=Path("/proc")):
-    """Match argv tokens and source paths, never another plane's module substring."""
-    source = selected.get()
-    needles = source.processes[role] if source else default
-    if not needles:
-        return False
+_PROCESS_LOCK = threading.Lock()
+_PROCESS_SNAPSHOT = (None, 0.0, ())
+
+
+def _scan_processes(proc_root):
+    processes = []
     for entry in proc_root.iterdir():
         if not entry.name.isdigit():
             continue
         try:
             argv = entry.joinpath("cmdline").read_bytes().decode().strip("\0").split("\0")
+            if argv == [""]:
+                continue
             tokens = [part for arg in argv for part in (arg.split("=", 1) if arg.startswith("--") else [arg])]
             cwd = entry.joinpath("cwd").resolve()
-            def matches(needle):
-                if not needle.startswith("/"):
-                    return needle in tokens
-                root = Path(needle)
-                return any(root == p or root in p.parents for p in (
-                    (Path(token) if token.startswith("/") else cwd / token)
-                    for token in tokens if "/" in token))
-            if all(matches(needle) for needle in needles):
-                return True
+            paths = tuple(Path(token) if token.startswith("/") else cwd / token
+                          for token in tokens if "/" in token)
+            processes.append((frozenset(tokens), paths))
         except (OSError, UnicodeError):
             continue
-    return False
+    return tuple(processes)
+
+
+def process_matches(role, default=(), *, proc_root=Path("/proc")):
+    """Match source-qualified processes from a shared snapshot at most two seconds old."""
+    global _PROCESS_SNAPSHOT
+    source = selected.get()
+    needles = source.processes[role] if source else default
+    if not needles:
+        return False
+    # Concurrent health/arena requests otherwise each walk /proc three times per arena.
+    with _PROCESS_LOCK:
+        root, expires, processes = _PROCESS_SNAPSHOT
+        if root != proc_root or time.monotonic() >= expires:
+            processes = _scan_processes(proc_root)
+            _PROCESS_SNAPSHOT = (proc_root, time.monotonic() + 2, processes)
+    return any(all(any(Path(needle) == p or Path(needle) in p.parents for p in paths)
+                   if needle.startswith("/") else needle in tokens
+                   for needle in needles) for tokens, paths in processes)
 
 
 def scope_reservations(connection):

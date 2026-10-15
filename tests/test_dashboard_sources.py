@@ -269,6 +269,24 @@ def test_arena_targets_use_producer_settings_without_an_offer(target_settings):
     assert all(r["target_weight_ppm"] is None for r in client.get("/api/arenas").json()["items"])
 
 
+def test_progress_endpoint_uses_selected_arena(planes, monkeypatch):
+    from dashboard import progress
+    client, configured = planes
+    observed = []
+    def read(spool, heartbeat, now):
+        observed.append(spool)
+        return {"state": "idle"}
+    monkeypatch.setattr(progress, "active_progress", read)
+    progress.install_progress(client.app, vars(dashboard))
+    for arena in ("glm", "qwen"):
+        configured[arena].values["SPOOL"] = configured[arena].values["DB_PATH"].parent / arena / "spool"
+        result = client.get(f"/api/progress?arena={arena}")
+        assert result.status_code == 200
+        assert result.json()["arena"]["key"] == arena
+        assert observed[-1] == configured[arena].values["SPOOL"]
+    assert client.get("/api/progress?arena=unknown").status_code == 404
+
+
 @pytest.mark.parametrize("weights,expected", [
     ({"glm": 600_000, "qwen": 400_000}, {"glm": 600_000, "qwen": 400_000}),
     ({"glm": 800_000, "qwen": 800_000}, {"glm": 500_000, "qwen": 500_000}),

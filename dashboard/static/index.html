@@ -197,6 +197,7 @@ footer { max-width: 1280px; margin: 0 auto; padding: 10px 20px 30px; color: var(
   (<span id="tz"></span>); dotted times are block-estimates pending exact chain lookup.
 </footer>
 <script src="/static/performance.js"></script>
+<script src="/static/progress.js"></script>
 <script>
 "use strict";
 const TABS = [
@@ -374,6 +375,7 @@ async function viewOverview() {
       ${card(feeTotals.tao.toFixed(1) + " τ", feeTotals.count + " fee payments ever, every arena", "info")}
       ${feeCards.join("")}
     </div>` : ""}
+    ${runProgress()}
     ${lease ? `<div class="callout" style="border-left-color:var(--ok)">
       <b style="color:var(--fg)">Evaluation lease active:</b>
       ${pill(lease.stage)} <code>${esc(short(lease.reservation_id, 12))}</code>
@@ -444,6 +446,7 @@ async function viewQueue() {
     <p class="muted small">A lease can remain active while the worker is disconnected.</p>
     ${table(["Stage","Reservation","Target","Hotkey","Started","Lease left","State"], active,
       "No active evaluation lease.")}
+    ${runProgress()}
     <h2>Pending submissions (queue order)</h2>
     ${table(["#","Reservation","Status","Target","Hotkey","Submitted","Fee","Reason"], pending,
       "Queue is empty — no active-pipeline submissions.")}
@@ -914,6 +917,7 @@ async function refresh() {
     viewCache.set(cacheSlot, { key, content });
     view.innerHTML = content;
     status.textContent = "";
+    refreshRunProgress();
   } catch (err) {
     if (request !== refreshRequest) return;
     if (content === null) view.innerHTML = `<div class="empty">Failed to load: ${esc(err.message)}</div>`;
