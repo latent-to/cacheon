@@ -16,7 +16,7 @@ Build the development image from the commissioned runtime source:
 ```bash
 build_dir=$(mktemp -d)
 mkdir "$build_dir/src"
-git archive 89e13099f3e1fa7969a772a8e81e45d9817247dc | tar -x -C "$build_dir/src"
+git archive 8730fb42a2ff145e377ea98c3a6093a82e4c2824 | tar -x -C "$build_dir/src"
 docker build -t cacheon-qwen38-27b \
   -f examples/arena_inputs/qwen38_27b/Dockerfile "$build_dir"
 ```
