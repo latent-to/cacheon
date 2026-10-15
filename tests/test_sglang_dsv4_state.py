@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from types import SimpleNamespace
 
 import pytest
@@ -51,6 +52,33 @@ def _batch():
     return SimpleNamespace(out_cache_loc=torch.tensor([4, 5, 6, 7]), req_pool_indices=torch.tensor([1]))
 
 
+def _uniform_pool():
+    """TRT-LLM's V4-tagged pools contain 512 unscaled FP8 values per token."""
+    pool = _pool()
+    layout = Enum("KVLayout", {"V4": "v4"}).V4
+    for kv in (pool.swa_kv_pool, pool.layer_mapping[1][2]):
+        kv.kv_layout = layout
+        kv.kv_buffer = [torch.zeros(3, kv.page_size * 512, dtype=torch.float8_e4m3fn)
+                        for _ in kv.kv_buffer]
+    return pool
+
+
+def test_uniform_fp8_reads_every_token_including_rotary_values_without_scales():
+    pool = _uniform_pool()
+    window, compressed, _, _ = dsv4_state_rows(pool, _batch(), 1)
+    for row, page, target in ((window, 4, 2), (compressed, 2, 1)):
+        expected = torch.tensor([0.0, -0.5, 2.0, -4.0]).repeat(page * 128).reshape(1, page, 512)
+        expected[:, :, 448:] = torch.arange(page).reshape(1, page, 1) + 8
+        row[0][target].copy_(expected.reshape(-1).to(torch.float8_e4m3fn).view(torch.uint8))
+        raw = row[0].index_select(0, row[2])
+        assert row[2].tolist() == [target]
+        assert torch.equal(state_values(raw, row[3]), expected)
+        with pytest.raises(RuntimeError, match="uniform-FP8"):
+            state_values(raw[:, :-1], row[3])
+        with pytest.raises(RuntimeError, match="uniform-FP8"):
+            state_values(raw.view(torch.float8_e4m3fn), row[3])
+
+
 @pytest.mark.parametrize("ring_size", [2, 8])
 def test_pages_are_addressed_by_page_and_graded_as_the_numbers_they_hold(ring_size):
     pool = _pool(ring_size)
@@ -88,6 +116,7 @@ def test_whole_node_reads_only_the_layers_owned_by_its_pool(start):
     ("fp8 index", "FP4"),
     ("shared ring", "request-scoped"),
     ("layout", "unrecognized DeepSeek-V4 cache layout"),
+    ("fp8 layout", "unrecognized DeepSeek-V4 cache layout"),
     ("stage", "no DeepSeek-V4 cache"),
 ])
 def test_unrecognized_layouts_raise_rather_than_pass_unchecked(fault, cause):
@@ -100,42 +129,52 @@ def test_unrecognized_layouts_raise_rather_than_pass_unchecked(fault, cause):
         pool.compress_state_pools[1].request_scoped = False
     elif fault == "layout":
         pool.layer_mapping[1][2].kv_layout = "v5"
+    elif fault == "fp8 layout":
+        pool = _uniform_pool()
+        pool.swa_kv_pool.kv_layout = "v41"
     else:
         layer = 2
     with pytest.raises(RuntimeError, match=cause):
         dsv4_state_rows(pool, _batch(), layer)
 
 
-@pytest.mark.parametrize("corrupt", [False, True])
-def test_pages_are_restored_before_the_candidate_and_wrong_pages_fail(audited, corrupt):  # noqa: F811
+@pytest.mark.parametrize("uniform", [False, True])
+@pytest.mark.parametrize("corrupt", [None, "window", "compressed"])
+def test_pages_are_restored_before_the_candidate_and_wrong_pages_fail(audited, corrupt, uniform):  # noqa: F811
     runner, batch = _served_model()
-    runner.token_to_kv_pool = pool = _pool()
+    runner.token_to_kv_pool = pool = _uniform_pool() if uniform else _pool()
     batch.out_cache_loc, batch.req_pool_indices = torch.tensor([4, 5, 6, 7]), torch.tensor([1])
     index = pool.index_pools[2].index_k_with_scale_buffer[0]
+    window = pool.swa_kv_pool.kv_buffer[1].view(torch.uint8)
+    compressed = pool.layer_mapping[1][2].kv_buffer[0].view(torch.uint8)
 
     class SourceLayer(nn.Module):
         layer_id = 1
 
         def forward(self, x, batch):
             index[2:4, :64] += 1
+            window[2].fill_(0x40)
+            compressed[1].fill_(0x40)
             pool.compress_state_pools[1].kv_score_buffer.kv_score[2:4] += 1.0
             return x * 2
 
     seen = []
-    before = index.clone()
+    before = [v.clone() for v in (index, window, compressed)]
 
     def candidate(module, x, batch):
-        seen.append(index.clone())
+        seen.extend(v.clone() for v in (index, window, compressed))
         result = module.forward(x, batch)
-        if corrupt:
-            pool.swa_kv_pool.kv_buffer[1][2].zero_()
+        if corrupt == "window":
+            window[2].zero_()
+        elif corrupt == "compressed":
+            compressed[1].zero_()
         return result
 
     runner.model.source = SourceLayer()
     nodes.bind(runner, _registry("source", candidate))
     assert torch.equal(runner.model.source(torch.ones(2, 4), batch), torch.full((2, 4), 2.0))
-    assert torch.equal(seen[0], before)
-    assert audited["source"]["violations"] == int(corrupt)
+    assert all(torch.equal(a, b) for a, b in zip(seen, before, strict=True))
+    assert audited["source"]["violations"] == int(corrupt is not None)
 
 
 @pytest.mark.parametrize("corrupt", [False, True])
