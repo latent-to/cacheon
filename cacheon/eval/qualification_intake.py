@@ -638,6 +638,9 @@ def run_qualification_intake(
             authority_digest=qualification_authority_digest(value),
             source_digest=value.prepared.source.digest,
         )
+        from cacheon.eval.qualification_worker_checkpoint import configure_continuation
+
+        configure_continuation(value, continuation, resident_baseline_executor, executor)
     try:
         runner_kwargs = {
             "executor": executor,

@@ -59,9 +59,9 @@ _CHUNK = 64  # pages hashed per pass, which bounds the temporaries
 _CELLS = 1 << 24  # one-byte cells of the pair table, two per pair
 # The methods the scheduler hands requests through; the check runs inside them. A
 # finished request arrives through ``cache_finished_req`` on 0.5.20 and through
-# ``insert_req`` then ``on_release`` on 0.5.21.
+# ``insert_req`` then ``on_release`` on 0.5.21; the DSV4 nightly uses ``checkpoint``.
 _HANDOFFS = frozenset({"match_prefix", "cache_unfinished_req", "cache_finished_req", "insert_req",
-                       "on_release", "reset", "ready_to_load_host_cache"})
+                       "checkpoint", "prefix_device_indices", "on_release", "reset", "ready_to_load_host_cache"})
 # Verdict bits: the device raises them, a later handoff reads them.
 _FAKE, _MOVED, _ROW, _STATE = 1, 2, 4, 8
 _VERDICTS = {
@@ -301,15 +301,23 @@ class _Guard:
         """Refuse a match that is malformed or claims more tokens than its key allows."""
 
         self.owned(cache)
-        if not isinstance(result, kind) or not isinstance(result.device_indices, self.torch.Tensor):
+        if not isinstance(result, kind):
             self.refuse(f"match_prefix returned a {type(result).__name__}, not a MatchResult of slots")
+        if "device_prefix_len" in getattr(kind, "_fields", ()):
+            length = result.device_prefix_len
+            if type(length) is not int or length < 0:
+                self.refuse("match_prefix returned an invalid device prefix length")
+        else:
+            if not isinstance(result.device_indices, self.torch.Tensor):
+                self.refuse("match_prefix returned a MatchResult without tensor slots")
+            length = len(result.device_indices)
         key = params.key
         limit = len(key) - (0 if getattr(key, "is_bigram", False) else self.bigram)
-        claimed = len(result.device_indices) + result.host_hit_length
+        claimed = length + result.host_hit_length
         if claimed > limit:
             self.refuse(f"it claimed {claimed} cached tokens of a {limit}-token key")
         if self.hybrid is not None:
-            self.hybrid.matched(params, result)
+            self.hybrid.matched(params, result, length)
 
     def handoff(self, cache, req, ids, *, finished=False):
         """Check what a request read from the cache and record what its forward passes computed.
@@ -327,7 +335,7 @@ class _Guard:
         n = len(ids)
         held = self.held.get(req.rid)
         if held is None:
-            served = len(req.prefix_indices)
+            served = req.prefix_len if hasattr(req, "prefix_len") else len(req.prefix_indices)
             if served % self.page:
                 self.refuse(f"it served a prefix of {served} tokens, which ends inside a page")
             held = self.held[req.rid] = _Held(own=min(served, n))
@@ -362,7 +370,7 @@ class _Guard:
         self.publish()
         return row
 
-    def settle(self, req, row) -> None:
+    def settle(self, req, row, cache=None) -> None:
         """Hold the cache to the prefix it left on an unfinished request, which the next pass reads.
 
         It may point the part it now protects at slots of its own; the rest must be
@@ -373,13 +381,16 @@ class _Guard:
             return
         torch = self.torch
         n, held = len(row), self.held[req.rid]
-        prefix, protected = req.prefix_indices, req.kv.cache_protected_len
-        if not isinstance(prefix, torch.Tensor) or prefix.device != self.device or len(prefix) != n:
-            self.refuse(f"it left a prefix that is not {n} slots on the device on a request with {n} tokens")
+        protected = req.kv.cache_protected_len
         if not 0 <= protected <= n or protected % self.page:
             self.refuse(f"it protected {protected} of a request's {n} tokens, not whole pages of them")
         after = self.requests.req_to_token[req.kv.req_pool_idx, :n].to(torch.int64)
-        self._flag(_ROW, after != prefix)
+        prefix = req.prefix_indices if cache is None else cache.path_device_indices(req.last_node)
+        checked = n if cache is None else protected
+        if (not isinstance(prefix, torch.Tensor) or prefix.device != self.device
+                or len(prefix) != checked):
+            self.refuse(f"it left a prefix that is not {checked} slots on the device on a request with {n} tokens")
+        self._flag(_ROW, after[:checked] != prefix)
         self._flag(_MOVED, after[protected:] != row[protected:])
         held.own = max(held.own, protected)
         held.until, held.kept = n, after[held.own:].clone()
@@ -488,8 +499,23 @@ def _guarded(cls: type, base: type, guard: _Guard) -> type:
             return guard.invoke(super().insert_req, req, up_to=up_to, **kwargs)
 
         @pinned
-        def on_release(self, req, *, inserted):
-            guard.invoke(super().on_release, req, inserted=inserted)
+        def checkpoint(self, req, *, up_to, **kwargs):
+            finished = req.finished()
+            row = guard.handoff(self, req, req.full_untruncated_fill_ids[:up_to], finished=finished)
+            guard.invoke(super().checkpoint, req, up_to=up_to, **kwargs)
+            if not finished:
+                guard.settle(req, row, self)
+
+        @pinned
+        def prefix_device_indices(self, req):
+            indices = guard.invoke(super().prefix_device_indices, req)
+            if guard.hybrid is not None:
+                guard.hybrid.prefix(req, indices, self)
+            return indices
+
+        @pinned
+        def on_release(self, req, **kwargs):
+            guard.invoke(super().on_release, req, **kwargs)
             guard.finished(req)
 
         @pinned

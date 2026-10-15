@@ -344,3 +344,41 @@ def test_missing_recovery_for_active_qualification_is_typed_hold(tmp_path):
                 "UPDATE evaluation_leases SET state='expired' WHERE lease_id=?",
                 (lease.lease_id,),
             )
+
+
+@pytest.mark.parametrize("profile", ("alpha", "beta"))
+def test_replaced_workers_do_not_consume_the_infrastructure_failure_cap(tmp_path, profile):
+    from tests.test_recoverable_qualification_dispatcher import (
+        _Transport, _dispatcher, _fixtures, _store as dispatch_store,
+        RecoverableQualificationDispatcherError,
+    )
+    from cacheon.chain import remote_worker_spool as spool
+
+    fixtures = _fixtures()
+    authority = fixtures._authority(tmp_path, profile=profile, recoverable=True)
+    for generation in range(7):
+        epoch = f"{generation + 1:032x}"
+        registration = {**authority.registration, "worker_epoch": epoch}
+        del registration["registration_digest"]
+        registration["registration_digest"] = spool.spool_digest(spool.DOMAIN_REGISTRATION, registration)
+        spool.atomic_json(authority.registration_path, registration, mode=0o400)
+        transport = _Transport(authority, fixtures, fail_resume=True)
+        with pytest.raises(RecoverableQualificationDispatcherError, match="not ready"):
+            _dispatcher(authority, transport).dispatch_once()
+        with dispatch_store(authority) as store:
+            recovery = store.pending_qualification_recovery()
+            assert store.reopen_recovery_request_plan(recovery).worker_epoch == epoch
+            for invalid_epoch in ("", "bad", epoch):
+                with pytest.raises(IntakeError, match="forbidden"):
+                    store.release_worker_infrastructure_recovery(recovery,
+                        failure_code="worker_replaced", current_block=authority.fixtures.BLOCK,
+                        live_worker_epoch=invalid_epoch)
+                assert store.pending_qualification_recovery() == recovery
+            store.release_worker_infrastructure_recovery(recovery,
+                failure_code="worker_replaced" if generation < 4 else "adapter_epoch_failed",
+                current_block=authority.fixtures.BLOCK, live_worker_epoch=f"{generation + 2:032x}")
+            row = store.get(recovery.lease.members[0].reservation_id)
+            assert row.status == ("held" if generation == 6 else "published")
+            assert row.decision == "" and store.qualification_dispositions(row.reservation_id) == ()
+            if generation == 6:
+                assert row.reason == "systemic_release_cap:3"

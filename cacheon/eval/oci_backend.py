@@ -845,7 +845,7 @@ class EngineExecutionEvidence:
     runtime_argv_sha256: str
     recovered_lease_ids: tuple[str, ...]
     device_receipts: tuple[
-        DeviceStateReceipt, DeviceStateActiveReceipt, DeviceStateReceipt
+        DeviceStateReceipt, DeviceStateActiveReceipt, DeviceStateReceipt | None
     ]
     session: SessionExecutionEvidence
 
@@ -1214,7 +1214,7 @@ class OCIEngineExecutor:
         preflight: RuntimePreflightReceipt,
         model_root: Path,
         session_protocol: str,
-        run: Callable[[AttachedSessionTransport, float, str], object],
+        run: Callable[[AttachedSessionTransport, float, str, tuple], object],
     ) -> _RawRuntimeExecution:
         """Own the common prebuild/lease/mount/teardown shell for ordinary and T."""
 
@@ -1331,7 +1331,8 @@ class OCIEngineExecutor:
             transport = transport_type(
                 self.manager, lease, argv, clock=self.manager.clock
             )
-            value = run(transport, session_deadline, launch_id)
+            value = run(transport, session_deadline, launch_id,
+                        (prebuild, publication.publication_digest, argv_digest, pre_receipt))
         except BaseException as exc:
             primary = exc
         finally:
@@ -1392,6 +1393,7 @@ class OCIEngineExecutor:
         *,
         deadline: float,
         opened_driver: OpenedSessionDriver | None,
+        check_cancelled: Callable[[], None] | None = None,
     ) -> EngineExecutionEvidence:
         if not self._lock.acquire(blocking=False):
             raise OCIBackendError("one executor instance cannot run concurrent sessions")
@@ -1406,6 +1408,7 @@ class OCIEngineExecutor:
                 transport: AttachedSessionTransport,
                 session_deadline: float,
                 launch_id: str,
+                checkpoint_metadata,
             ) -> tuple[SessionExecutionEvidence, DeviceStateActiveReceipt]:
                 conditioner = _FinalWarmupConditioner(
                     self.device_guard,
@@ -1427,23 +1430,13 @@ class OCIEngineExecutor:
                     if opened_driver is None:
                         session = self.session_runner(plan, **kwargs)
                     else:
+                        if check_cancelled is not None:
+                            check_cancelled()
+                        transport.check_cancelled = check_cancelled
                         controller = OpenedOuterSession(plan, **kwargs)
-                        controller.start()
-                        try:
-                            session = opened_driver(controller)
-                            if not controller.closed:
-                                raise OCIBackendError(
-                                    "opened session driver returned without closing the engine"
-                                )
-                            if (
-                                type(session) is not SessionExecutionEvidence
-                                or session.session_id != controller.session_id
-                            ):
-                                raise OCIBackendError(
-                                    "opened session driver returned another session receipt"
-                                )
-                        finally:
-                            controller.abort()
+                        from cacheon.eval.replay_checkpoint import _drive_opened
+                        session = _drive_opened(controller, opened_driver, conditioner, launch, identity,
+                            preflight, mount, self.config.runtime.digest, recovered, checkpoint_metadata)
                     return session, conditioner.require_complete()
                 finally:
                     conditioner.cancel()
@@ -1475,11 +1468,7 @@ class OCIEngineExecutor:
             receipts = (raw.pre_receipt, active_receipt, raw.post_receipt)
             _validate_device_receipts(receipts, launch_id=raw.launch_id)
             return EngineExecutionEvidence(
-                (
-                    "cacheon.oci-engine-execution.v1"
-                    if opened_driver is None
-                    else "cacheon.oci-resident-engine-execution.v1"
-                ),
+                "cacheon.oci-engine-execution.v1" if opened_driver is None else "cacheon.oci-resident-engine-execution.v1",
                 launch.digest,
                 identity,
                 preflight.sha256,
@@ -1507,10 +1496,7 @@ class OCIEngineExecutor:
         """Execute one complete ordinary session (the historical API)."""
 
         return self._execute_ordinary(
-            launch,
-            binding,
-            mount,
-            plan,
+            launch, binding, mount, plan,
             deadline=deadline,
             opened_driver=None,
         )
@@ -1524,6 +1510,7 @@ class OCIEngineExecutor:
         *,
         deadline: float,
         driver: OpenedSessionDriver,
+        check_cancelled: Callable[[], None] | None = None,
     ) -> EngineExecutionEvidence:
         """Drive a resident engine incrementally while retaining normal teardown."""
 
@@ -1536,6 +1523,7 @@ class OCIEngineExecutor:
             plan,
             deadline=deadline,
             opened_driver=driver,
+            check_cancelled=check_cancelled,
         )
 
     def execute_reference(
@@ -1565,6 +1553,7 @@ class OCIEngineExecutor:
                 transport: AttachedSessionTransport,
                 session_deadline: float,
                 _launch_id: str,
+                _checkpoint_metadata,
             ) -> ReferenceSessionEvidence:
                 if type(transport) is not AttachedReferenceTransport:
                     raise OCIBackendError("reference runtime received the wrong transport")

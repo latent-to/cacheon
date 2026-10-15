@@ -58,8 +58,8 @@ from cacheon.chain.remote_worker_request_plan import (
     QualificationRequestPlan,
 )
 from cacheon.chain.publication import reopen_worker_bundle
+from cacheon.chain import remote_worker_checkpoints as checkpoints
 from cacheon.chain.qualification_wait import await_response, _PreResidentRefusalObserved
-from cacheon.chain.qualification_request import qualification_request_body
 from cacheon.stack_identity import require_sha256_hex
 from cacheon.stack_manifest import EvaluationStackManifest
 
@@ -610,12 +610,7 @@ class RecoverableQualificationDispatcher:
             self.coordinator.service.manifest.service_id,
             self.transport_identity,
             self.credential,
-            qualification_request_body(
-                self.coordinator, claim,
-                incumbent_stack_digest=self.qualification_incumbent_stack.digest,
-                incumbent_tree_digest=self.qualification_incumbent_tree_digest,
-                retained_body=retained_body,
-            ),
+            checkpoints.request_body(self, claim, retained_body),
         )
 
     def _reopen_plan(
@@ -780,9 +775,12 @@ class RecoverableQualificationDispatcher:
         | RecoverableQualificationRequeue
         | None
     ):
-        """Run or resume one FIFO item without ever creating replacement work."""
+        """Run one FIFO item, retaining its completed stages across worker replacement."""
 
         self._validate_live_authority()
+        completed = checkpoints.recover_replaced_worker(self)
+        if completed is not None:
+            return completed
         selected = self._claim_or_reopen()
         if selected is None:
             return None
@@ -866,6 +864,8 @@ class RecoverableQualificationDispatcher:
                 if recovery.phase is RecoveryPhase.REQUEST_READY:
                     recovery, response = await_response(self, recovery, plan)
                     product = self._product(plan, response)
+                    if (requeue := checkpoints.retire_refused_checkpoint(self, recovery, plan, product)) is not None:
+                        return requeue
                     recovery = self._record_result(recovery)
                 elif recovery.phase in {
                     RecoveryPhase.RESULT_READY,

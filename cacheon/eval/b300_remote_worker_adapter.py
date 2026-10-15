@@ -261,6 +261,7 @@ class AdapterRuntime:
         qualification_continuation_store = QualificationContinuationStore(
             paths.continuation_root
         )
+        qualification_continuation_store.checkpoint_root = paths.results_root.parent / "checkpoints"
         registration = verify_registration(load_json(paths.registration))
         ready = verify_ready_receipt(load_json(paths.ready_receipt))
         if ready["receipt_digest"] != registration["ready_receipt_digest"]:
@@ -408,6 +409,9 @@ def run_with_runtime(
         )
         wire = RemoteEvaluationRequest.from_dict(wire_value)
         verify_remote_request(wire, runtime.identity, runtime.credential)
+        from cacheon.chain.remote_worker_checkpoints import install_checkpoint
+
+        install_checkpoint(runtime, outer, request_dir, wire)
         qualification_commission = runtime.qualification_commission
         body = wire.body
         from cacheon.chain.qualification_request import require_commissioned_incumbent

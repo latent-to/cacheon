@@ -40,6 +40,9 @@ class RemoteQualificationHoldReason(str, Enum):
     GRAPH_EXIT_PUBLICATION_AMBIGUOUS = "graph_exit_publication_ambiguous"
     RESIDENT_EVIDENCE_UNAVAILABLE = "resident_evidence_unavailable"
     QUALIFICATION_WORKER_ERROR = "qualification_worker_error"
+    # Refused before execution: the replacement measures other work than the
+    # request's checkpoint. The CPU retires that checkpoint and requeues fresh.
+    CHECKPOINT_COMPUTATION_CHANGED = "checkpoint_computation_changed"
 
 
 @dataclass(frozen=True)

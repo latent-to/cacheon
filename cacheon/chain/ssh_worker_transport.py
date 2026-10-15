@@ -39,6 +39,8 @@ from cacheon.chain.remote_worker_request_plan import (
     PlannedQualificationObservation,
     QualificationRecoveryHold,
     QualificationRequestPlan,
+    _LOCK_NAME,
+    _fsync_directory,
     create_qualification_request_plan,
     inspect_planned_qualification as inspect_qualification_plan,
     materialize_planned_qualification as materialize_qualification_plan,
@@ -168,6 +170,25 @@ def run_checked(
         fail(f"closed transport command failed: {type(exc).__name__}: {exc}")
 
 
+def copy_remote_file(registration, local: Path, remote: str, *, upload: bool, timeout: int = 1800) -> None:
+    """Stream one fixed spool file through the pod's registered SSH account."""
+    if not remote.startswith("/") or SAFE_ID.fullmatch(remote) is None:
+        fail("remote spool file path is not closed")
+    if registration["pod_user"] == "root":
+        endpoint = f"root@{registration['pod_host']}:{remote}"
+        pair = [str(local), endpoint] if upload else [endpoint, str(local)]
+        run_checked(scp_base(registration) + ["--", *pair], timeout=timeout)
+        return
+    command = ssh_base(registration) + ["sudo", "-n", "--", "tee" if upload else "cat", "--", remote]
+    try:
+        with local.open("rb" if upload else "wb") as handle:
+            subprocess.run(command, check=True, timeout=timeout,
+                stdin=handle if upload else subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL if upload else handle, stderr=subprocess.PIPE)
+    except (OSError, subprocess.SubprocessError) as exc:
+        fail(f"registered spool transfer failed: {type(exc).__name__}: {exc}")
+
+
 def remote_python_command(
     registration: Mapping[str, Any],
     site: RemotePodSite,
@@ -176,7 +197,8 @@ def remote_python_command(
     for value in arguments:
         if not isinstance(value, str) or SAFE_ID.fullmatch(value) is None:
             fail("remote service argument is not closed")
-    return [registration["python_executable"], site.service_path, *arguments]
+    prefix = [] if registration["pod_user"] == "root" else ["sudo", "-n", "--"]
+    return [*prefix, registration["python_executable"], site.service_path, *arguments]
 
 
 def remote_json(
@@ -215,11 +237,7 @@ def transfer_request(
     else:
         archive_sha = file_sha256(archive)
     remote_part = f"{site.pod_root}/incoming/.{request_id}.{archive_sha}.tar.part"
-    run_checked(
-        scp_base(registration)
-        + ["--", str(archive), f"root@{registration['pod_host']}:{remote_part}"],
-        timeout=1800,
-    )
+    copy_remote_file(registration, archive, remote_part, upload=True)
     run_checked(
         ssh_base(registration)
         + remote_python_command(
@@ -265,12 +283,12 @@ def pull_result(
     incoming.mkdir(parents=True, exist_ok=True, mode=0o700)
     archive = incoming / f"{request_id}.{archive_sha}.tar"
     if not archive.exists():
-        remote = (
-            f"root@{registration['pod_host']}:"
-            f"{site.pod_root}/outgoing/{request_id}.{archive_sha}.tar"
-        )
-        run_checked(scp_base(registration) + ["--", remote, str(archive)], timeout=1800)
+        copy_remote_file(registration, archive,
+                         f"{site.pod_root}/outgoing/{request_id}.{archive_sha}.tar", upload=False)
     if archive.stat().st_size != archive_size or file_sha256(archive) != archive_sha:
+        # A dropped transfer leaves partial bytes here; kept, they would skip
+        # every later download and wedge this result and the queue behind it.
+        archive.unlink()
         fail("result archive bytes differ from pod receipt")
     temporary = results_root / f".{request_id}.extracting"
     if temporary.exists():
@@ -388,13 +406,12 @@ def _archive_completed_request(job_dir: Path, request: Mapping[str, Any], intake
                 return
         archive = job_dir.parent.parent / "outbox-archive"
         archive.mkdir(mode=0o700, exist_ok=True)
-        job_dir.rename(archive / job_dir.name)
+        # The dispatcher's checkpoint scan reads old carriers under this lock.
+        with (job_dir.parent / _LOCK_NAME).open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            job_dir.rename(archive / job_dir.name)
         for directory in (archive, job_dir.parent):
-            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(fd)
-            finally:
-                os.close(fd)
+            _fsync_directory(directory)
     finally:
         con.close()
     append_event(job_dir.parent.parent, "request_archived", request_id=request["request_id"])
@@ -475,17 +492,23 @@ def cpu_serve(
                 worker_hold_state = _observe_worker_hold(
                     worker_hold_state, heartbeat, spool_root, registration
                 )
+                active = heartbeat.get("active_request_id")
+                # Finished carriers of any epoch leave the queue; iter_queue
+                # leaves older epochs' carriers to the dispatcher (2026-10-14).
+                if archive_intake_db:
+                    for job_dir in outbox.iterdir():
+                        if (job_dir / "REQUEST_READY").is_file():
+                            request = load_json(job_dir / "request.json")
+                            if active != request["request_id"]:
+                                _archive_completed_request(job_dir, request, archive_intake_db)
                 queue = iter_queue(
                     outbox, registration, identity=identity, credential=credential
                 )
-                active = heartbeat.get("active_request_id")
                 for job_dir, request in queue:
                     request_id = request["request_id"]
                     state_path = job_dir / "dispatch-state.json"
                     state = load_json(state_path) if state_path.exists() else None
                     if state is not None and state.get("state") == "result_received":
-                        if archive_intake_db and active != request_id:
-                            _archive_completed_request(job_dir, request, archive_intake_db)
                         continue
                     local_result = results / request_id
                     if (local_result / "RESULT_READY").is_file():
@@ -519,6 +542,10 @@ def cpu_serve(
                         )
                         active = None
                         continue
+                    from cacheon.chain.remote_worker_checkpoints import pull_checkpoint
+
+                    pull_checkpoint(registration, site, job_dir, request, spool_root,
+                                    identity=identity, credential=credential)
                     if active not in {None, request_id}:
                         break
                     if state is None or state.get("state") != "transferred":
@@ -703,6 +730,11 @@ class DurableSpoolAuthenticatedWorkerTransport:
                 publication_path = scratch / f"candidate-publication-{index}.tar"
                 publication_archive(publication, publication_path)
                 carriers.append(("candidate_publication", publication_path))
+            if "checkpoint_digest" in request.body:
+                checkpoint = self.spool_root / "checkpoints" / (request.body["checkpoint_digest"] + ".json.gz")
+                if file_sha256(checkpoint) != request.body["checkpoint_digest"]:
+                    fail("requested replacement checkpoint changed before dispatch")
+                carriers.append(("qualification_checkpoint", checkpoint))
             lease = EvaluationLease(
                 request.lease_id,
                 request.generation,

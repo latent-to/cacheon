@@ -19,6 +19,41 @@ from cacheon.eval.oci_session_protocol import BatchRequest
 from tests.support.pipes import PipeClient, PipeManager
 
 
+@pytest.mark.parametrize("already_failed", [False, True])
+def test_peer_failure_interrupts_an_empty_startup_pipe_and_keeps_the_original_cause(already_failed):
+    from cacheon.eval.goodput_runtime import ReadSchedule
+    from cacheon.eval.scoring import CrossoverRuntimeError
+
+    async def run():
+        client = PipeClient()
+        transport = AttachedSessionTransport(PipeManager(client), object(), ("worker",))
+        transport.start()
+        schedule = ReadSchedule()
+        transport.check_cancelled = schedule.check_failed
+        original = RuntimeError("candidate import failed")
+        timer = None
+        if already_failed:
+            schedule.fail(original)
+        else:
+            timer = asyncio.get_running_loop().call_later(0.02, schedule.fail, original)
+        try:
+            with pytest.raises(CrossoverRuntimeError, match="candidate import failed") as caught:
+                await asyncio.wait_for(transport.aread_control(
+                    max_bytes=1024, deadline=time.monotonic()+60), timeout=1)
+            assert caught.value.__cause__ is original
+            schedule.fail(RuntimeError("later peer cancellation"))
+            assert schedule.failure is original
+            assert not client.aborted
+            transport.abort()
+            assert client.aborted
+        finally:
+            if timer is not None:
+                timer.cancel()
+            client.close()
+
+    asyncio.run(run())
+
+
 def _request(index, tokens):
     return BatchRequest(
         "a" * 32, "b" * 64, f"{index + 1:032x}", f"{index + 10:032x}",
@@ -32,6 +67,7 @@ def test_exchange_routes_reordered_outputs_and_progress_to_their_host_clocks(bud
         client = PipeClient()
         transport = AttachedSessionTransport(PipeManager(client), object(), ("worker",))
         transport.start()
+        transport.check_cancelled = lambda: None
         first_started, second_finished = asyncio.Event(), asyncio.Event()
         completed, progress = [], []
 
@@ -88,11 +124,14 @@ def test_exchange_routes_reordered_outputs_and_progress_to_their_host_clocks(bud
 
 
 @pytest.mark.parametrize("failure", ["eof", "timeout"])
-def test_exchange_propagates_transport_failure_to_every_pending_request(failure):
+@pytest.mark.parametrize("peer_check", [False, True])
+def test_exchange_propagates_transport_failure_to_every_pending_request(failure, peer_check):
     async def run():
         client = PipeClient()
         transport = AttachedSessionTransport(PipeManager(client), object(), ("worker",))
         transport.start()
+        if peer_check:
+            transport.check_cancelled = lambda: None
         if failure == "eof":
             os.close(client.response_write)
             client.response_write = -1

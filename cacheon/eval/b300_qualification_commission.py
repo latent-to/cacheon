@@ -614,7 +614,7 @@ def _compose_locked(
         context=calibration_context,
         # New commissions grade elapsed work statistically (v17); v16 evidence
         # keeps its fixed-cutoff arithmetic.
-        version=17,
+        version=18,
         min_windows=speed_block["min_windows"],
         max_window_scatter=float(speed_block["max_window_scatter"]),
         max_conditioning_slowdown=float(speed_block["max_conditioning_slowdown"]),

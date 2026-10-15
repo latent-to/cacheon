@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import stat
 import time
 from collections.abc import Mapping
@@ -319,8 +320,7 @@ def verify_registration(row: object) -> dict[str, Any]:
         fail("registered worker epoch is malformed")
     require_text(value["pod_host"], "pod host", pattern=HOST)
     require_int(value["pod_port"], "pod port", minimum=1, maximum=65535)
-    if value["pod_user"] != "root":
-        fail("pod user must be root")
+    require_text(value["pod_user"], "pod user", pattern=re.compile(r"[a-z_][a-z0-9_-]{0,31}\Z"), maximum=32)
     readiness, digest = verify_readiness(value["worker_readiness"])
     if digest != value["worker_readiness_digest"]:
         fail("registered WorkerReadiness digest mismatch")
@@ -380,6 +380,7 @@ def make_registration(
     max_response_bytes: int = 16 << 20,
     bind_ready_receipt: bool = False,
     transport_id: str | None = None,
+    pod_user: str = "root",
 ) -> dict[str, Any]:
     """Construct, self-verify, and atomically write one registration."""
 
@@ -459,7 +460,7 @@ def make_registration(
             "lane_digest": lane_digest,
             "pod_host": pod_host,
             "pod_port": pod_port,
-            "pod_user": "root",
+            "pod_user": pod_user,
             "python_executable_sha256": python_executable_sha256,
             "ready_receipt_digest": ready["receipt_digest"],
             "worker_epoch": ready["worker_epoch"],
@@ -505,7 +506,7 @@ def make_registration(
         "lane_digest": lane_digest,
         "pod_host": require_text(pod_host, "pod host", pattern=HOST),
         "pod_port": require_int(pod_port, "pod port", minimum=1, maximum=65535),
-        "pod_user": "root",
+        "pod_user": pod_user,
         "python_executable": registered_python,
         "python_executable_sha256": python_executable_sha256,
         "ready_receipt_digest": ready["receipt_digest"],

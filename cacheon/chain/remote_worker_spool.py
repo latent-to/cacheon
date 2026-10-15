@@ -148,6 +148,7 @@ ALLOWED_ARTIFACT_ROLES = frozenset(
         "incumbent_authority",
         "qualification_authority",
         "qualification_payload",
+        "qualification_checkpoint",
         "worker_log",
     }
 )
@@ -221,11 +222,9 @@ def spool_digest(domain: str, payload: object) -> str:
 
 
 def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
+    """Hash the consumed file bytes without loading the whole carrier."""
     with path.open("rb") as handle:
-        while chunk := handle.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def require_digest(value: object, field: str) -> str:
@@ -982,13 +981,11 @@ def iter_queue(
     for path in outbox.iterdir():
         if not path.is_dir() or path.is_symlink() or not (path / "REQUEST_READY").is_file():
             continue
-        request = verify_request(
-            load_json(path / "request.json"),
-            path,
-            registration,
-            identity=identity,
-            credential=credential,
-        )
-        rows.append((request["queued_at_unix_ns"], request["request_id"], path, request))
+        value = load_json(path / "request.json")
+        # Another epoch's carrier is the dispatcher's to import or retire; failing on
+        # it stopped every transfer to the replacement worker (2026-10-14 review).
+        if value.get("worker_epoch", registration["worker_epoch"]) == registration["worker_epoch"]:
+            request = verify_request(value, path, registration, identity=identity, credential=credential)
+            rows.append((request["queued_at_unix_ns"], request["request_id"], path, request))
     rows.sort(key=lambda item: (item[0], item[1]))
     return [(path, request) for _, _, path, request in rows]

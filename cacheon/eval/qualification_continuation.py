@@ -34,7 +34,8 @@ from cacheon.stack_identity import (
 
 
 RECORD_SCHEMA = "cacheon.eval.qualification-continuation-record.v2"
-_STAGES = ("speed", "audit_armed", "audit_completed", "t_armed", "quality", "final", "recovery")
+_STAGES = ("speed_first", "speed", "audit_armed", "audit_completed", "t_armed", "quality", "final", "recovery")
+_STAGES += tuple(f"speed_window_{i}" for i in range(1, 6))
 
 
 def _decimal(value: object, where: str) -> str:
@@ -174,6 +175,9 @@ class QualificationContinuation:
         self.directory.chmod(0o700)
         self._codec = _codec()
         self.recovery_reference: EvidenceArtifactRef | None = None
+        self.worker_recovery_reference: EvidenceArtifactRef | None = None
+        self.replacement_execution = getattr(store, "worker_replacements", {}).get(request_digest)
+        self.checkpoint_root = getattr(store, "checkpoint_root", store.root / "checkpoints")
 
     # -- closed record file handling ----------------------------------------
 
@@ -236,6 +240,9 @@ class QualificationContinuation:
         finally:
             if temporary.exists():
                 temporary.unlink()
+        from cacheon.eval.qualification_worker_checkpoint import publish_snapshot
+
+        publish_snapshot(self)
 
     def _load(self, stage: str) -> object | None:
         if stage not in _STAGES:
@@ -293,6 +300,49 @@ class QualificationContinuation:
 
     # -- speed ---------------------------------------------------------------
 
+    def record_speed_orientation(
+        self, plan_digest: str, boot_id: str, started: float,
+        executions: tuple[EngineExecutionEvidence, EngineExecutionEvidence],
+        quiescence: tuple[OCIQuiescenceReceipt, OCIQuiescenceReceipt],
+    ) -> None:
+        """Retain both closed first-orientation engines before the swapped boot.
+
+        This extends the speed continuation with its existing execution types;
+        it grants neither a speed verdict nor permission to change physical lanes.
+        """
+        if (type(boot_id) is not str or not boot_id
+            or type(executions) is not tuple or len(executions) != 2
+            or any(type(row) is not EngineExecutionEvidence for row in executions)
+            or type(quiescence) is not tuple or len(quiescence) != 2
+            or any(type(row) is not OCIQuiescenceReceipt for row in quiescence)):
+            raise QualificationContinuationError("speed orientation lacks its closed engine pair")
+        self._record("speed_first", {
+            "plan_digest": require_sha256_hex(plan_digest, field="speed plan digest"),
+            "boot_id": boot_id, "started": _decimal(started, "speed orientation start"),
+            "executions": [self._codec.encode(row) for row in executions],
+            "quiescence": [self._codec.encode(row) for row in quiescence],
+        })
+
+    def load_speed_orientation(self, plan_digest: str, boot_id: str) -> dict | None:
+        """Reopen the original engine pair on its original allocation and clock origin."""
+        payload = self._load("speed_first")
+        if payload is None:
+            return None
+        if (type(payload) is not dict
+            or set(payload) != {"plan_digest", "boot_id", "started", "executions", "quiescence"}
+            or payload["plan_digest"] != plan_digest or payload["boot_id"] != boot_id):
+            raise QualificationContinuationError("speed orientation changed its plan or host boot")
+        try:
+            executions = tuple(self._codec.decode(row) for row in payload["executions"])
+            quiescence = tuple(self._codec.decode(row) for row in payload["quiescence"])
+        except (ContinuationCodecError, TypeError) as exc:
+            raise QualificationContinuationError(f"speed orientation is malformed: {exc}") from None
+        if (len(executions) != 2 or any(type(row) is not EngineExecutionEvidence for row in executions)
+            or len(quiescence) != 2 or any(type(row) is not OCIQuiescenceReceipt for row in quiescence)):
+            raise QualificationContinuationError("speed orientation lacks its closed engine pair")
+        return {"started": _decimal_value(payload["started"], "speed orientation start"),
+                "executions": executions, "quiescence": quiescence}
+
     def record_resident_speed(self, crossover: ResidentCrossoverEvidence) -> None:
         if type(crossover) is not ResidentCrossoverEvidence:
             raise QualificationContinuationError(
@@ -301,6 +351,8 @@ class QualificationContinuation:
         self._record(
             "speed", {"mode": "resident", "crossover": self._codec.encode(crossover)}
         )
+        from cacheon.eval.qualification_worker_checkpoint import completed_speed
+        completed_speed(self)
 
     def load_resident_speed(self) -> ResidentCrossoverEvidence | None:
         payload = self._load("speed")

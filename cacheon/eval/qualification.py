@@ -749,10 +749,6 @@ def derived_hidden_task_plan_digest(
     return canonical_digest("cacheon.qualification.hidden-task-plan", rows)
 
 
-def _selected_prompt_texts(lifecycle: object) -> dict[str, str | tuple[int, ...]]:
-    return {row.prompt_digest: row.input_ids for row in lifecycle.crossover.reference_inputs}
-
-
 def _validate_teacher_source(
     raw: object,
     execution: object,
@@ -788,7 +784,7 @@ def _validate_teacher_source(
         if request.prompt_digest in by_prompt:
             raise QualificationError("pristine T repeated a selected prompt")
         by_prompt[request.prompt_digest] = (request, evidence)
-    expected_text = _selected_prompt_texts(lifecycle)
+    expected_text = {row.prompt_digest: row.input_ids for row in lifecycle.crossover.reference_inputs}
     if set(by_prompt) != set(raw.binding.selected_prompt_digests):
         raise QualificationError("pristine T prompt coverage differs from selection")
     for prompt in raw.prompts:
@@ -843,11 +839,13 @@ def validate_quality_binding(
     calibration: object,
     reference_execution: object,
     reference_request_sha256: str,
+    execution_reference: ReferenceManifest | None = None,
 ):
     """Project frozen workload/trajectory coverage onto one raw T binding."""
 
     from cacheon.eval.calibration import CalibrationContext, CalibrationManifest
     from cacheon.eval.oci_backend import PristineReferenceExecutionEvidence
+    from cacheon.eval.qualification_worker_checkpoint import reference_execution_matches
     from cacheon.eval.reference_quality import (
         ReferenceQualityRawArtifact,
         retained_support_policy_digest,
@@ -928,8 +926,7 @@ def validate_quality_binding(
         or binding.t_session_digest != t_session.digest
         or binding.t_request_sha256
         != _digest(reference_request_sha256, "T request SHA-256")
-        or t_session.reference_manifest_digest != profile.reference.digest
-        or t_session.launch_digest != profile.reference.pristine_launch_digest
+        or not reference_execution_matches(profile.reference, execution_reference, t_session)
         or binding.reference_manifest_digest != profile.reference.measured_digest
         or binding.calibration_digest != profile.calibration_digest
         or calibration.digest != profile.calibration_digest
