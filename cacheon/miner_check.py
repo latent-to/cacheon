@@ -148,8 +148,8 @@ def _engine(config: dict, bundle: str, requests: list[dict], root: Path,
     """The exp_cell procedure, using the same scheduler binder as qualification."""
     from cacheon import bootstrap, receipts, seam
     from cacheon.eval.engine_worker import (
-        _active_execution_members, _candidate_receipt_failure, _engine_child_failed,
-        _report_running_engine_failures, _require_execution_completion,
+        _active_execution_members, _candidate_receipt_failure, _eager_audit_engine,
+        _engine_child_failed, _report_running_engine_failures, _require_execution_completion,
     )
 
     receipt_dir = root / "receipts"
@@ -170,7 +170,7 @@ def _engine(config: dict, bundle: str, requests: list[dict], root: Path,
     import sglang as sgl
 
     if phase == "audit":
-        options["disable_cuda_graph"] = True
+        _eager_audit_engine(options)
     options["custom_sigquit_handler"] = _engine_child_failed
     report = {"phase": phase, "sglang_version": sgl.__version__, "engine": options,
               "environment": environment, "decision": "ERROR", "detail": "engine did not complete"}

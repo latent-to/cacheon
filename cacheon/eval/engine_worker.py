@@ -178,6 +178,18 @@ def engine_kwargs(cfg, *, active: bool = False) -> dict[str, Any]:
     return kwargs
 
 
+def _eager_audit_engine(kwargs: dict[str, Any]) -> None:
+    """Turn off every CUDA graph for the untimed audit role, prefill graphs included.
+
+    ``disable_cuda_graph`` leaves nightly SGLang's ``cuda_graph_backend_prefill`` on: the
+    DeepSeek-V4.1 audit then graded 74 prefill shapes' capture warmups, on which stock
+    disagreed with itself by p90 0.15-0.65, and no replayed prefill (B300, 2026-10-15).
+    """
+    kwargs["disable_cuda_graph"] = True
+    if "cuda_graph_backend_prefill" in kwargs:
+        kwargs["cuda_graph_backend_prefill"] = "disabled"
+
+
 def _active_execution_members(
     active_receipts: list[dict], *, expected_member_count: int
 ) -> list[str]:
@@ -563,7 +575,7 @@ def isolated_engine_session(
                 # This is a separate, untimed fidelity role.  Timed B/C/B' plans
                 # carry no audit policy and therefore retain their sealed graph
                 # configuration and zero audit overhead.
-                kwargs["disable_cuda_graph"] = True
+                _eager_audit_engine(kwargs)
             # Emitted for the stock arm too, which has no receipt directory, so
             # this cannot ride on the receipts. Without it the settings that
             # decide which backend each arm ran on -- and therefore whether the

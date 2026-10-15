@@ -90,7 +90,7 @@ session, the isolated engine worker maps that authority into two process-local c
 The worker leaves both values empty when no audit policy is present. Charged
 Timed speed sessions therefore have no audit sampling or audit receipt and retain
 their sealed graph configuration. The audit-only session is eager and untimed; the
-worker disables CUDA graphs for that role. An unexpected audit receipt in a charged
+worker disables every CUDA graph for that role, `cuda_graph_backend_prefill` included. An unexpected audit receipt in a charged
 candidate session is a protocol error.
 
 The tensor comparison still occurs inside the candidate engine. The node adapter,
