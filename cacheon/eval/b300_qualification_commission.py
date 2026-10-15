@@ -363,6 +363,7 @@ def compose_commissioned_qualifications(
             hidden_tasks_required=policy_block["hidden_tasks_required"],
             select_count=policy_block["select_count"],
             audit_minimum_calls=policy_block["audit_minimum_calls"],
+            audit_max_new_tokens=policy_block.get("audit_max_new_tokens", 2),
             audit_control_delta_digests=tuple(
                 policy_block.get("audit_control_delta_digests", ())
             ),
