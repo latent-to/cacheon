@@ -157,6 +157,16 @@ later active evaluations do not block an earlier completed result. Weights
 aggregate eligible arena claims.
 Additional supervisors set `enable_settlement` and `enable_weights` to `false`.
 
+For [static arena allocations](chain-loop.md#static-allocation-configuration),
+each allocation source instead requires a distinct intake store. Run one intake
+and settlement service per store; pairs within that arena share its store. Keep
+one combined weight-offer producer and signer. Each intake uses its existing
+`--eval-cost-tao-rao` setting: the Qwen3.8 store can require `200000000` while
+the existing arena retains its own fee. Dispatchers still select only their
+registered arena, so another listener observing the same reveal cannot qualify
+it for the wrong arena. The allocation producer rejects a reservation that
+passed in more than one source store.
+
 New arenas require `competition.arena` in the hash-bound bundle. Every dispatcher
 config states `accept_legacy_bundles` (an omitted key is refused): `true` for the
 default arena, `false` for the others. The default alias binds once to the
