@@ -471,6 +471,72 @@ class Reinserting(Releasing):
         super().insert_req(req, up_to=up_to, **kwargs)
 
 
+class LazyMatchResult(NamedTuple):
+    """The nightly returns a length; the allocator resolves its node's slots later."""
+
+    device_prefix_len: int
+    last_device_node: Any
+    host_hit_length: int = 0
+    swa_host_hit_length: int = 0
+
+
+class Checkpointing(UnifiedRadixCache):
+    """The nightly checkpoints running and finished requests without freeing their rows."""
+
+    corrupt = False
+
+    def match_prefix(self, params):
+        slots = super().match_prefix(params).device_indices
+        return LazyMatchResult(len(slots), slots)
+
+    def path_device_indices(self, node):
+        return node
+
+    def prefix_device_indices(self, req):
+        return req.last_node[:req.prefix_len]
+
+    def checkpoint(self, req, *, up_to):
+        if self.corrupt:
+            row = self.req_to_token_pool.req_to_token[req.kv.req_pool_idx]
+            row[PAGE:2 * PAGE] = row[:PAGE]
+        slots, _ = self._insert(req, up_to)
+        req.last_node, req.kv.cache_protected_len = slots, len(slots)
+        self.req_to_token_pool.req_to_token[req.kv.req_pool_idx, :len(slots)] = slots.int()
+
+    def on_release(self, req, *, checkpointed):
+        assert checkpointed
+        self.released = req.rid
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_nightly_lazy_prefix_and_checkpoint_keep_the_content_check(sglang, monkeypatch, corrupt):
+    monkeypatch.setattr(sys.modules[_BASE], "MatchResult", LazyMatchResult)
+    engine = _engine(sglang, Checkpointing)
+    engine.cache.corrupt = corrupt
+    req = Req("nightly", A, 0)
+    del req.prefix_indices
+    req.prefix_len, req.done = 0, False
+    req.finished = lambda: req.done
+    req.full_untruncated_fill_ids = req.origin_input_ids
+    engine.compute(req, 0, 12)
+    engine.cache.checkpoint(req, up_to=12)
+    req.prefix_len = 12
+    engine.compute(req, 12, len(A))
+    req.done = True
+    engine.cache.checkpoint(req, up_to=len(A))
+    engine.cache.on_release(req, checkpointed=True)
+    match = engine.cache.match_prefix(types.SimpleNamespace(key=Key(A, len(A) - 1)))
+    req.last_node, req.prefix_len = match.last_device_node, match.device_prefix_len
+    assert len(engine.cache.prefix_device_indices(req)) == 20
+    assert engine.cache.released == req.rid
+    if corrupt:
+        with pytest.raises(RuntimeError, match="does not hold the KV"):
+            engine.cache.reset()
+    else:
+        engine.cache.reset()
+        assert receipts.collect(sglang.receipts, "failed") == []
+
+
 @pytest.mark.parametrize("entry, fake", [(Releasing, False), (Reinserting, True)])
 def test_the_release_handoffs_check_what_is_inserted_and_forget_the_request(sglang, entry, fake):
     engine = _engine(sglang, entry)

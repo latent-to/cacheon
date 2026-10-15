@@ -37,7 +37,7 @@ _INDEX_NAME = "extensions.json"
 _COMPILE_FLAGS = (
     "-O3",
     "--use_fast_math",
-    "--std=c++17",
+    "--std=c++20",
     "-Xcompiler=-fPIC",
     "-shared",
 )

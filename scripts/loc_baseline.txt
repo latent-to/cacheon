@@ -1,13 +1,16 @@
 # Reviewed tracked-line ceilings per top-level directory.
 # Raising a ceiling is a reviewed decision made in the same diff
 # that needs it; lowering one locks in a deletion. check_loc_ratchet.py
+# Portable replay windows: +356 runtime, +177 regression, +8 docs; existing consumers replace
+# discarded mid-speed progress. Replacement-path fixes: +86 runtime, +17 docs, +2 test fixture (PR 151 review).
+# Live mainnet fixes (uniform-FP8 V4 pool reader, stock forward signature): +17 runtime, +5 docs, +65 tests, +1 note.
 (root) 1158
 .github 345
 bundles 2398
-cacheon 90294
+cacheon 91886
 cacheon_kernels 936
-dashboard 4270
-docs 12495
-examples 378
-scripts 1893
-tests 66230
+dashboard 4281
+docs 12649
+examples 396
+scripts 2118
+tests 66928

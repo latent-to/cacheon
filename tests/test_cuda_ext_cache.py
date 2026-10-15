@@ -657,6 +657,7 @@ def test_compile_emits_only_the_selected_architecture(tmp_path, monkeypatch, arc
     mod._compile(bundle=tmp_path, source="kernel.cu", output=tmp_path / "native.so",
                  depfile=tmp_path / "deps.d", module_name="native", context=context, env={})
     command, = commands
+    assert [arg for arg in command if arg.startswith("--std=")] == ["--std=c++20"]
     assert [arg for arg in command if arg.startswith("-arch=")] == [
         f"-arch={real.replace('sm_', 'compute_', 1)}"]
     assert [arg for arg in command if arg.startswith("-code=")] == [f"-code={real}"]

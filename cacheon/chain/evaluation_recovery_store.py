@@ -1013,19 +1013,14 @@ class EvaluationRecoveryStoreMixin:
         current_block: int,
         live_worker_epoch: str = "",
     ) -> EvaluationLease:
-        """Requeue one published request the worker terminated with an unproven
-        infrastructure result (no authenticated refusal, no completed
-        response).  The dead request retires with its recovery and a fresh
-        claim mints a fresh request.  Also accepts a recovery already parked
-        HELD under the pre-change worker-infrastructure reason or under the
-        authority-changed reason (both mean the retained request is durably
-        dead), migrating it into the same requeue; a completed-product hold
-        joins them only when the caller names the live worker epoch and the
-        retained request plan provably binds a different one -- the store
-        verifies the mismatch against its own sealed plan, so an orphan of a
-        torn-down epoch migrates while a live-epoch hold stays parked.
-        Repeats are bounded by the systemic release cap, so an unfixed
-        infrastructure fault parks for the operator instead of free-looping."""
+        """Retire an infrastructure request before a fresh lease can claim it.
+
+        A worker replacement retires a request whatever parked it once the
+        store proves the live epoch differs from the sealed plan's (a refusal
+        crash-looped the supervisor); a completed-product hold needs the same
+        proof. Replacements and refused checkpoints are exempt from the cap and
+        never re-hold a reservation the operator released; other failures park.
+        """
 
         from cacheon.chain.execution_disposition import (
             AUTHORITY_CHANGED_HOLD_REASON,
@@ -1034,22 +1029,19 @@ class EvaluationRecoveryStoreMixin:
             WORKER_INFRASTRUCTURE_HOLD_REASON,
         )
 
-        parked_held = (
+        parked_held = type(recovery) is EvaluationRecovery and recovery.phase is RecoveryPhase.HELD
+        retired_epoch = (
             type(recovery) is EvaluationRecovery
-            and recovery.phase is RecoveryPhase.HELD
-        )
-        completed_orphan = (
-            parked_held
-            and recovery.reason == COMPLETED_NO_DECISION_HOLD_REASON
+            and bool(recovery.request_id)
             and isinstance(live_worker_epoch, str)
             and re.fullmatch(r"[0-9a-f]{32}", live_worker_epoch) is not None
             and self.reopen_recovery_request_plan(recovery).worker_epoch
             != live_worker_epoch
         )
-        held_migration = completed_orphan or (
-            parked_held
-            and recovery.reason
-            in (
+        held_migration = parked_held and (
+            (retired_epoch and (failure_code == "worker_replaced"
+                                or recovery.reason == COMPLETED_NO_DECISION_HOLD_REASON))
+            or recovery.reason in (
                 WORKER_INFRASTRUCTURE_HOLD_REASON,
                 AUTHORITY_CHANGED_HOLD_REASON,
                 ORPHANED_CARRIER_HOLD_REASON,
@@ -1063,6 +1055,7 @@ class EvaluationRecoveryStoreMixin:
             or len(failure_code) > 256
             or any(ord(char) < 32 or ord(char) == 127 for char in failure_code)
             or not (recovery.phase is RecoveryPhase.REQUEST_READY or held_migration)
+            or (failure_code == "worker_replaced" and not retired_epoch)
         ):
             raise _intake_error("worker infrastructure recovery release is forbidden")
         lease = self._release_recovery(
@@ -1076,7 +1069,8 @@ class EvaluationRecoveryStoreMixin:
             ),
             allow_expired=held_migration,
         )
-        self._cap_infrastructure_releases(lease)
+        if failure_code not in ("worker_replaced", "checkpoint_computation_changed"):
+            self._cap_infrastructure_releases(lease)
         return lease
 
     def release_stale_incumbent_qualification_recovery(

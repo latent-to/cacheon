@@ -1082,7 +1082,7 @@ def test_execute_reference_selects_reference_transport_and_binds_plan(
     def execute_runtime(*_args, **kwargs):
         observed.append(kwargs["session_protocol"])
         value = kwargs["run"](
-            SimpleNamespace(), kwargs["absolute"] - 2.0, "runtime-" + "1" * 32
+            SimpleNamespace(), kwargs["absolute"] - 2.0, "runtime-" + "1" * 32, None
         )
         return backend._RawRuntimeExecution(
             "runtime-" + "1" * 32,

@@ -571,7 +571,7 @@ def _install_resident_runner_path(
 
     # A replay crossover: paired reads, the control-selection entropy the continuation must find
     # unchanged, and the candidate-lane receipt it is bound to (V17 swaps lanes; 2026-09-30).
-    crossover = SimpleNamespace(goodput=SimpleNamespace(), quality_entropy=harness.entropy)
+    crossover = SimpleNamespace(goodput=SimpleNamespace(), quality_entropy=harness.entropy, replay_windows=())
     crossover.candidate_quiescence = harness.entropy_teardown = _quiescence(9, 2.9)
 
     class FakeResidentLifecycle:
@@ -674,7 +674,7 @@ def _install_resident_runner_path(
             return type(other) is type(self) and self.to_dict() == other.to_dict()
 
     def run_resident(plan, *, baseline_executor, candidate_executor, model_mount, deadline,
-                     quality_control):
+                     quality_control, continuation=None):
         assert plan is harness.value.resident_speed_plan
         assert plan is not harness.value.resident_audit_plan
         harness.resident_speed_plans.append(plan)

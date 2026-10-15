@@ -41,6 +41,7 @@ import re
 import sys
 from collections import deque
 from contextlib import contextmanager
+from functools import wraps
 from typing import Callable
 
 import torch
@@ -560,6 +561,7 @@ def make_node_dispatcher(
     layer = getattr(module, "layer_id", None)
     layer = layer if type(layer) is int else None
 
+    @wraps(stock)
     def dispatched(*args, **kwargs):
         nonlocal reported
         if (

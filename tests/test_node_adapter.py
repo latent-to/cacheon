@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -109,6 +110,31 @@ def audited(monkeypatch, request):
 
 def _do_nothing(module, *args, **kwargs):
     return module.forward(*args, **kwargs)
+
+
+@pytest.mark.parametrize("plural", [False, True])
+def test_graph_runner_can_discover_and_pass_embedding_arguments(audited, plural):
+    class Singular(nn.Module):
+        def forward(self, x, batch, input_embeds, pp_proxy_tensors=None):
+            return input_embeds * 2
+
+    class Plural(nn.Module):
+        def forward(self, x, batch, inputs_embeds, pp_proxy_tensors=None):
+            return inputs_embeds * 2
+
+    runner, batch = _served_model()
+    runner.model.source = Plural() if plural else Singular()
+    signature = inspect.signature(runner.model.source.forward)
+    nodes.bind(runner, _registry("source", _do_nothing))
+    forward = runner.model.source.forward
+    parameters = inspect.signature(forward).parameters
+    # SGLang's prefill runner selects embedding arguments from this signature.
+    kwargs = {name: torch.ones(2, 4) for name in ("input_embeds", "inputs_embeds")
+              if name in parameters}
+    assert inspect.signature(forward) == signature
+    assert torch.equal(forward(torch.zeros(2, 4), batch, **kwargs), torch.full((2, 4), 2.0))
+    assert (audited["source"]["n"], audited["source"]["baseline_refused"],
+            audited["source"]["violations"]) == (1, 0, 0)
 
 
 def _dsa_pool():

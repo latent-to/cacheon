@@ -456,6 +456,7 @@ class SessionExecutionEvidence:
     session_completed_at: float
     audit_policy_digest: str | None = None
     replay_reads: tuple[LoadRead, ...] = field(default=(), metadata={"wire_optional": True})
+    checkpointed_at: float | None = field(default=None, metadata={"wire_optional": True})
 
     @property
     def audit_receipts(self) -> tuple[AuditReceiptFacts, ...]:
@@ -834,12 +835,8 @@ class OpenedOuterSession:
             raise OuterSessionInfrastructureError(
                 "session lacks required conditioning evidence"
             )
-        conditioning_tokens = sum(
-            row.token_numerator
-            for row in self.batch_rows[
-                self.conditioning_start_index : self.plan.warmup_count + 1
-            ]
-        )
+        conditioning_tokens = sum(row.token_numerator for row in
+            self.batch_rows[self.conditioning_start_index : self.plan.warmup_count + 1])
         if self.first_timed_completed_at <= self.conditioning_started_at:
             raise OuterSessionInfrastructureError(
                 "conditioning interval did not advance"
