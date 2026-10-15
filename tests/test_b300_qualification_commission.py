@@ -480,8 +480,8 @@ def test_commissioned_authority_materializes_the_declared_incumbent(
     assert incumbent.digest != stock.digest
 
 
-@pytest.mark.parametrize("gpu_model,tp", (("b300", 4), ("h100", 1)))
-def test_full_commission_composes_both_physical_roles_without_a_gpu(tmp_path, monkeypatch, gpu_model, tp):
+@pytest.mark.parametrize("gpu_model,tp,audit_tokens", (("b300", 4, 64), ("h100", 1, None)))
+def test_full_commission_composes_both_physical_roles_without_a_gpu(tmp_path, monkeypatch, gpu_model, tp, audit_tokens):
     from cacheon.arena_service import ArenaService
     from cacheon.chain.evaluation_coordinator import WorkerReadiness
     from cacheon.eval import b300_deployment as deployment
@@ -506,6 +506,8 @@ def test_full_commission_composes_both_physical_roles_without_a_gpu(tmp_path, mo
     block = _block()
     block["support_policy_digest"] = retained_support_policy_digest()
     block["policy"]["tokens_per_prompt"] = 1024
+    if audit_tokens is not None:
+        block["policy"]["audit_max_new_tokens"] = audit_tokens
     block["session"]["replay"].update(manifest_path=str(replay.manifest_path), slice_digest=replay.slice.digest)
     authority = json.loads(paths["authority_config"].read_text())
     authority.update(qualification=block, resources={"runtime": {"cpu_millis": 32000, "cpu_pins": {"0": [0, 1]}}, "prebuild": {"cpu_millis": 16000}})
@@ -520,8 +522,13 @@ def test_full_commission_composes_both_physical_roles_without_a_gpu(tmp_path, mo
     judge = _Judge()
     judge.binding = HiddenJudgeBinding(*(inputs.prompt_identity[key] for key in
         ("hidden_corpus_commitment", "hidden_judge_digest", "hidden_task_policy_digest")))
-    contexts, native_arches = [], []
+    contexts, native_arches, audit_budgets = [], [], []
     native_build = deployment._native_build
+    build_factory = commission.build_b300_registered_qualification_factory
+
+    def tracked_factory(inputs):
+        audit_budgets.append(inputs.policy.audit_max_new_tokens)
+        return build_factory(inputs)
 
     def tracked_native(*args):
         built = native_build(*args)
@@ -536,6 +543,7 @@ def test_full_commission_composes_both_physical_roles_without_a_gpu(tmp_path, mo
         return threshold, derive_calibration_manifest(threshold, evidence.observations), evidence
 
     monkeypatch.setattr(deployment, "_native_build", tracked_native)
+    monkeypatch.setattr(commission, "build_b300_registered_qualification_factory", tracked_factory)
     executors = ()
     try:
         service = ArenaService(composition.manifest, B300ArenaServiceProvider(composition.manifest, composition.authorities))
@@ -543,6 +551,7 @@ def test_full_commission_composes_both_physical_roles_without_a_gpu(tmp_path, mo
         commissions, executors = commission.compose_commissioned_qualifications(
             inputs, composition, readiness, _capabilities(hidden_judge=judge), calibration_loader=calibration)
         assert len(commissions) == 2 and {stage for stage, _ in contexts} == {"primary", "reproduction"}
+        assert audit_budgets == [audit_tokens or 2] * 2
         assert len({context.logical_hardware_digest for _, context in contexts}) == 2
         assert native_arches and set(native_arches) == {"sm103" if tp == 4 else "sm90"}
         for index, executor in enumerate(executors):

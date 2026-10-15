@@ -137,6 +137,13 @@ the verdict stays the speed grade unless the audit grades `FAIL` or `NO_DECISION
 which exits at the audit stage. Intake and the deployment check refuse that
 disposition for every unlisted delta.
 
+`qualification.policy.audit_max_new_tokens` sets the positive integer output
+budget for each request in the eager correctness audit. Omitting it preserves
+the two-token default. Speculative-decoding arenas should seal a longer budget
+and verify with a registered corruption control that the audit exercises draft
+verification and its state writes. The budget is part of the sealed policy;
+changing it requires a new commission.
+
 A host that keeps the checkpoint in RAM reloads it at boot from an enabled
 oneshot unit ordered before the container runtime, and reapplies the GPU clock
 lock in the same unit, so a reboot cannot silently change the measured engine.
