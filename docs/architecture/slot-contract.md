@@ -113,8 +113,9 @@ Truth is the stock node in the running engine, on the same call:
 2. its result tensors are kept, together with the engine-state rows the batch may
    write: the cache rows at `out_cache_loc` (whole pages where the pool stores
    pages), plus native recurrent convolution and temporal rows for both live
-   requests and tracked checkpoints. Speculative recurrent and ReplaySSM state
-   are refused rather than audited unchecked;
+   requests and tracked checkpoints. Native MTP verification also restores and
+   grades its batch-position temporal and convolution scratch rows. ReplaySSM
+   state remains unsupported;
 3. the arguments stock changed and the state rows are put back;
 4. the honest twin answers the same call and is put back the same way: the stock
    node with supported fused ops on SGLang's native reference paths, giving the
@@ -135,6 +136,10 @@ tile and a BF16 rotary tail, or packed E2M1 values with E4M3 scales; its FP4
 index pages are decoded the same way, and a kv-source layer's compressed pages,
 index pages and per-request pending-pair ring are graded with its window pages;
 allocation padding and sentinel rows are outside those request rings.
+TRT-LLM's uniform-FP8 V4 pools instead store 512 contiguous E4M3 values per token,
+including the rotary values, with fixed unit scale and no stored scales or padding.
+Those window and compressed pages are decoded separately from the packed layouts;
+restoration preserves their original bytes.
 Whole-node snapshots use the pool's active layer range, excluding unowned draft or pipeline stages.
 Engram's per-request token history lives outside those pools. The audit restores
 and grades it too, so stock, the honest twin and the candidate each start from
@@ -200,7 +205,8 @@ A bundle's addresses must not contain one another, and an address must name at
 least one module. Either failure raises at binding and is receipted as the
 candidate's. Binding happens once, after `ModelRunner.load_model`, which is early
 enough for the prefill and decode CUDA graph runners to capture the bound
-`forward` at every width.
+`forward` at every width. The dispatcher preserves stock's signature so graph
+runners can discover and supply model-specific inputs such as embeddings.
 
 The graph proof for a node bundle is taken from the timed run itself. The
 dispatcher, not the candidate, records whether each invocation happened inside a
@@ -255,7 +261,9 @@ so a prefix hit that skips its trailing window is refused. In the untimed audit,
 native recurrent convolution and temporal checkpoints are bound to their complete
 token prefix and namespace before donation, then checked before reuse. Live
 recurrent request state must survive cache handoffs unchanged. Physical slot
-translation and tracked checkpoint boundaries follow the pinned runtime. Cache
+translation and tracked checkpoint boundaries follow the pinned runtime. MTP
+acceptance commits its scratch state into these same checkpoint rows before
+cache handoff; scratch itself is not a transferable prefix. Cache
 flushes forget recorded fingerprints as well as pending handoffs; each replay
 window starts after the engine acknowledges its cache reset. Int8 recurrent
 checkpoints and ReplaySSM layouts remain unsupported and are refused. A new model does not require a new
@@ -306,8 +314,9 @@ before handing it to the cache, verify device hits before use, and verify host
 restores after the native transfer stream completes. Unfinished requests retain
 their live ring state. These checks sample up to four layers per transferable
 state field. The handoffs
-`match_prefix`, `cache_unfinished_req`, `cache_finished_req`,
-`ready_to_load_host_cache` and `reset` may be overridden in the class but not replaced on
+`match_prefix`, `cache_unfinished_req`, `cache_finished_req`, `insert_req`,
+`checkpoint`, `prefix_device_indices`, `on_release`, `ready_to_load_host_cache`
+and `reset` may be overridden in the class but not replaced on
 the instance or class later.
 
 Every candidate refusal and every raise in a method the bundle defines stops the

@@ -68,10 +68,12 @@ class PrefixStateAudit:
         self.ring = getattr(self.pool, "unified_kv_pool", None) if self.ring_size else None
         self.mamba = getattr(self.requests, "mamba_pool", None) if ctx.is_hybrid_ssm else None
         state = getattr(self.mamba, "mamba_cache", None)
-        # Unknown layouts stay refused rather than serving unchecked state. Int8
-        # checkpoints and ReplaySSM have different stored bytes and boundaries.
+        # MTP scratch is batch-local, never a transferable prefix checkpoint.
+        # Accepted states are committed into the ordinary temporal/conv rows
+        # before cache handoff. ReplaySSM and int8 checkpoints use other layouts.
         if (ctx.is_hybrid_ssm and (state is None
-                or getattr(state, "intermediate_ssm", None) is not None
+                or (getattr(state, "intermediate_ssm", None) is not None
+                    and not self.torch.is_tensor(state.intermediate_ssm))
                 or getattr(self.requests, "mamba_ckpt_pool", None) is not None
                 or getattr(self.mamba, "enable_linear_replayssm", False)
                 or getattr(self.mamba, "enable_linear_replayssm_spec", False))
@@ -230,12 +232,12 @@ class PrefixStateAudit:
         lengths = self.torch.tensor([length], device=self.guard.device)
         self._pairs(req, ids, lengths, self._mamba_slots(slot), "mamba", record=record)
 
-    def matched(self, params, result):
+    def matched(self, params, result, device_length):
         """Check a served prefix before the first forward consumes its short-lived state."""
         req = params.req
         if audit._rate() <= 0 or req is None:
             return
-        length = len(result.device_indices) + result.host_hit_length
+        length = device_length + result.host_hit_length
         if not length:
             return
         if self.ring is not None:
@@ -249,29 +251,39 @@ class PrefixStateAudit:
         # lookup only rearranges KV: live recurrent state may be past the last
         # checkpoint and is preserved by settled(), not restored from this hit.
         recurrent = self.mamba is not None and params.cow_mamba
-        if (result.host_hit_length or result.swa_host_hit_length
-                or getattr(result, "mamba_host_hit_length", 0)):
-            self.pending[req.rid] = (req, ids, length, recurrent)
+        host = bool(result.host_hit_length or result.swa_host_hit_length
+                    or getattr(result, "mamba_host_hit_length", 0))
+        if host or not hasattr(result, "device_indices"):
+            self.pending[req.rid] = (req, ids, length, host, recurrent)
         else:
             self._check(req, ids, result.device_indices, recurrent=recurrent)
+
+    def prefix(self, req, indices, cache):
+        """Check the lazy prefix when the runtime resolves the slots it will consume."""
+        pending = self.pending.pop(req.rid, None)
+        if pending is not None:
+            _, ids, length, host, recurrent = pending
+            if len(indices) < length:
+                self.guard.refuse("a host load returned fewer prefix slots than it claimed")
+            if host and self.guard.device.type == "cuda":
+                controller = getattr(cache, "cache_controller", None)
+                transfer = getattr(controller, "l2_transfer_engine", None)
+                stream = getattr(transfer, "host_to_device_stream", None)
+                if stream is None:
+                    raise RuntimeError("tree_cache: no native transfer stream for the hybrid host audit")
+                # Wait only on the submitted copies, never on unrelated model/NCCL streams.
+                self.torch.cuda.current_stream(self.guard.device).wait_stream(stream)
+            self._check(req, ids, indices[:length], recurrent=recurrent)
+            self.guard.poll(block=True)
 
     def ready(self, cache):
         """Drain submitted native loads only in the untimed audit, then check their destinations."""
         if not self.pending:
             return
-        if self.guard.device.type == "cuda":
-            controller = getattr(cache, "cache_controller", None)
-            transfer = getattr(controller, "l2_transfer_engine", None)
-            stream = getattr(transfer, "host_to_device_stream", None)
-            if stream is None:
-                raise RuntimeError("tree_cache: no native transfer stream for the hybrid host audit")
-            # Wait only on the submitted copies, never on unrelated model/NCCL streams.
-            self.torch.cuda.current_stream(self.guard.device).wait_stream(stream)
-        for req, ids, length, recurrent in self.pending.values():
-            if len(req.prefix_indices) < length:
-                self.guard.refuse("a host load returned fewer prefix slots than it claimed")
-            self._check(req, ids, req.prefix_indices[:length], recurrent=recurrent)
-        self.pending.clear()
+        for req, *_ in tuple(self.pending.values()):
+            if hasattr(req, "prefix_len"):
+                continue  # The nightly resolves lazy slots at prefix_device_indices.
+            self.prefix(req, req.prefix_indices, cache)
         self.guard.poll(block=True)
 
     def settled(self, req, row):

@@ -24,7 +24,7 @@ from typing import Iterable
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
 from cacheon.chain.evaluation_leases import EvaluationLease, EvaluationLeaseMember
 from cacheon.chain.qualification_request import (
-    INCUMBENT_FIELDS, LEGACY_QUALIFICATION_FIELDS, QUALIFICATION_FIELDS,
+    INCUMBENT_FIELDS, LEGACY_QUALIFICATION_FIELDS, QUALIFICATION_FIELDS, CHECKPOINT_QUALIFICATION_FIELDS,
 )
 from cacheon.chain.remote_qualification_evidence import (
     _SCHEMA_VERSION,
@@ -536,7 +536,7 @@ def _payload_encoding(payload: object) -> tuple[str, bytes, str]:
 
 def _validate_request_body(value: dict[str, object]) -> None:
     if (
-        frozenset(value) not in (LEGACY_QUALIFICATION_FIELDS, QUALIFICATION_FIELDS)
+        frozenset(value) not in (LEGACY_QUALIFICATION_FIELDS, QUALIFICATION_FIELDS, CHECKPOINT_QUALIFICATION_FIELDS)
         or value["kind"] != "qualification_work"
         or value["schema_version"] != _SCHEMA_VERSION
         or type(value["candidates"]) is not list
@@ -545,6 +545,8 @@ def _validate_request_body(value: dict[str, object]) -> None:
     try:
         for field in INCUMBENT_FIELDS & value.keys():
             _digest(value[field], field)
+        if "checkpoint_digest" in value:
+            _digest(value["checkpoint_digest"], "checkpoint_digest")
         _digest(value["qualification_policy_digest"], "qualification_policy_digest")
         _digest(value["service_digest"], "service_digest")
     except (TypeError, ValueError) as exc:

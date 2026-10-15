@@ -255,5 +255,9 @@ cuda_sources = ["kernels/mlp_sm103.cu"]
 Declarations do not bypass policy. Intake independently observes rebuild and
 CUDA-source features and resolves them against the target catalog.
 
+The approved native-extension builder compiles with C++20, as required by current
+PyTorch headers. Compiler flags are part of the recorded native build identity;
+artifacts built with the older C++17 policy must be rebuilt in the worker image.
+
 Next, read the [Kernel ABI](kernel-abi.md), then build the minimal example in
 [Your first kernel](your-first-kernel.md).

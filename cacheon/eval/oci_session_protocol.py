@@ -16,6 +16,10 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from cacheon.stack_identity import canonical_digest
 from cacheon._strict import NODE_ADDRESS, require_digest
+from cacheon.eval.oci_engine_options import (
+    ENGINE_ENV_KINDS as _ENGINE_ENV_KINDS,
+    ENGINE_KWARG_KINDS as _ENGINE_KWARG_KINDS,
+)
 
 
 SESSION_SCHEMA = "cacheon-isolated-engine-session-v1"
@@ -43,31 +47,6 @@ CONTAINER_MODEL_PATH = "/cacheon/input/model"
 _HEX_128 = re.compile(r"[0-9a-f]{32}\Z")
 _TOKEN = re.compile(r"[A-Za-z0-9_.:+/@-]{1,256}\Z")
 _ARCHITECTURE = re.compile(r"sm[0-9]{2,3}[a-z]?\Z")
-
-# Only reviewed runtime options and environment names cross this boundary.
-_ENGINE_KWARG_KINDS: Mapping[str, str] = {
-    **dict.fromkeys("""
-        chunked_prefill_size context_length dp_size ep_size max_prefill_tokens page_size
-        speculative_num_steps speculative_eagle_topk speculative_num_draft_tokens hicache_size
-        speculative_dspark_block_size cuda_graph_max_bs_decode swa_prefix_tails prefill_decode_interval
-    """.split(), "positive_int"),
-    **dict.fromkeys("""
-        cuda_graph_backend_prefill kv_cache_dtype quantization speculative_algorithm
-        hicache_mem_layout hicache_io_backend
-    """.split(), "token"),
-    **dict.fromkeys("""
-        disable_radix_cache enable_dp_attention enable_flashinfer_allreduce_fusion
-        trust_remote_code enable_hierarchical_cache
-    """.split(), "bool"),
-    **dict.fromkeys(("cuda_graph_bs", "cuda_graph_bs_decode"), "int_list"),
-    # Resident sessions recapture CUDA graphs on a LIVE scheduler loop; the
-    # default 300s watchdog kills the rank mid-capture (measured 2026-07-20).
-    "watchdog_timeout": "positive_int",
-}
-# SGLang reads the DeepSeek-V4.1 Engram host-table switches from the environment,
-# not ServerArgs; at TP2 the tables do not fit beside the weights in HBM.
-_ENGINE_ENV_KINDS: Mapping[str, str] = dict.fromkeys(
-    ("SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE", "SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT"), "token")
 
 ENGINE_CONFIG_FIELDS = frozenset("""
 attention_backend deterministic disable_cuda_graph disable_custom_all_reduce dtype engine_env

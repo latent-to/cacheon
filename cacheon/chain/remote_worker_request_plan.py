@@ -168,12 +168,9 @@ class QualificationRequestPlan:
         if self.remote_request.stage != "qualification":
             fail("qualification plan contains another request stage")
         artifacts = tuple(self.artifacts)
-        if (
-            len(artifacts) < 2
-            or artifacts[0].role != "qualification_payload"
-            or any(row.role != "candidate_publication" for row in artifacts[1:])
-        ):
-            fail("qualification plan artifact roles are incomplete or reordered")
+        from cacheon.chain.remote_worker_artifact_recovery import require_qualification_roles
+
+        require_qualification_roles(tuple(row.role for row in artifacts))
         object.__setattr__(self, "artifacts", artifacts)
         require_int(self.queued_at_unix_ns, "plan queue time", minimum=1)
         require_int(self.planned_expires_block, "planned lease expiry", minimum=1)

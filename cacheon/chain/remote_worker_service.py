@@ -92,6 +92,7 @@ def _cmd_make_registration(args: argparse.Namespace) -> None:
         known_hosts=Path(args.known_hosts),
         pod_host=args.pod_host,
         pod_port=args.pod_port,
+        pod_user=args.pod_user,
         service_identity=args.service_identity,
         remote_service=Path(args.remote_service),
         adapter=Path(args.adapter),
@@ -165,6 +166,12 @@ def _cmd_result_status(args: argparse.Namespace) -> None:
     result_status(_pod_paths(args), args.request_id)
 
 
+def _cmd_checkpoint_status(args: argparse.Namespace) -> None:
+    from cacheon.chain.remote_worker_checkpoints import checkpoint_status
+
+    checkpoint_status(_pod_paths(args), args.request_id)
+
+
 def _cmd_ack_result(args: argparse.Namespace) -> None:
     ack_result(_pod_paths(args), args.request_id, args.archive_sha256)
 
@@ -183,6 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
     make.add_argument("--known-hosts", required=True)
     make.add_argument("--pod-host", required=True)
     make.add_argument("--pod-port", required=True, type=int)
+    make.add_argument("--pod-user", default="root")
     make.add_argument("--service-identity", required=True)
     make.add_argument("--remote-service", required=True)
     make.add_argument("--adapter", required=True)
@@ -236,6 +244,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_pod_paths(status)
     status.add_argument("--request-id", required=True)
     status.set_defaults(function=_cmd_result_status)
+
+    checkpoint = subparsers.add_parser("checkpoint-status")
+    _add_pod_paths(checkpoint)
+    checkpoint.add_argument("--request-id", required=True)
+    checkpoint.set_defaults(function=_cmd_checkpoint_status)
 
     ack = subparsers.add_parser("ack-result")
     _add_pod_paths(ack)

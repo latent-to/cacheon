@@ -6,7 +6,9 @@ default compatibility pin is `0.5.20` in
 [`cacheon/compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py). Different arenas may commission different exact runtimes:
 the GLM arena runs `0.5.20` and the DeepSeek-V4.1-Flash arena `0.5.21`, whose
 prefix cache hands a finished request through `insert_req` and `on_release`
-instead of `cache_finished_req`; the cache seam guards both shapes.
+instead of `cache_finished_req`. The DSV4 nightly uses `checkpoint`,
+`device_prefix_len`, and lazy `prefix_device_indices`; the seam checks its
+resolved slots and request handoffs as well as the release interfaces.
 Run `python -m cacheon.cli compat --sglang-version <pin>` inside the image
 commissioned for that version. The runtime preflight independently compares the
 installed version with its sealed `expected_sglang_version`. This does not
@@ -25,6 +27,9 @@ drafter retains stock execution. Miners keep the same node interface, including
 the target-verification modes and shapes passed to it. Requalify the exact
 model, runtime and workloads before activating this configuration; enabling
 MTP does not carry forward a non-speculative speedup or change the scoring policy.
+For native recurrent MTP, the forward audit includes verification scratch as
+well as live and tracked state. Prefix caching checks the committed checkpoint
+after acceptance, using the same token-prefix and namespace bindings.
 
 The node audit retains expected engine state in separate pinned host pieces and
 streams comparisons on the GPU. It still restores and grades all selected state

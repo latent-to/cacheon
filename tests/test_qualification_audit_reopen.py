@@ -21,6 +21,8 @@ def test_causal_reopen_preserves_audit_decision(monkeypatch, tmp_path, decision)
     harness.value.resident_speed_plan = plan
     harness.value.prepared.candidates[0].launch.digest = plan.candidate.launch.digest
     harness.value.expected_runtime_resource_policy_digest = plan.candidate.runtime_resource_policy_digest
+    harness.value.resident_audit_plan.audit_policy = harness.value.audit_policies[0]
+    harness.value.resident_audit_plan.runtime_resource_policy_digest = plan.candidate.runtime_resource_policy_digest
     _run_resident_harness(harness, baseline)
     attempt = harness.published_attempt
     report = attempt.reports[0]

@@ -74,6 +74,7 @@ def _resident_evidence_hold(
     authority_digest: str,
     source_digest: str,
     failure: BaseException | None = None,
+    reason: RemoteQualificationHoldReason = RemoteQualificationHoldReason.RESIDENT_EVIDENCE_UNAVAILABLE,
 ) -> RemoteQualificationWorkerHold:
     failure_type = ""
     failure_message = ""
@@ -95,7 +96,7 @@ def _resident_evidence_hold(
         if len(failure_message) > 2_000:
             failure_message = failure_message[:500] + " ... " + failure_message[-1_495:]
     return RemoteQualificationWorkerHold(
-        RemoteQualificationHoldReason.RESIDENT_EVIDENCE_UNAVAILABLE,
+        reason,
         diagnostic_digest or canonical_digest(
             "cacheon.eval.b300-resident-qualification-hold.v1",
             {"authority": authority_digest, "request": request_digest,
@@ -300,6 +301,22 @@ class B300MainnetWorker:
     ):
         work = self.service.plan_qualification(candidates, state=None)
         self._validate_work(work, candidates)
+        if request_digest is not None:
+            from cacheon.eval.qualification_worker_checkpoint import CheckpointComputationChanged, prepare_work
+
+            try:
+                work = prepare_work(work, continuation_store, request_digest)
+            except Exception as exc:
+                # Nothing has executed. Changed computation lets the CPU retire the
+                # checkpoint and evaluate the cohort fresh; any other restore failure
+                # holds this request instead of failing the worker epoch.
+                _LOG.exception("request %s refused its checkpoint before execution", request_digest)
+                return _resident_evidence_hold(
+                    request_digest, work.factory.manifest.authority_digest,
+                    work.factory.manifest.source_digest, exc,
+                    RemoteQualificationHoldReason.CHECKPOINT_COMPUTATION_CHANGED
+                    if isinstance(exc, CheckpointComputationChanged)
+                    else RemoteQualificationHoldReason.RESIDENT_EVIDENCE_UNAVAILABLE)
         supporting_evidence_refs: tuple[EvidenceArtifactRef, ...] = ()
         if request_digest is not None:
             try:
@@ -349,6 +366,15 @@ class B300MainnetWorker:
                 )
                 if attempt.audit_recovery is not None:
                     supporting_evidence_refs += (attempt.audit_recovery,)
+                if attempt.worker_recovery is not None:
+                    supporting_evidence_refs += (attempt.worker_recovery, plan.calibration_artifact_ref)
+            elif batch.attempt_ref is not None:
+                from cacheon.eval.qualification_runner import STAGE_EXIT_SCHEMA, reopen_qualification_stage_exit
+
+                if batch.attempt_ref.schema == STAGE_EXIT_SCHEMA:
+                    terminal = reopen_qualification_stage_exit(plan.evidence_root, batch.attempt_ref, expected=plan)
+                    if terminal.worker_recovery is not None:
+                        supporting_evidence_refs += (terminal.worker_recovery, plan.calibration_artifact_ref)
             supporting_evidence_refs = tuple(sorted(
                 set(supporting_evidence_refs),
                 key=lambda row: (

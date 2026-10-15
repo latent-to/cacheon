@@ -227,7 +227,7 @@ def test_request_plan_refuses_reordered_artifact_roles() -> None:
     plan, _ = _plan_and_lease(REQUEST_PLAN_INPUTS["primary"])
     value = plan.to_dict()
     value["artifacts"] = list(reversed(value["artifacts"]))
-    with pytest.raises(RemoteWorkerError, match="artifact roles are incomplete or reordered"):
+    with pytest.raises(RemoteWorkerError, match="not one payload plus its carriers"):
         QualificationRequestPlan.from_dict(value)
 
 

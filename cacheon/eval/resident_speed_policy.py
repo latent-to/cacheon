@@ -1,7 +1,7 @@
 """Frozen qualification speed policy, retaining the historical wire identity.
 
 Only the replay policies remain: version 16 (fixed cutoff, historical evidence)
-and version 17 (statistical, every new commission). The batch-cell fields stay
+version 17 (statistical), and version 18 (portable paired windows). The batch-cell fields stay
 on the wire at zero so sealed replay continuations decode byte for byte.
 """
 
@@ -36,7 +36,7 @@ class ResidentSpeedPolicy:
     def __post_init__(self) -> None:
         if (
             type(self.version) is not int
-            or self.version not in (16, 17)
+            or self.version not in (16, 17, 18)
             or type(self.max_stage_seconds) is not int
             or not 60 <= self.max_stage_seconds <= 7_200
             or type(self.max_qualification_seconds) is not int
@@ -58,7 +58,7 @@ class ResidentSpeedPolicy:
                     self.prefill_credit_weight,
                 )
             )
-            or not (self.min_margin == 0 if self.version == 17 else 0 < self.min_margin < 1)
+            or not (self.min_margin == 0 if self.version >= 17 else 0 < self.min_margin < 1)
             or self.noise_multiplier <= 0
             or not 0 <= self.max_noise < 1
         ):
@@ -73,7 +73,7 @@ class ResidentSpeedPolicy:
                 self.goodput.error_rate != 0
                 or self.goodput.required != 1 + max(self.min_margin, self.noise_multiplier * self.goodput.null_noise)))
             # Owner ruling 2026-10-01: 0.125 (90% at the final look); 0.01 stays readable for stages sealed before it.
-            or (self.version == 17 and (self.goodput.error_rate not in (0.01, 0.125) or self.goodput.required != 1))
+            or (self.version >= 17 and (self.goodput.error_rate not in (0.01, 0.125) or self.goodput.required != 1))
             or self.goodput.null_noise > self.max_noise
             or self.goodput.boot_noise > self.max_noise
             # The batch-cell thresholds are wire fields only; replay seals them at zero.
@@ -93,7 +93,9 @@ class ResidentSpeedPolicy:
             "timing": "paired_fixed_work_host_time", "repeat_limit": 0,
             **({"orientations": 2, "aggregation": "pooled_elapsed_serving_time_equal_log_orientation",
                 "eligibility": "alpha_spending_0.05_0.05_0.10_0.80"}
-               if self.version == 17 else {}),
+               if self.version >= 17 else {}),
+            **({"continuation": "completed_paired_windows_with_original_physical_bindings",
+                "boot_noise": "undivided_per_orientation"} if self.version == 18 else {}),
         })
 
     def to_dict(self) -> dict[str, object]:
@@ -167,7 +169,7 @@ class ResidentSpeedPolicy:
             raise CrossoverRuntimeError(str(exc)) from None
         return cls(
             max_stage_seconds=max_stage_seconds,
-            min_margin=0.0 if version == 17 else float(decimal_value(calibration.speed.min_margin)),
+            min_margin=0.0 if version >= 17 else float(decimal_value(calibration.speed.min_margin)),
             noise_multiplier=float(decimal_value(calibration.speed.noise_multiplier)),
             max_noise=float(decimal_value(calibration.speed.max_noise)),
             calibration_digest=calibration.digest,

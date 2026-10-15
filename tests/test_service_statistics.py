@@ -122,7 +122,7 @@ def test_a_futility_fail_skips_the_second_boot_and_keeps_orientation_one(monkeyp
     replay = SimpleNamespace(tokenizer_path="/t", windows=4)
     arm = lambda name: SimpleNamespace(name=name, session_plan=SimpleNamespace(replay=replay))
     plan = SimpleNamespace(baseline=arm("lane-b"), candidate=arm("lane-c"), digest="p", selected_delta_digest="d",
-                           policy=SimpleNamespace(goodput=SimpleNamespace(error_rate=0.01)))
+                           policy=SimpleNamespace(version=17, goodput=SimpleNamespace(error_rate=0.01)))
     executor = lambda name: SimpleNamespace(prove_quiescent=lambda: name)
     goodput_runtime.run_goodput_pair(plan, baseline_executor=executor("quiet-b"), candidate_executor=executor("quiet-c"),
                                      model_mount=None, deadline=100, clock=lambda: 1.0, quality_control=None)

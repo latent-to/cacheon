@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -109,6 +110,31 @@ def audited(monkeypatch, request):
 
 def _do_nothing(module, *args, **kwargs):
     return module.forward(*args, **kwargs)
+
+
+@pytest.mark.parametrize("plural", [False, True])
+def test_graph_runner_can_discover_and_pass_embedding_arguments(audited, plural):
+    class Singular(nn.Module):
+        def forward(self, x, batch, input_embeds, pp_proxy_tensors=None):
+            return input_embeds * 2
+
+    class Plural(nn.Module):
+        def forward(self, x, batch, inputs_embeds, pp_proxy_tensors=None):
+            return inputs_embeds * 2
+
+    runner, batch = _served_model()
+    runner.model.source = Plural() if plural else Singular()
+    signature = inspect.signature(runner.model.source.forward)
+    nodes.bind(runner, _registry("source", _do_nothing))
+    forward = runner.model.source.forward
+    parameters = inspect.signature(forward).parameters
+    # SGLang's prefill runner selects embedding arguments from this signature.
+    kwargs = {name: torch.ones(2, 4) for name in ("input_embeds", "inputs_embeds")
+              if name in parameters}
+    assert inspect.signature(forward) == signature
+    assert torch.equal(forward(torch.zeros(2, 4), batch, **kwargs), torch.full((2, 4), 2.0))
+    assert (audited["source"]["n"], audited["source"]["baseline_refused"],
+            audited["source"]["violations"]) == (1, 0, 0)
 
 
 def _dsa_pool():
@@ -556,12 +582,47 @@ def test_recurrent_rows_use_physical_track_indices_and_local_layer_map():
 
 
 @pytest.mark.parametrize("feature", ["intermediate_ssm", "enable_linear_replayssm", "enable_linear_replayssm_spec"])
-def test_recurrent_speculative_writes_remain_refused(feature):
+def test_unknown_recurrent_representations_remain_refused(feature):
     runner, batch, state = _recurrent_model()
     target = state if feature == 'intermediate_ssm' else runner.req_to_token_pool.mamba_pool
     setattr(target, feature, True)
     with pytest.raises(RuntimeError, match="recurrent state"):
         nodes._state_rows(runner, (batch,))
+
+
+@pytest.mark.parametrize("change", [None, "intermediate_ssm", "intermediate_conv_window"])
+@pytest.mark.parametrize("padded", [False, True])
+def test_mtp_verify_restores_and_grades_batch_position_scratch(audited, change, padded):
+    runner, batch, state = _recurrent_model()
+    if padded:
+        batch.req_pool_indices = torch.tensor([0, 6])
+        batch._original_batch_size = 1
+    state.intermediate_ssm = torch.zeros(2, 4, 3, 2)
+    state.intermediate_conv_window = [torch.zeros(2, 4, 3, 3)]
+    batch.forward_mode = SimpleNamespace(is_target_verify=lambda: True)
+    original = runner.model.leaf.forward
+
+    def verify(x, batch):
+        for buffer in (state.intermediate_ssm, *state.intermediate_conv_window):
+            buffer[:, 0] += x.sum()
+        return original(x, batch)
+
+    runner.model.leaf.forward = verify
+
+    def candidate(module, x, batch):
+        output = module.forward(x, batch)
+        if change:
+            buffer = getattr(state, change)
+            (buffer[0] if isinstance(buffer, list) else buffer)[:, 0] += 100
+        return output
+
+    nodes.bind(runner, _registry("leaf", candidate))
+    runner.model.leaf(torch.ones(2, 4), batch)
+    assert audited["leaf"]["violations"] == int(change is not None)
+    if change is None:
+        for buffer in (state.intermediate_ssm, *state.intermediate_conv_window):
+            assert (buffer[:, 0] == 8).all()
+            assert (buffer[:, 1:] == 0).all()
 
 
 @pytest.mark.parametrize("dim", [0, 1])

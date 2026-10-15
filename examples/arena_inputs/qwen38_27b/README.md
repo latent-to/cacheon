@@ -16,7 +16,7 @@ Build the development image from the commissioned runtime source:
 ```bash
 build_dir=$(mktemp -d)
 mkdir "$build_dir/src"
-git archive 074e472406978ba8b051f7455cf83d72d46ecaa5 | tar -x -C "$build_dir/src"
+git archive 89e13099f3e1fa7969a772a8e81e45d9817247dc | tar -x -C "$build_dir/src"
 docker build -t cacheon-qwen38-27b \
   -f examples/arena_inputs/qwen38_27b/Dockerfile "$build_dir"
 ```
@@ -50,8 +50,14 @@ The four sequential batches each contain two synthetic prompts, generating
 32 tokens with zero temperature and EOS stopping disabled. Batches two and
 four repeat their preceding prompts and cache salts to exercise prefix reuse.
 The config keeps radix caching enabled and captures decode CUDA graphs at
-batch sizes 1, 2, 4 and 8. It caps development concurrency at eight; production
+batch sizes 1, 2, 4 and 8. It caps running requests at eight; production
 qualification owns its sealed concurrency and replay workload.
+
+Native MTP uses EAGLE with three speculative steps, top-k one and four draft
+tokens. The checkpoint supplies the draft head; no separate draft model is
+needed. Attention KV uses `fp8_e4m3`; recurrent state remains FP32. Submitted
+forward nodes must support target-verification calls as well as ordinary
+prefill/decode. The draft model retains stock execution.
 
 Qwen's hybrid cache includes recurrent state as well as attention KV. Node
 audits compare that state against stock. Candidate and baseline engines have

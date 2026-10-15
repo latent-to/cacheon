@@ -221,6 +221,141 @@ Original timestamps, speed policy, numerical thresholds and bundle identity stay
 intact. Conflicting evidence, exhausted time or a clock reset stop before launch. Recovery grants no PASS or reward by itself: the
 normal grader, evidence import and settlement still consume the completed result.
 
+### Interrupted replay controllers
+
+When either paired engine fails, the peer leaves its startup or response wait
+and follows its normal owned-container teardown. The original failure remains
+the verdict cause; an operator does not need to kill the still-starting peer.
+
+New commissions use speed policy 18. Before the next paired replay window starts,
+the runner saves `speed_window_N.json` with both completed reads, raw host request
+evidence, device preflight and active receipts, and the actual host clock and lane
+identities. Engines remain resident. A checkpoint explicitly records that teardown
+has not happened; it never substitutes a completed-session or post-drain receipt.
+The terminal window commits with its complete speed stage, after any selected
+quality controls and normal engine teardown.
+
+A replacement regrades the saved windows and executes only the remaining sealed
+windows. It reloads the model and repeats the interrupted, unacknowledged window.
+The resumed engine numbers its windows from 1 again; grading tells its reads from
+the saved ones by their request start times, so resuming on the same lanes is not
+a duplicate read. Completed reads keep their original timestamps and physical bindings, including
+when the replacement has different GPU IDs or a different monotonic clock origin.
+Model, image, workload, contribution, GPU operating configuration and numerical
+policy must match. The precommitted orientation sequence, equal orientation weights,
+stopping boundaries and error budget remain fixed. Boot uncertainty remains fully
+charged per orientation; additional hosts do not divide it away. Acknowledged
+execution counts toward the sealed stage and qualification budgets; downtime is excluded.
+
+Historical policy-17 runs retain their original scoring contract. Their
+`speed_first.json` resumes only on the original allocation and boot; their complete
+speed stages remain portable. Policy 18 adds portability without relabeling those
+older measurements.
+
+The standing CPU relay saves compressed checkpoints of replay windows and completed
+speed, audit, and pristine-T stages. Each checkpoint preserves the original plan,
+calibration, private selection state, stage records, and clock domains. It becomes
+available for replacement only after the CPU has copied, verified and fsynced it.
+The relay's `checkpoints/` directory must live on storage independent of the GPU
+worker. These files contain private validator inputs and must not be published.
+
+When a new commissioned worker replaces an old epoch, the recoverable dispatcher
+first imports any complete result already on the CPU under the worker and arena
+service that produced it; every epoch's service is retained before it publishes work.
+Otherwise it retires the old lease, whatever held it, retains its carrier, and seals
+a new request with the CPU-held checkpoint digest. A result the CPU moved in but never
+marked is held as `transport_hold:result_partial`, since it may be finished paid work.
+The relay transfers only carriers bound to its own worker epoch; older carriers stay
+in the spool for the dispatcher and cannot block the replacement's queue. A late
+old-worker result cannot commit under the replacement lease. Checkpoint lookup follows the submitted cohort and lane
+across commissioning generations. The worker then compares the executable code,
+model, workload and grading rules, and reconstructs the original stack metadata
+through the materializer. Changed commissioning identities do not discard saved
+work. Changed code, image, engine configuration, model, workload or grading rules,
+or a changed GPU operating configuration for unfinished replay windows, makes the
+worker return the typed `checkpoint_computation_changed` HOLD before GPU execution.
+The CPU then records that checkpoint under `checkpoints/retired/`, logs
+`checkpoint_retired`, keeps its bytes, and releases the lease with no decision, no
+consumed attempt and no retry-cap charge; the next request evaluates the cohort from
+the start. Any other restore failure holds it as `resident_evidence_unavailable`
+with its original cause. Existing checkpoint
+indexes for the submitted cohort are reopened through their original authenticated
+requests without replacing the saved bytes; another cohort's retained entry is not
+authenticated and cannot stop the claim. Completed stages retain their original work and hardware
+receipts; replacement driver or power settings do not invalidate that evidence.
+Missing stages use the replacement's commissioned hardware. Interrupted audit or
+pristine T repeats that stage; completed predecessors remain reusable. An audit
+run on the replacement uses the replacement's sealed seed and runtime policy, which
+its worker-recovery record binds.
+
+Clock-domain changes do not rewrite old timestamps. The result carries an optional
+worker-recovery artifact and per-stage clock domains; regrading checks them against
+the handoff and charges the retained and newly executed stage durations. The
+original speed policy, workload, model, image, contribution and numerical thresholds
+remain bound throughout recovery. Public recovery evidence excludes private
+selection secrets.
+
+Pristine T's request, reference manifest and execution receipt name the worker that
+actually executes it. Recovery preserves the original selection and calibration
+for grading and verifies the reference math after reconstructing the exact
+original and replacement commissioning identities.
+
+The registered pod service exposes `checkpoint-status --request-id ID` with its
+ordinary pod-path arguments. `cpu-serve` polls it alongside result status; operators
+do not need a separate mirror or import script. Register the provided SSH login
+with `make-registration --pod-user USER` when it is not root. That account must
+already be able to execute the fixed service and transfer its private spool files
+using noninteractive sudo. Replacement provisioning remains an operator/provider
+action; registration of the new worker activates the recovery path.
+
+To prepare a fresh Ubuntu worker, copy the selected Cacheon source tree and the
+retained model receipt to it, then run this command from that source tree as the
+deployment user. The host needs Docker, the NVIDIA runtime, Python 3.12, and
+enough disk and memory for the commissioned model. Keep the model-download token
+on the durable controller and deliver an owner-only copy to the replacement's
+`--token-file` path. Exclude it from images, checkpoints, logs and result artifacts.
+Use the previously built worker image's immutable repository digest:
+
+```bash
+python3 scripts/bootstrap_worker.py \
+  --root /srv/cacheon/bootstrap \
+  --model-repo <MODEL_REPOSITORY> --model-revision <MODEL_COMMIT> \
+  --model-dir /srv/models/commissioned-model \
+  --model-receipt /srv/cacheon/inputs/model-provision.json \
+  --token-file /srv/cacheon/credentials/model-token \
+  --image <REGISTRY/WORKER_IMAGE@sha256:DIGEST>
+```
+
+Model download, image retrieval and the controller/replay environment installation
+run concurrently. Repeating the command reuses the local image, environments and
+completed model files, and resumes partial Hugging Face downloads. Downloaded
+directories use mode 0555 and files 0444. Model verification precedes `bootstrap-complete.json`.
+An existing `uv` on `PATH` is reused before downloading an installer.
+When running a separately retained bootstrap script, pass `--source-root` with
+the exported Cacheon source matching the worker image. Existing read-only model
+mounts can be reused without changing their permissions.
+Downloader metadata stays outside the sealed model tree. Individual subprocess
+logs remain in the bootstrap root's `logs/` directory; `--download-timeout`
+defaults to 7,200 seconds. On hosts with at least twice the model size in available
+RAM, `--ram-model` downloads directly into tmpfs, avoiding contention with Docker
+layer extraction on the host disk. It requires root. After a host reboot,
+retained disk files are copied into RAM and checked against the receipt; partial
+disk downloads finish first, and verified RAM copies survive a process restart.
+This prepares inputs for the existing commissioner;
+it does not register a worker, allocate GPUs, or resume an evaluation itself.
+
+Fault injection belongs in private operational scripts. The production recovery
+path does not schedule synthetic interruptions.
+
+Recovery acceptance requires a controlled-interruption run through the ordinary
+qualification runner on the commissioned image/model/topology. Interrupt its
+controller after the first-orientation record is durable, reopen the same sealed
+scope and verify that only the swapped orientation executes before the terminal
+result. Repeat with an interruption inside a swapped replay window. Retain the
+original plan, continuation and evidence roots, and recover only that run's owned
+stale containers before resuming. A VM shutdown, Docker restart, GPU reset or broad
+process kill is unnecessary for this test and can interrupt other work.
+
 T remains untimed and candidate-free. The host owns role assignment, monotonic clocks,
 token numerators, conditioning windows, absolute deadlines, device observations, audit
 grading, selection entropy, and teardown. Candidate wall-clock reports and aggregate
