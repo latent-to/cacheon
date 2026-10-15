@@ -742,7 +742,7 @@ Both orientations must exist before a PASS; a futility FAIL keeps one.
 The last sealed window yields `PASS` or `FAIL`, never `NO_DECISION`. This normal-model guarantee
 depends on the sealed noise bounds and independent boot contrasts; it does not
 establish runtime resolution by itself. A fixed 1% gain floor is absent. Reward
-credit uses the point estimate, not a confidence-bound haircut; a later V17 PASS
+credit uses the point estimate, not a confidence-bound haircut; a later V17 or V18 PASS
 is paid only when that estimate beats the best earlier rewarded PASS against the
 same arena and incumbent stack by 1.5%. Regrading checks
 the exact stopping point, all engine identities, host timings, and controls.

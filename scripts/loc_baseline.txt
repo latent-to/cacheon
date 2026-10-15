@@ -8,13 +8,14 @@
 # Node seam binds every path (the V4.1 fork's _next_layer chain hid 37 of 40 layers) and skips modules in a
 # result (the MoE record's experts recursed): +4 runtime, +1 docs, +2 notes.
 # Pristine reference turns off V4.1 decoder SWA bounded replay (it refuses teacher logprobs): +2 docs, +1 note.
+# Reward margin treats speed policy 18 as statistical (its sealed 0 failed weight pushes): +1 runtime, +1 test, +1 note.
 (root) 1158
 .github 345
 bundles 2398
-cacheon 91885
+cacheon 91886
 cacheon_kernels 936
 dashboard 4281
 docs 12646
 examples 396
-scripts 2122
-tests 66882
+scripts 2123
+tests 66883
