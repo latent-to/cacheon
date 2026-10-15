@@ -20,6 +20,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
+from dashboard.progress import install_progress
 from fastapi.staticfiles import StaticFiles
 
 from dashboard.forensics import (
@@ -93,7 +94,6 @@ ACTIVE_STATUSES = (
 )
 TERMINAL_STATUSES = ("failed", "expired", "qualified")
 
-# Queue stage order used to compute a submission's pipeline progress.
 STAGE_ORDER = {
     "deferred": 0, "reserved": 1, "fetching": 2, "transport_retry": 2,
     "published": 3, "qualifying": 4, "reproduction_pending": 5,
@@ -101,7 +101,6 @@ STAGE_ORDER = {
     "qualified": 7, "failed": 7, "expired": 7,
 }
 
-# ------------------------------------------------------------- db access ---
 
 def intake_conn() -> sqlite3.Connection:
     """Open the selected live intake DB read-only with current WAL contents."""
@@ -408,7 +407,6 @@ def overview() -> dict[str, Any]:
         "SELECT count(*) FROM evaluation_leases WHERE state='active'").fetchone()[0]
     con.close()
 
-    # Submissions per day (block time estimates are fine for a trend chart).
     per_day: Counter[str] = Counter()
     for block in blocks:
         unix = value("ENRICHER", ENRICHER).block_time(block)["unix"]
@@ -919,6 +917,7 @@ def _sqlite_error(_req: Any, exc: sqlite3.Error) -> JSONResponse:
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 install_social(app, globals())
 install_sources(app, globals())
+install_progress(app, globals())
 if ENRICH:
     ENRICHER.start()
 

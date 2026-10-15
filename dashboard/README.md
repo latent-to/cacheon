@@ -55,7 +55,22 @@ separate from finalized `items` / `pass_total`. Waiting rows have
 
 ## Design notes
 
+- Tabs request their data immediately; arena status refreshes independently every
+  15 seconds after the initial arena lookup. Revisiting a tab shows its previous
+  result while refreshing, scoped to the arena and current filters. Refresh
+  failures are shown explicitly, and superseded requests cannot replace the
+  selected view. These browser snapshots last only until the page is reloaded.
 - **Never writes the intake DB.** Opens it `mode=ro` with WAL visibility. Safe to run alongside intake/supervisor.
+- Process health shares a process-table snapshot for up to two seconds across
+  concurrent requests, avoiding repeated full scans for every arena and role.
+- Overview and Queue show the active worker's run progress from its existing
+  CPU-held checkpoints: retained replay windows, speed replay, correctness audit,
+  and pristine check. These are completion milestones, not percent of elapsed
+  work or an ETA; runs can finish early. Only the current request and worker epoch
+  are shown. Stale heartbeats and unreadable checkpoints are labeled explicitly.
+  Large checkpoint archives are read once per immutable digest; only the small
+  public summary is cached. The separate `/api/progress` request never blocks the
+  main tab content. No sealed plan, prompt, or secret is exposed.
 - Chain enrichment (block timestamps, payment coldkey signers, metagraph
   emissions) runs on a background thread against
   `wss://archive.sub.latent.to` and caches results in

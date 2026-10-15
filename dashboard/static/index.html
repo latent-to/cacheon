@@ -185,6 +185,7 @@ footer { max-width: 1280px; margin: 0 auto; padding: 10px 20px 30px; color: var(
   <div id="meta"></div>
 </div></header>
 <aside id="arena-status" class="hwrap small"></aside>
+<div id="view-status" class="hwrap small muted" role="status"></div>
 <main id="view"></main>
 <div id="drawer"></div>
 <footer>
@@ -196,6 +197,7 @@ footer { max-width: 1280px; margin: 0 auto; padding: 10px 20px 30px; color: var(
   (<span id="tz"></span>); dotted times are block-estimates pending exact chain lookup.
 </footer>
 <script src="/static/performance.js"></script>
+<script src="/static/progress.js"></script>
 <script>
 "use strict";
 const TABS = [
@@ -208,11 +210,14 @@ if (!TABS.some(([id]) => id === tab)) tab = "overview";
 let arena = decodeURIComponent(location.pathname.replace(/^\/+|\/+$/g, ""))
   || new URL(location.href).searchParams.get("arena") || "";
 let arenas = [];
+let arenasCheckedAt = "";
 let feeTotals = { tao: 0, count: 0 };
 let allArenaEvents = false;
 let detailRequest = 0;
 let subFilters = { q: "", status: "", offset: 0 };
 let timer = null;
+let refreshRequest = 0, currentViewKey = "";
+const viewCache = new Map();
 
 document.getElementById("tz").textContent =
   Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -312,11 +317,13 @@ function renderTabs() {
   $("#tabs").innerHTML = TABS.map(([id, label]) =>
     `<button class="${id === tab ? "on" : ""}" onclick="go('${id}')">${label}</button>`).join("");
 }
-window.go = (id) => { tab = id; location.hash = id; renderTabs(); $("#view").innerHTML = '<p class="muted">Loading…</p>'; refresh(); };
+window.go = (id) => { tab = id; location.hash = id; renderTabs(); refresh(); };
 
 async function updateMeta() {
+  const requestedArena = arena;
   try {
     const h = await api("/api/health");
+    if (requestedArena !== arena) return;
     const chainDot = `<span class="dot" style="background:var(--${h.chain.ok ? "ok" : "bad"})"></span>`;
     const dbDot = `<span class="dot" style="background:var(--${h.db.ok ? "ok" : "bad"})"></span>`;
     const tip = h.chain.tip && h.chain.tip.block
@@ -324,7 +331,7 @@ async function updateMeta() {
     const lag = h.intake_lag_blocks == null ? "" :
       ` · intake lag ${h.intake_lag_blocks} blk`;
     $("#meta").innerHTML = `${dbDot}db ${chainDot}chain · ${tip}${lag}`;
-  } catch { $("#meta").innerHTML = '<span class="pill bad">api unreachable</span>'; }
+  } catch { if (requestedArena === arena) $("#meta").innerHTML = '<span class="pill bad">api unreachable</span>'; }
 }
 
 /* ---------------- views ---------------- */
@@ -368,6 +375,7 @@ async function viewOverview() {
       ${card(feeTotals.tao.toFixed(1) + " τ", feeTotals.count + " fee payments ever, every arena", "info")}
       ${feeCards.join("")}
     </div>` : ""}
+    ${runProgress()}
     ${lease ? `<div class="callout" style="border-left-color:var(--ok)">
       <b style="color:var(--fg)">Evaluation lease active:</b>
       ${pill(lease.stage)} <code>${esc(short(lease.reservation_id, 12))}</code>
@@ -438,6 +446,7 @@ async function viewQueue() {
     <p class="muted small">A lease can remain active while the worker is disconnected.</p>
     ${table(["Stage","Reservation","Target","Hotkey","Started","Lease left","State"], active,
       "No active evaluation lease.")}
+    ${runProgress()}
     <h2>Pending submissions (queue order)</h2>
     ${table(["#","Reservation","Status","Target","Hotkey","Submitted","Fee","Reason"], pending,
       "Queue is empty — no active-pipeline submissions.")}
@@ -737,7 +746,8 @@ window.openArenaDetail = async (key, rid) => {
   if (key && key !== arena) {
     arena = key;
     closeDetail();
-    await loadArenas();
+    renderArenas();
+    updateMeta();
     refresh();
   }
   openDetail(rid);
@@ -890,25 +900,46 @@ const VIEWS = { overview: viewOverview, queue: viewQueue, submissions: viewSubmi
   timeline: viewTimeline, system: viewSystem };
 
 async function refresh() {
-  const requestedArena = arena, requestedTab = tab;
+  const request = ++refreshRequest;
+  const cacheSlot = JSON.stringify([arena, tab]);
+  const key = JSON.stringify([arena, tab, tab === "submissions" ? subFilters : null,
+    tab === "timeline" ? allArenaEvents : null]);
   clearTimeout(timer);
-  updateMeta();
-  const view = $("#view");
+  const view = $("#view"), status = $("#view-status");
+  const cached = viewCache.get(cacheSlot);
+  const content = cached?.key === key ? cached.content : null;
+  if (currentViewKey !== key) view.innerHTML = content ?? '<p class="muted">Loading…</p>';
+  currentViewKey = key;
+  status.textContent = content === null ? "" : "Refreshing… Showing previous data.";
   try {
-    await loadArenas();
     const content = await VIEWS[tab]();
-    if (requestedArena === arena && requestedTab === tab) view.innerHTML = content;
+    if (request !== refreshRequest) return;
+    viewCache.set(cacheSlot, { key, content });
+    view.innerHTML = content;
+    status.textContent = "";
+    refreshRunProgress();
   } catch (err) {
-    view.innerHTML = `<div class="empty">Failed to load: ${esc(err.message)}</div>`;
+    if (request !== refreshRequest) return;
+    if (content === null) view.innerHTML = `<div class="empty">Failed to load: ${esc(err.message)}</div>`;
+    else status.textContent = `Refresh failed: ${err.message}. Showing previous data.`;
   }
-  timer = setTimeout(refresh, 15000);
+  if (request === refreshRequest) timer = setTimeout(refresh, 15000);
+}
+async function refreshMetadata() {
+  try { await Promise.all([updateMeta(), loadArenas()]); }
+  catch (err) { $("#arena-status").textContent = `Arena status refresh failed: ${err.message}`; }
+  setTimeout(refreshMetadata, 15000);
 }
 async function loadArenas() {
   const data = await api("/api/arenas");
+  arenasCheckedAt = new Date().toLocaleTimeString();
   arenas = data.items;
   feeTotals = { tao: data.fees_total_tao || 0, count: data.fees_count || 0 };
   arena = arenas.find(s => s.slug === arena)?.key || arena;
   if (!arena) arena = data.default || "";
+  renderArenas();
+}
+function renderArenas() {
   $("#arena-select").innerHTML = arenas.length ? arenas.map(s =>
     `<option value="${esc(s.key)}" ${s.key === arena ? "selected" : ""}>${esc(s.label)}</option>`).join("") : '<option>Current arena</option>';
   $("#arena-status").innerHTML = arenas.map(s => {
@@ -921,13 +952,14 @@ async function loadArenas() {
   }).join(" ") + (arenas.length ? '<span> Reward offer is global. Sponsorship revenue, evaluation fees/credits, and miner alpha rewards are separate.</span>' : "");
   const current = arenas.find(s => s.key === arena);
   if (current) $("#arena-status").innerHTML += `<strong> ${esc(current.label)}: ${esc(current.weights_status)}</strong>`;
-  if (arenas.length) $("#arena-status").innerHTML += `<span class="muted" title="Target settings refresh with the dashboard every 15 seconds.">Targets checked ${esc(new Date().toLocaleTimeString())} · refreshes every 15s</span>`;
+  if (arenas.length) $("#arena-status").innerHTML += `<span class="muted" title="Target settings refresh with the dashboard every 15 seconds.">Targets checked ${esc(arenasCheckedAt)} · refreshes every 15s</span>`;
 }
 $("#arena-select").onchange = async e => {
   arena = e.target.value;
   closeDetail();
   subFilters.offset = 0;
-  await loadArenas();
+  renderArenas();
+  updateMeta();
   refresh();
 };
 async function start() {
@@ -935,7 +967,9 @@ async function start() {
   const linkedSubmission = new URL(location.href).searchParams.get("submission");
   history.replaceState(null, "", submissionURL(linkedSubmission));
   renderTabs();
+  updateMeta();
   refresh();
+  setTimeout(refreshMetadata, 15000);
   if (linkedSubmission) openDetail(linkedSubmission);
 }
 start().catch(err => { $("#view").textContent = "Failed to load arenas: " + err.message; });
