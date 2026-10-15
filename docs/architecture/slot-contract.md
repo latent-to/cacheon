@@ -181,7 +181,8 @@ outputs; it does not reorder execution results, router pairs or masks.
 What stock leaves in its own arguments is not graded. The fused RMSNorm overwrites
 its arguments and returns them, and a decoder layer leaves normed intermediates in
 its dead input; values reach the caller through the result and the engine state.
-A result that is a record rather than a tuple is graded through its fields.
+A result that is a record rather than a tuple is graded through its fields; a module
+in it (a MoE record carries its experts) holds weights, not an answer, and is skipped.
 
 `prepare` and `entry` receive the live module and must leave its methods alone.
 Every callable on the node's modules and their classes is recorded at binding,

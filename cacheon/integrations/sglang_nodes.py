@@ -106,9 +106,10 @@ def _tensors(value: object, found: list[torch.Tensor], *, fields: bool = False) 
     """Flatten the tensors of a call value; ``fields`` also walks object attributes.
 
     A node's result may be a record rather than a tuple (the logits processor returns
-    one), and an unwalked record would leave the output ungraded. Arguments are not
-    walked that way: the engine's batch object carries dozens of tensors the node
-    does not own.
+    one), and an unwalked record would leave the output ungraded. Arguments and modules
+    are not walked that way: the engine's batch object carries dozens of tensors the
+    node does not own, and the V4.1 MoE record's experts module recursed past Python's
+    limit on every decode call of 37 layers (B300, 2026-10-15).
     """
 
     if torch.is_tensor(value):
@@ -119,7 +120,7 @@ def _tensors(value: object, found: list[torch.Tensor], *, fields: bool = False) 
     elif isinstance(value, dict):
         for item in value.values():
             _tensors(item, found, fields=fields)
-    elif fields and hasattr(value, "__dict__"):
+    elif fields and hasattr(value, "__dict__") and not isinstance(value, torch.nn.Module):
         for item in vars(value).values():
             _tensors(item, found, fields=fields)
     return found
