@@ -160,7 +160,7 @@ def _reward_min_margin(db, qualifications):
     from cacheon.chain.intake import IntakeError
 
     policies = [report["speed_witness"]["resident_policy"] for report in _reward_reports(db, qualifications)]
-    statistical = [policy.get("version") == 17 for policy in policies]
+    statistical = [policy.get("version") in (17, 18) for policy in policies]
     if any(statistical) and not all(statistical):
         raise IntakeError("reward comparison mixes statistical and historical qualifications")
     if any(statistical):
@@ -200,7 +200,7 @@ def _reward_reports(db, qualifications):
             if len(reports) != 1:
                 raise ValueError("reward comparison report is ambiguous")
             policy = reports[0]["speed_witness"]["resident_policy"]
-            if policy.get("version") != 17:
+            if policy.get("version") not in (17, 18):
                 policy["min_margin"]
             result.append(reports[0])
         except (KeyError, TypeError, ValueError, ArithmeticError) as exc:

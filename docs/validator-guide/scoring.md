@@ -114,7 +114,7 @@ rules live in
 
 A qualified PASS earns reward only when its speedup beats the best earlier
 rewarded PASS against the same arena and incumbent stack by the reward margin:
-1.5% for V17, the sealed `min_margin` for historical policies. The first PASS
+1.5% for V17 and V18, the sealed `min_margin` for historical policies. The first PASS
 against a commissioned baseline is eligible; see
 [Settlement and weights](settlement-and-weights.md).
 

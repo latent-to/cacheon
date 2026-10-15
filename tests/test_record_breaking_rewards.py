@@ -241,7 +241,8 @@ def test_scoring_compares_all_slots_without_advancing_unpaid_or_later_records(tm
         assert comparisons[candidates[0].reservation_digest]["score_speedup"] == Decimal("1.1")
 
 
-def test_statistical_records_pay_one_and_a_half_percent_over_the_previous_best(tmp_path):
+@pytest.mark.parametrize("version", [17, 18])
+def test_statistical_records_pay_one_and_a_half_percent_over_the_previous_best(tmp_path, version):
     from decimal import Decimal
     from cacheon.chain.evaluation_order import reward_comparisons
     from cacheon.eval.goodput_runtime import GoodputPolicy, GoodputReadSet
@@ -258,7 +259,7 @@ def test_statistical_records_pay_one_and_a_half_percent_over_the_previous_best(t
             reads = GoodputReadSet(tuple(baseline), tuple(candidate),
                                    tuple((root, *counts) for root, counts in WORK.items()), 4)
             payload = json.dumps({"speed_witness": {
-                "resident_policy": {"version": 17, "goodput": policy.to_dict()},
+                "resident_policy": {"version": version, "min_margin": "0", "goodput": policy.to_dict()},
                 "goodput": reads.to_dict(),
             }}).encode()
             candidates.append(_qualified_settlement_candidate(
