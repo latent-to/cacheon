@@ -2,7 +2,7 @@
 
 Use these inputs with the commissioned `nvidia/DeepSeek-V4.1-Flash-NVFP4`
 checkpoint (revision `3431dde3247c13b5957f682b1e3c6fcae2566079`) and the
-[SGLang fork at `5e72ce5491a27a7751e039487dc9e6fd8cd375c6`](https://github.com/latent-to/sglang/commit/5e72ce5491a27a7751e039487dc9e6fd8cd375c6)
+[SGLang fork at `4f335dadf136c65619aa070cb0719a5f330d8659`](https://github.com/latent-to/sglang/commit/4f335dadf136c65619aa070cb0719a5f330d8659)
 on two B300 GPUs (TP2 with expert parallelism 1). Keep this folder
 outside the submitted bundle. Mount it read-only at `/arena`, the model at
 `/model`, and a writable result/cache directory at `/work`.

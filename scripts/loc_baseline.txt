@@ -7,13 +7,14 @@
 # Eager audit role also turns off nightly prefill CUDA graphs (it graded capture warmups): +12 runtime, +1 note.
 # Node seam binds every path (the V4.1 fork's _next_layer chain hid 37 of 40 layers) and skips modules in a
 # result (the MoE record's experts recursed): +4 runtime, +1 docs, +2 notes.
+# Pristine reference turns off V4.1 decoder SWA bounded replay (it refuses teacher logprobs): +2 docs, +1 note.
 (root) 1158
 .github 345
 bundles 2398
 cacheon 91888
 cacheon_kernels 936
 dashboard 4281
-docs 12644
+docs 12646
 examples 396
-scripts 2121
+scripts 2122
 tests 66882
