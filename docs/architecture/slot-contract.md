@@ -113,8 +113,9 @@ Truth is the stock node in the running engine, on the same call:
 2. its result tensors are kept, together with the engine-state rows the batch may
    write: the cache rows at `out_cache_loc` (whole pages where the pool stores
    pages), plus native recurrent convolution and temporal rows for both live
-   requests and tracked checkpoints. Speculative recurrent and ReplaySSM state
-   are refused rather than audited unchecked;
+   requests and tracked checkpoints. Native MTP verification also restores and
+   grades its batch-position temporal and convolution scratch rows. ReplaySSM
+   state remains unsupported;
 3. the arguments stock changed and the state rows are put back;
 4. the honest twin answers the same call and is put back the same way: the stock
    node with supported fused ops on SGLang's native reference paths, giving the
@@ -255,7 +256,9 @@ so a prefix hit that skips its trailing window is refused. In the untimed audit,
 native recurrent convolution and temporal checkpoints are bound to their complete
 token prefix and namespace before donation, then checked before reuse. Live
 recurrent request state must survive cache handoffs unchanged. Physical slot
-translation and tracked checkpoint boundaries follow the pinned runtime. Cache
+translation and tracked checkpoint boundaries follow the pinned runtime. MTP
+acceptance commits its scratch state into these same checkpoint rows before
+cache handoff; scratch itself is not a transferable prefix. Cache
 flushes forget recorded fingerprints as well as pending handoffs; each replay
 window starts after the engine acknowledges its cache reset. Int8 recurrent
 checkpoints and ReplaySSM layouts remain unsupported and are refused. A new model does not require a new

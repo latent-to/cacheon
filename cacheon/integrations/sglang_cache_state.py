@@ -68,10 +68,12 @@ class PrefixStateAudit:
         self.ring = getattr(self.pool, "unified_kv_pool", None) if self.ring_size else None
         self.mamba = getattr(self.requests, "mamba_pool", None) if ctx.is_hybrid_ssm else None
         state = getattr(self.mamba, "mamba_cache", None)
-        # Unknown layouts stay refused rather than serving unchecked state. Int8
-        # checkpoints and ReplaySSM have different stored bytes and boundaries.
+        # MTP scratch is batch-local, never a transferable prefix checkpoint.
+        # Accepted states are committed into the ordinary temporal/conv rows
+        # before cache handoff. ReplaySSM and int8 checkpoints use other layouts.
         if (ctx.is_hybrid_ssm and (state is None
-                or getattr(state, "intermediate_ssm", None) is not None
+                or (getattr(state, "intermediate_ssm", None) is not None
+                    and not self.torch.is_tensor(state.intermediate_ssm))
                 or getattr(self.requests, "mamba_ckpt_pool", None) is not None
                 or getattr(self.mamba, "enable_linear_replayssm", False)
                 or getattr(self.mamba, "enable_linear_replayssm_spec", False))

@@ -25,6 +25,9 @@ drafter retains stock execution. Miners keep the same node interface, including
 the target-verification modes and shapes passed to it. Requalify the exact
 model, runtime and workloads before activating this configuration; enabling
 MTP does not carry forward a non-speculative speedup or change the scoring policy.
+For native recurrent MTP, the forward audit includes verification scratch as
+well as live and tracked state. Prefix caching checks the committed checkpoint
+after acceptance, using the same token-prefix and namespace bindings.
 
 The node audit retains expected engine state in separate pinned host pieces and
 streams comparisons on the GPU. It still restores and grades all selected state

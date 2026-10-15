@@ -181,11 +181,22 @@ def _recurrent_match(guard, cache, tokens, slot, *, host=False, salt=None, cow=T
 
 @pytest.mark.parametrize("extra", [False, True])
 @pytest.mark.parametrize("host", [False, True])
+@pytest.mark.parametrize("speculative", [False, True])
 @pytest.mark.parametrize("change", [None, "conv", "temporal", "prefix", "namespace", "reset"])
-def test_recurrent_hits_bind_all_state_kinds_to_prefix_and_flush(extra, host, change):
-    guard = _Guard(_recurrent_engine(extra))
+def test_recurrent_hits_bind_all_state_kinds_to_prefix_and_flush(extra, host, speculative, change):
+    ctx = _recurrent_engine(extra)
+    if speculative:
+        ctx.params.is_eagle = True
+        state = ctx.params.req_to_token_pool.mamba_pool.mamba_cache
+        state.intermediate_ssm = torch.randn(2, 4, 3, 3, 4)
+        state.intermediate_conv_window = [torch.randn(2, 4, 3, 3, 2)]
+    guard = _Guard(ctx)
     cache = _cache(guard)
     tokens = list(range(16))
+    # Native UnifiedTreeCore rematches the complete ordinary-token key after
+    # an MTP prefill, despite the outer cache params carrying is_eagle=True.
+    guard.matched(cache, NS(key=Key(tokens), req=None),
+                  NS(device_indices=torch.arange(16), host_hit_length=0), NS)
     req = _recurrent_request("source", tokens, 0)
     guard.requests.req_to_token[0, :16] = torch.arange(PAGE, PAGE + 16).int()
     guard.handoff(cache, req, tokens, finished=True)
