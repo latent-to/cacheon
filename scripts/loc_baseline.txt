@@ -5,13 +5,14 @@
 # discarded mid-speed progress. Replacement-path fixes: +86 runtime, +17 docs, +2 test fixture (PR 151 review).
 # Live mainnet fixes (uniform-FP8 V4 pool reader, stock forward signature): +17 runtime, +5 docs, +65 tests, +1 note.
 # Eager audit role also turns off nightly prefill CUDA graphs (it graded capture warmups): +12 runtime, +1 note.
+# Node seam binds every path (the V4.1 fork's _next_layer chain hid 37 of 40 layers): +3 runtime, +1 note.
 (root) 1158
 .github 345
 bundles 2398
-cacheon 91884
+cacheon 91887
 cacheon_kernels 936
 dashboard 4281
 docs 12643
 examples 396
-scripts 2119
+scripts 2120
 tests 66882
