@@ -164,12 +164,13 @@ def _state_rows(
 
 
 def _recurrent_rows(requests, batch, layer):
-    """The native live and tracked recurrent rows a non-speculative forward can write."""
+    """The native committed and speculative recurrent rows this forward can write."""
     pool = getattr(requests, "mamba_pool", None)
     if pool is None:
         return []
     state = getattr(pool, "mamba_cache", None)
-    if (state is None or getattr(state, "intermediate_ssm", None) is not None
+    if (state is None or (getattr(state, "intermediate_ssm", None) is not None
+                         and not torch.is_tensor(state.intermediate_ssm))
             or getattr(pool, "enable_linear_replayssm", False)
             or getattr(pool, "enable_linear_replayssm_spec", False)):
         raise RuntimeError("recurrent state is not audited on this runtime")
@@ -187,9 +188,18 @@ def _recurrent_rows(requests, batch, layer):
     indices = indices[indices >= 0]  # graph-padding slots are not written
     layers = range(state.temporal.shape[0]) if layer is None else (
         [requests.mamba_map[layer]] if layer in requests.mamba_map else [])
-    return [(buffer[index], 0, indices, buffer.dtype)
+    rows = [(buffer[index], 0, indices, buffer.dtype)
             for buffer in (state.temporal, *state.conv) for index in layers
             if buffer[index].numel()]
+    mode = getattr(batch, "forward_mode", None)
+    if (getattr(state, "intermediate_ssm", None) is not None
+            and mode is not None and mode.is_target_verify()):
+        # GDN verify scratch is indexed by batch position, not by a translated
+        # request or Mamba slot. The extra pool row is discard-only padding.
+        slots = torch.arange(live.numel(), device=live.device)
+        for buffer in (state.intermediate_ssm, *state.intermediate_conv_window):
+            rows.extend((buffer[index], 0, slots, buffer.dtype) for index in layers)
+    return rows
 
 
 def _cache_rows(pool, batch, layer: int | None) -> list[tuple]:

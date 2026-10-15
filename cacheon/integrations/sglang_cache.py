@@ -142,7 +142,9 @@ class _Guard:
         self.allocator = params.token_to_kv_pool_allocator
         self.requests = params.req_to_token_pool
         self.page = int(params.page_size)
-        self.bigram = int(bool(params.is_eagle))
+        # UnifiedTreeCore uses ordinary token keys when MAMBA is a component,
+        # including EAGLE/MTP: its checkpoints name complete token prefixes.
+        self.bigram = int(bool(params.is_eagle) and not ctx.is_hybrid_ssm)
         self.device = self.requests.req_to_token.device  # with its index, unlike a flag string
         cuda = self.device.type == "cuda"
         # The forward pass writes KV on its own stream; the check reads behind it.
