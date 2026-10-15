@@ -55,6 +55,11 @@ separate from finalized `items` / `pass_total`. Waiting rows have
 
 ## Design notes
 
+- Tabs request their data immediately; arena status refreshes independently every
+  15 seconds after the initial arena lookup. Revisiting a tab shows its previous
+  result while refreshing, scoped to the arena and current filters. Refresh
+  failures are shown explicitly, and superseded requests cannot replace the
+  selected view. These browser snapshots last only until the page is reloaded.
 - **Never writes the intake DB.** Opens it `mode=ro` with WAL visibility. Safe to run alongside intake/supervisor.
 - Chain enrichment (block timestamps, payment coldkey signers, metagraph
   emissions) runs on a background thread against
