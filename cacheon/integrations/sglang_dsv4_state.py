@@ -70,6 +70,17 @@ def _fp4_index_values(raw: torch.Tensor, *, page: int, head: int) -> torch.Tenso
     return (values.reshape(n, page, scale, 32) * scales.unsqueeze(-1)).reshape(n, page, head)
 
 
+def _uniform_fp8_page_values(raw: torch.Tensor, *, page: int) -> torch.Tensor:
+    """TRT-LLM stores all 512 NoPE/RoPE values as E4M3 with fixed unit scale.
+
+    The pool still declares V4, but has neither packed scales nor a BF16 tail
+    (SGLang fork 5e72ce5, DeepSeekV4UniformFP8KVPool).
+    """
+    if raw.dtype != torch.uint8 or raw.ndim != 2 or raw.shape[1] != page * 512:
+        raise RuntimeError("unrecognized uniform-FP8 DeepSeek-V4 cache layout")
+    return raw.view(torch.float8_e4m3fn).float().reshape(raw.shape[0], page, 512)
+
+
 # The paged FlashMLA layouts a pool declares, by their runtime name.
 _LAYOUTS = {
     "v4": partial(_fp8_page_values, data=576, tile=64, scale=8, rope=64),
@@ -80,8 +91,10 @@ _LAYOUTS = {
 
 def _page_format(kv_pool):
     layout = getattr(kv_pool, "kv_layout", None)
-    held = _LAYOUTS.get(getattr(layout, "value", layout))
-    if held is None or kv_pool.kv_buffer[0].dtype != torch.uint8:
+    name, dtype = getattr(layout, "value", layout), kv_pool.kv_buffer[0].dtype
+    held = (_uniform_fp8_page_values if name == "v4" and dtype == torch.float8_e4m3fn
+            else _LAYOUTS.get(name) if dtype == torch.uint8 else None)
+    if held is None:
         raise RuntimeError(f"unrecognized DeepSeek-V4 cache layout {layout!r}")
     return partial(held, page=int(kv_pool.page_size))
 
@@ -130,4 +143,6 @@ def dsv4_state_rows(pool, batch, layer: int | None = None) -> list[tuple] | None
             scores = state.kv_score_buffer.kv_score[:pool.num_req_slots * state.ring_size]
             ring = scores.reshape(pool.num_req_slots, -1)
             rows.append((ring, 0, slots, scores.dtype))
-    return rows
+    # Restore the raw bytes: index_copy_ does not support FP8 on every runtime.
+    return [(buffer.view(torch.uint8) if buffer.dtype == torch.float8_e4m3fn else buffer,
+             dim, index, held) for buffer, dim, index, held in rows]
