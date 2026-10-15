@@ -192,16 +192,16 @@ def test_gate_replays_the_september_2026_mainnet_audits():
     assert _grade_members(
         n=0, violations=0, worst_frac=1.0, baseline_refused=1875
     ) == "NO_DECISION"
-    # 09-17 abb914bc under byte-exact FP4 grading: 24 of 1,872 calls per rank at
-    # worst 0.9642 is a near-miss rate above budget. It passes only because
-    # a0690e91 fixed the grading (0 violations), not because the gate is loose.
+    # 09-17 abb914bc under byte-exact FP4 grading: 24 of 1,872 calls per rank
+    # under the bar at worst 0.9642. It passes only because a0690e91 fixed the
+    # grading (0 violations), not because the gate is loose.
     assert _grade_members(n=1872, violations=24, worst_frac=0.9642) == "FAIL"
     assert _grade_members(n=1872, violations=0, worst_frac=1.0) == "PASS"
     # Crowned honest run, and honest siblings, all a hair over the bar.
     for worst in (0.9862196445, 0.9873, 0.98674, 0.9886):
         assert _grade_members(n=1872, violations=0, worst_frac=worst) == "PASS"
-    # One near-miss call in 1,872 is no longer terminal (owner ruling 09-18).
-    assert _grade_members(n=1872, violations=1, worst_frac=0.9791) == "PASS"
+    # One near-miss call in 1,872 fails: the owner withdrew the 09-18 allowance 10-15.
+    assert _grade_members(n=1872, violations=1, worst_frac=0.9791) == "FAIL"
     # Wrong kernels: 09-03 83df0417 and the four 09-13..15 norm rows.
     assert _grade_members(n=1197, violations=914, worst_frac=0.1748) == "FAIL"
     assert _grade_members(n=1878, violations=604, worst_frac=0.0177) == "FAIL"

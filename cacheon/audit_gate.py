@@ -18,27 +18,25 @@ PASS, FAIL, NO_DECISION = "PASS", "FAIL", "NO_DECISION"
 # a validator padding defect 0.75, and every honest receipt sat within 0.004 of
 # its bar (0.9862-0.9913 against 0.985).
 _GROSS_MARGIN = 0.03
-# Near-miss calls tolerated per slot/member, in compared calls per near miss.
-# Owner ruling 2026-09-18: one near-miss call in 7,488 must not be terminal.
-_CALLS_PER_NEAR_MISS = 100
 
 
 def _kernel_fault(receipt: dict) -> str | None:
     """Why this member's compared calls say the kernel is wrong, else ``None``."""
 
-    violations = receipt.get("violations", 0)
     if receipt.get("compare_errors", 0) > 0:
         return "a candidate output could not be compared"
-    if violations <= 0:
+    if receipt.get("violations", 0) <= 0:
         return None
     bar = receipt.get("min_ratio")
     worst = receipt.get("worst_frac", 1.0)
-    # Without a recorded bar a near miss cannot be told from a gross one.
+    # Gross calls keep their recorded detail: retained witnesses regrade on reopen.
     if type(bar) not in (int, float) or worst < bar - _GROSS_MARGIN:
         return f"a compared call scored {worst:.4f}, grossly under its bar"
-    if violations * _CALLS_PER_NEAR_MISS > receipt.get("n", 0):
-        return "near-miss calls exceed one in " + str(_CALLS_PER_NEAR_MISS)
-    return None
+    # Owner ruling 2026-10-15: any compared call under its bar fails. This withdraws
+    # the 2026-09-18 ruling that one near-miss call in 7,488 must not be terminal
+    # (one near miss per 100 compared calls passed), under which 2118ab5b passed
+    # at worst_frac 0.7368 against a 0.75 node bar by pruning routed experts.
+    return f"a compared call scored {worst:.4f}, under its bar"
 
 
 def gate(
@@ -51,8 +49,7 @@ def gate(
     """Fold per-rank rolling receipts into PASS, FAIL or NO_DECISION.
 
     FAIL is a claim about the kernel and needs compared calls to make it: a call
-    grossly under its bar, near misses beyond the budget, or a candidate output
-    that could not be compared.  NO_DECISION is a claim about the audit: malformed
+    under its bar, or a candidate output that could not be compared.  NO_DECISION is a claim about the audit: malformed
     evidence, or too few compared calls.  The timed role has already proved the
     candidate executes (``engine_worker`` raises ``CandidateNeverExecutedError``
     otherwise), so an audit that compared too little is the audit role's

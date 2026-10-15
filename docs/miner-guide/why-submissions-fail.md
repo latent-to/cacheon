@@ -126,10 +126,10 @@ After the speed stage, an untimed eager run samples live calls to each claimed
 node and compares each output with stock SGLang on the same inputs, at the
 registered tolerance.
 
-- `slot_audit_failed` — compared calls show a different function: a call far
-  outside tolerance, or more than one compared call in 100 just outside it.
-  Rare near misses from low-precision rounding pass. Compare against stock at
-  the live shapes and dtypes before resubmitting.
+- `slot_audit_failed` — compared calls show a different function: any compared
+  call under its bar fails, however slightly. A change that alters outputs,
+  such as dropping routed experts, fails here. Compare against stock at the
+  live shapes and dtypes before resubmitting.
 - `audit_not_covered` — the audit compared too few calls to grade the kernel.
   This is not a judgement on the bundle: the disposition is `NO_DECISION` and
   the validator re-evaluates it.
