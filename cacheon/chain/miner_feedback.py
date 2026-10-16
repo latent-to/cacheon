@@ -161,7 +161,11 @@ _GUIDANCE.update(
         ),
         "slot_audit_failed": (
             "In-engine outputs differed from stock beyond the slot's tolerance.",
-            "Compare against stock at the live shapes; rare near misses pass.",
+            "Compare against stock at the live shapes; any call under its bar fails.",
+        ),
+        "routed_expert_pruning": (
+            "The bundle drops routed experts that stock's own prune keeps.",
+            "Prune no more than stock; any pruning beyond it fails, inside tolerance or not.",
         ),
         "candidate_exception": (
             "A typed rank receipt proves the selected candidate raised.",

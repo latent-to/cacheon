@@ -11,13 +11,16 @@
 # Reward margin treats speed policy 18 as statistical (its sealed 0 failed weight pushes): +1 runtime, +1 test, +1 note.
 # Declared recommissions continue the reward record and stall clock (a validator recommission reset who was paid):
 # +46 runtime, +12 docs, +35 tests, +2 notes.
+# Merge 26b7cbb5 kept main's counts, under the merged tree by this branch's raises above: +60 runtime,
+# +15 docs, +7 scripts, +36 tests restored. Routed-expert pruning beyond the V4.1 fork's stock prune
+# fails as routed_expert_pruning (owner ruling 2026-10-17): +209 runtime, +44 docs, +134 tests, +3 notes.
 (root) 1158
 .github 345
 bundles 2398
-cacheon 91887
+cacheon 92156
 cacheon_kernels 936
 dashboard 4281
-docs 12656
+docs 12715
 examples 396
-scripts 2118
-tests 66942
+scripts 2128
+tests 67112

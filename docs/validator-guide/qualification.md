@@ -177,7 +177,8 @@ which remains valid for them and is never recorded on a new verdict.
 
 The audit-only role is distinct from both timed lanes. Trusted-host grading imports no
 PyTorch and returns `PASS`, `FAIL` (`slot_audit_failed`: compared calls show a wrong
-kernel), or `NO_DECISION` (`audit_not_covered`: the audit compared too little to grade
+kernel; `routed_expert_pruning`: the bundle prunes routed experts beyond stock's prune),
+or `NO_DECISION` (`audit_not_covered`: the audit compared too little to grade
 the kernel, which requeues the bundle instead of failing it). The rule is in
 [Audit outcomes](fidelity.md#audit-outcomes). Live floating-point facts are
 canonicalized into stable decimal strings before they enter the durable witness.

@@ -7,10 +7,17 @@ tolerances; per-rank rolling receipts feed the eval driver's gate.
 """
 
 
+import sys
+from types import ModuleType, SimpleNamespace
+
 import pytest
 import torch
+from torch import nn
 
 from cacheon import audit, receipts
+from cacheon.integrations import sglang_dsv4_prune as prune
+from cacheon.integrations import sglang_nodes as nodes
+from cacheon.registry import Eligibility, KernelImpl, KernelRegistry
 
 SLOT = "norm.rmsnorm"
 
@@ -263,4 +270,131 @@ def test_gate_requires_minimum_calls_on_every_slot_rank_receipt():
         expected_member_count=2,
     )
     assert decision == "NO_DECISION" and "per-slot/member coverage" in desc
+
+
+# ---- routed-expert pruning beyond stock's (owner ruling 2026-10-17) -------------
+
+
+def test_pruning_beyond_stock_fails_under_its_own_reason_inside_the_bar():
+    from cacheon.audit_gate import infrastructure_failure, reason
+
+    # 2118ab5b's audit, had it pruned inside the bar: no violation, one finding per rank.
+    rows = [_member(rank, n=220, violations=0, worst_frac=0.9, pruned=1) for rank in range(4)]
+    covered = {"min_calls": 32, "expected_slots": ("collective.dp_output_projection_norm",),
+               "expected_member_count": 4}
+    decision, desc = audit.gate(rows, **covered)
+    assert decision == "FAIL" and "pruned beyond stock's prune: 4 findings" in desc
+    assert reason(decision, rows) == "routed_expert_pruning"
+    # Pruning is a kernel verdict, not unavailable evidence.
+    assert infrastructure_failure(rows, **covered) is None
+    clean = [{**row, "pruned": 0} for row in rows]
+    assert audit.gate(clean, **covered)[0] == "PASS" and reason("PASS", clean) is None
+    under = [{**row, "violations": 1, "worst_frac": 0.7368} for row in clean]
+    assert reason(audit.gate(under, **covered)[0], under) == "slot_audit_failed"
+    assert reason("NO_DECISION", rows) == "audit_not_covered"
+
+
+def test_a_pruning_finding_is_on_the_wire_only_when_there_is_one():
+    from cacheon.eval.continuation_codec import ContinuationCodec
+    from cacheon.eval.oci_session_protocol import AuditReceiptFacts
+    from cacheon.eval.qualification_runner import _record_dict
+
+    honest = AuditReceiptFacts("model.layers.*.mlp", 4, 0, 0, 0, 1.0, 0.75, "matched_ratio", 1, 0, 2)
+    pruned = AuditReceiptFacts.from_receipt_dict({**honest.to_dict(), "pruned": 3})
+    codec = ContinuationCodec((AuditReceiptFacts,))
+    # Retained receipts and witnesses keep their bytes; a finding adds one key.
+    for encode in (lambda row: row.to_dict(), _record_dict, lambda row: codec.encode(row)["value"]):
+        assert "pruned" not in encode(honest) and encode(pruned)["pruned"] == 3
+    assert codec.decode(codec.encode(pruned)) == pruned
+    assert AuditReceiptFacts.from_dict(honest.to_dict()) == honest
+
+
+class _MoE(nn.Module):
+    """A stock MoE block whose prune reads the fork's settings at call time, like E5."""
+
+    is_hash = is_nextn = False
+
+    def __init__(self):
+        super().__init__()
+        generator = torch.Generator().manual_seed(0)
+        self.register_buffer("w", torch.rand(64, 6, generator=generator) + 0.05)
+        self.register_buffer("experts", torch.randn(6, 16, 16, generator=generator))
+
+    def routed(self, x, budget, flipped=0):
+        w = self.w / self.w.sum(1, keepdim=True)
+        order = w.argsort(1)  # lightest first: a pick goes while the running drop fits
+        through = torch.zeros_like(w).scatter_(1, order, w.gather(1, order).cumsum(1))
+        kept = w * (through > budget)
+        # An exact router's one-ulp tie flip: the lightest kept pick also goes on a few rows.
+        lightest = kept[:flipped].masked_fill(kept[:flipped] == 0, 2.0).argmin(1)
+        kept[torch.arange(flipped), lightest] = 0.0
+        return torch.einsum("rk,rd,kde->re", kept, x, self.experts)
+
+    def forward(self, x):
+        e5 = sys.modules[prune.E5]
+        return self.routed(x, e5.PRUNE_BUDGET + 0.05 * (e5.PRUNE_MAX_COUNT - 1))
+
+
+@pytest.fixture
+def pruning_node(monkeypatch, tmp_path):
+    source = tmp_path / "deepseek_v4_prune.py"
+    source.write_text("PRUNE_BUDGET = 0.4\nPRUNE_MAX_COUNT = 1\nPRUNE_MAX_ROWS = 256\n")
+    e5 = ModuleType(prune.E5)
+    e5.__file__, e5._on = str(source), [True]
+    e5.PRUNE_BUDGET, e5.PRUNE_MAX_COUNT, e5.PRUNE_MAX_ROWS = 0.4, 1, 256
+    monkeypatch.setitem(sys.modules, prune.E5, e5)
+    monkeypatch.setattr(audit, "sampled", lambda: True)
+    monkeypatch.setattr(nodes._receipts, "completed", lambda slot: None)
+    monkeypatch.setattr(nodes, "_WINDOW", 1)
+    for name in ("_noise", "_pooled"):
+        monkeypatch.setattr(nodes, name, {})
+    monkeypatch.setattr(prune, "_counts", {})
+    monkeypatch.setattr(prune, "_ROWS", 8)
+
+    def audit_four_calls(entry):
+        model = nn.Module()
+        model.layers = nn.ModuleList([nn.Module()])
+        model.layers[0].mlp = _MoE()
+        registry = KernelRegistry()
+        registry.register(KernelImpl(
+            slot="layers.*.mlp", bundle_id="test", entry=entry,
+            eligibility=Eligibility(dtypes=frozenset({"float32"}))))
+        registry.enable()
+        nodes.bind(SimpleNamespace(model=model), registry)
+        for _ in range(4):  # two audited calls at each step
+            model.layers[0].mlp(torch.randn(64, 16))
+        return audit._stats["layers.*.mlp"]
+
+    return e5, audit_four_calls
+
+
+def test_a_moe_node_pruning_beyond_stock_is_found_and_honest_ones_are_not(pruning_node):
+    e5, audit_four_calls = pruning_node
+    honest = {
+        "stock": lambda module, x: module.forward(x),
+        "exact": lambda module, x: module.forward(x) * (1 + 1e-4),
+        "tie flips": lambda module, x: module.routed(x, 0.4, flipped=2),
+        "less": lambda module, x: module.routed(x, 0.0),  # the bar grades it, not this check
+    }
+    for name, entry in honest.items():
+        stats = audit_four_calls(entry)
+        assert stats["n"] == 4 and "pruned" not in stats, name
+        audit._stats.clear()
+    for budget in (0.5, 0.7, 0.9):
+        stats = audit_four_calls(lambda module, x, budget=budget: module.routed(x, budget))
+        assert stats["pruned"] >= 1, budget
+        audit._stats.clear()
+    # The settings are put back after each heavier reference.
+    assert (e5.PRUNE_BUDGET, e5.PRUNE_MAX_COUNT) == (0.4, 1)
+    # Raising stock's own prune makes stock agree with the bundle; it is found anyway.
+    e5.PRUNE_BUDGET = 0.9
+    assert audit_four_calls(lambda module, x: module.forward(x))["pruned"] == 4
+    e5.PRUNE_BUDGET = 0.4
+    # A stack of several pruned blocks is never graded against a heavier reference.
+    stack = nn.Module()
+    stack.a, stack.b = _MoE(), _MoE()
+    assert prune.single_pruned_moe(stack) is False
+    e5.__file__ = str(e5.__file__) + ".missing"
+    with pytest.raises(OSError):
+        prune.raised_setting()
 

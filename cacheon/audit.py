@@ -121,6 +121,18 @@ def record_fraction(slot: str, fraction: float, bar: float, mode: str) -> None:
     _receipt(slot)
 
 
+def record_pruned(slot: str, detail: str) -> None:
+    """Count a finding that the candidate drops routed experts stock keeps.
+
+    The key appears only once there is a finding, so an honest receipt keeps its bytes.
+    """
+    s = _slot_stats(slot)
+    s["pruned"] = s.get("pruned", 0) + 1
+    if s["pruned"] <= 4:
+        logger.warning("cacheon.audit PRUNING slot=%s %s", slot, detail)
+    _receipt(slot)
+
+
 def compare_error(slot: str) -> None:
     """Count a candidate result that could not be compared with stock's."""
     _slot_stats(slot)["compare_errors"] += 1

@@ -117,7 +117,8 @@ requires compared calls; an audit that compared too little says nothing about th
 
 | Outcome | Reason | Condition |
 | --- | --- | --- |
-| `PASS` | — | The exact slot × TP-rank/PID matrix is present, every member meets the per-member minimum, no candidate output was uncomparable, and no compared call scored under its bar. |
+| `PASS` | — | The exact slot × TP-rank/PID matrix is present, every member meets the per-member minimum, no candidate output was uncomparable, no compared call scored under its bar, and no receipt carries a pruning finding. |
+| `FAIL` | `routed_expert_pruning` | A receipt carries a [pruning finding](#routed-expert-pruning). Graded before every other fault; terminal for the bundle. |
 | `FAIL` | `slot_audit_failed` | A compared call scored under its recorded bar, or a candidate output could not be compared. Terminal for the bundle. |
 | `NO_DECISION` | `audit_not_covered` | Receipts are missing, malformed, or under the per-member minimum. The audit role's shortfall; the bundle takes the ordinary requeue path and is not failed. |
 
@@ -130,6 +131,42 @@ candidate executes, which is why an under-covered audit is attributed to the aud
 A stock baseline that raises inside the audit is counted as `baseline_refused`, not as a
 comparison error: no candidate output was compared, so it can reduce coverage but cannot
 fail a kernel. An error while comparing a candidate output remains a comparison error.
+
+### Routed-expert pruning
+
+The DeepSeek-V4.1 fork's stock engine prunes routed experts at decode and verify: an
+expert picked by at most `PRUNE_MAX_COUNT` rows of a call is dropped when every row
+holding it drops it within `PRUNE_BUDGET` of its routed mass (`0.4` and `1` at fork
+`4f335dad`). That prune is part of stock. A bundle that prunes more fails as
+`routed_expert_pruning`, whether or not its rows stay inside the bar. A heavier prune
+keeps most rows inside the node tolerance: at budget `0.9`, 2118ab5b kept `0.7368` of
+its worst window's rows and passed the retired near-miss allowance. The node adapter
+counts pruning findings in the receipt's optional `pruned` fact, absent while zero so
+honest receipts keep their bytes. A finding is recorded in two cases, both in the eager
+audit role:
+
+- **Stock's settings are raised.** While the prune module is loaded, each audited call
+  compares its settings in the engine with the literal values in its installed source.
+  A bundle that raises them makes stock's own reference prune as much as the bundle does.
+- **A one-block node prunes beyond stock.** A node that holds exactly one MoE block that
+  stock prunes, such as `model.layers.*.mlp`, also answers each audited decode or verify
+  call with stock pruned one step heavier. The steps alternate between budget + `0.1`
+  and max count + `1`. Stock and that reference share the node's input, so they differ
+  only in what the step drops. A row decides when the reference sits more than twice
+  the row tolerance from stock. A candidate row inside the tolerance is always nearer
+  stock, and a row that drops what the step drops is nearer the reference. Decisive
+  rows pool per node, tensor and step; once at least 64 have pooled, more than half
+  nearer the reference is a finding. A one-ulp router difference flips a tie on a rare
+  row and cannot make a majority; pruning less than stock moves rows away from the
+  reference.
+
+Residual: the whole `model` node is not graded against a heavier reference. Its output is
+dozens of routing decisions downstream, where any perturbation flips later routing, so a
+pruned stack and an honest one sit about equally far from both references. A whole-model
+bundle that prunes inside its own kernels is caught only by the row bar or by owner
+disposition under the same reason. In-process replacement of stock's prune functions
+falls under the in-process tampering residual. No other arena loads the prune module, so
+neither check runs there.
 
 ### Production audit canary
 
@@ -227,6 +264,7 @@ retained and reopened.
 ## Source anchors
 
 - [Node audit against stock](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py)
+  and [its routed-expert pruning check](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_dsv4_prune.py)
 - [Prefix-cache content check](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_cache.py) and [state audit](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_cache_state.py)
 - [Qualification quality model](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification.py)
 - [Torch-free audit gate](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py)

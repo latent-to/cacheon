@@ -12,6 +12,12 @@ from __future__ import annotations
 from typing import Sequence
 
 PASS, FAIL, NO_DECISION = "PASS", "FAIL", "NO_DECISION"
+# FAIL says the kernel's compared calls are wrong; NO_DECISION says the audit
+# role compared too little to say anything about the kernel.
+_REASONS = {FAIL: "slot_audit_failed", NO_DECISION: "audit_not_covered"}
+# Owner ruling 2026-10-17: routed experts pruned beyond stock's prune fail under
+# their own reason, even inside the row bar (sglang_dsv4_prune).
+_PRUNING = "routed_expert_pruning"
 
 # A compared call this far under its slot bar is a wrong function, not rounding.
 # On record (census 2026-09-18): wrong kernels scored 0.0029, 0.0177 and 0.1748,
@@ -49,7 +55,8 @@ def gate(
     """Fold per-rank rolling receipts into PASS, FAIL or NO_DECISION.
 
     FAIL is a claim about the kernel and needs compared calls to make it: a call
-    under its bar, or a candidate output that could not be compared.  NO_DECISION is a claim about the audit: malformed
+    under its bar, a candidate output that could not be compared, or routed experts
+    pruned beyond stock's prune.  NO_DECISION is a claim about the audit: malformed
     evidence, or too few compared calls.  The timed role has already proved the
     candidate executes (``engine_worker`` raises ``CandidateNeverExecutedError``
     otherwise), so an audit that compared too little is the audit role's
@@ -127,7 +134,10 @@ def gate(
         f"baseline_refused={total_refused}"
     )
     # The kernel's own evidence is graded before coverage: a wrong kernel on a
-    # thinly covered run is still wrong.
+    # thinly covered run is still wrong. Pruning is named before any other fault.
+    pruned = sum(r.get("pruned", 0) for r in audit_receipts)
+    if pruned:
+        return FAIL, f"{desc} (routed experts pruned beyond stock's prune: {pruned} findings)"
     for receipt in audit_receipts:
         fault = _kernel_fault(receipt)
         if fault is not None:
@@ -137,6 +147,13 @@ def gate(
     if total_n < min_calls:
         return NO_DECISION, desc + f" (insufficient coverage; need >= {min_calls})"
     return PASS, desc
+
+
+def reason(decision: str, audit_receipts: list[dict]) -> str | None:
+    """The reason code a decision on these receipts carries; ``None`` for PASS."""
+    if decision == FAIL and any(row.get("pruned", 0) for row in audit_receipts):
+        return _PRUNING
+    return _REASONS.get(decision)
 
 
 def grade(receipts, policy) -> tuple[str, str]:
@@ -158,12 +175,13 @@ def infrastructure_failure(
 ) -> str | None:
     """Identify unavailable comparisons without turning them into miner FAIL.
 
-    Reuse the registered gate with only numerical violations suppressed. Missing
-    rank coverage, insufficient calls and reference/comparator errors then keep
-    their exact diagnostics; a complete numerical mismatch remains a real FAIL.
+    Reuse the registered gate with only numerical violations and pruning findings
+    suppressed. Missing rank coverage, insufficient calls and reference/comparator
+    errors then keep their exact diagnostics; a complete numerical mismatch or a
+    pruning finding remains a real FAIL.
     """
     decision, detail = gate(
-        [{**row, "violations": 0} if type(row) is dict else row
+        [{**row, "violations": 0, "pruned": 0} if type(row) is dict else row
          for row in audit_receipts],
         min_calls=min_calls, expected_slots=expected_slots,
         expected_member_count=expected_member_count,

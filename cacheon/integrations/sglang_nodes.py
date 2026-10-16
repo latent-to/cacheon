@@ -52,6 +52,7 @@ from cacheon.capabilities import CallDescriptor
 from cacheon.dispatch import (
     _arch_tag, _dtype_name, _dynamo_compiling, _flashinfer_tuning, _in_cuda_graph,
 )
+from cacheon.integrations import sglang_dsv4_prune as _prune
 from cacheon.integrations.sglang_cache import ADDRESS as _CACHE
 from cacheon.integrations.sglang_dsa_state import (
     KV_BUFFERS as _KV_BUFFERS, StateFormat, dsa_state_rows, state_values,
@@ -291,8 +292,9 @@ def _errors(outputs: list, rows: list, expected: list, *, module=None) -> list[t
 
 
 def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs: dict,
-                layer: int | None = None):
-    """Stock's ``(tensor, row dim)`` answer and the honest twin's row errors against it.
+                layer: int | None = None, step: tuple | None = None):
+    """Stock's ``(tensor, row dim)`` answer, the honest twin's row errors against it, and
+    with a ``step`` stock's result pruned one step heavier (``sglang_dsv4_prune``).
 
     Both run on the live call, and the call is put back after each. What stock leaves
     in its own arguments is not part of the answer. The fused norm overwrites its
@@ -343,7 +345,11 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
     ])
     with _native(module):
         twin = run(lambda outputs: expected and _errors(outputs, rows, expected, module=module))
-    return expected, twin
+    heavier = None
+    if step is not None:
+        with step[1]:
+            heavier = run(lambda outputs: [t for t, _ in outputs])
+    return expected, twin, heavier
 
 
 def _seal(module) -> list[tuple]:
@@ -471,9 +477,13 @@ def _row_errors(actual: torch.Tensor, expected: torch.Tensor, dim: int,
     return errors[torch.isfinite(e).all(dim=1)]
 
 
-def _grade(slot: str, node: int, actual: list, twin: list,
-           *, node_name: str = "") -> tuple[float, int] | None:
-    """Pool each graded tensor's passing rows; record a unit when a window fills."""
+def _grade(slot: str, node: int, actual: list, twin: list, *, node_name: str = "",
+           pruned: dict | None = None, step: int | None = None) -> tuple[float, int] | None:
+    """Pool each graded tensor's passing rows; record a unit when a window fills.
+
+    ``pruned`` maps a result position to its rows' distances to stock pruned one step
+    heavier, pooled at the same tolerance by ``sglang_dsv4_prune``.
+    """
 
     filled = []
     for position, (errors, honest) in enumerate(zip(actual, twin)):
@@ -487,6 +497,8 @@ def _grade(slot: str, node: int, actual: list, twin: list,
         history_p90 = sorted(noise)[int(0.9 * (len(noise) - 1))]
         measured = _TWIN_FACTOR * max(noise[-1], history_p90)
         tolerance = min(_CEILING, max(_FLOOR, measured))
+        if pruned and position in pruned:
+            _prune.pool(slot, (node, position, step), errors, *pruned[position], tolerance)
         pooled = _pooled.setdefault(key, [0, 0, [], 1])
         kept = max(0, _DIAGNOSTIC_ROWS - pooled[1])
         passed = int((errors <= tolerance).sum().item())
@@ -561,20 +573,22 @@ def make_node_dispatcher(
     # layer's cache; a node without one (the whole model) keeps every layer's rows.
     layer = getattr(module, "layer_id", None)
     layer = layer if type(layer) is int else None
+    # Steps alternate per node over audited calls, so every rank runs the same references.
+    pruned_moe, steps = _prune.single_pruned_moe(module), 0
 
     @wraps(stock)
     def dispatched(*args, **kwargs):
-        nonlocal reported
+        nonlocal reported, steps
         if (
             _dynamo_compiling() or _flashinfer_tuning()
             or _receipts.is_invoking() or not registry.active
         ):
             return stock(*args, **kwargs)
         in_graph = _in_cuda_graph()
-        # Drawn, and both references run, before any rank-local branch: selection
+        # Drawn, and the references run, before any rank-local branch: selection
         # must not affect the seeded audit draws, and a node with a collective hangs unless
         # every rank runs it the same number of times with the same seeded draws.
-        expected = twin = None
+        expected = twin = heavier = step = None
         if not in_graph and _audit.sampled():
             changed = _rebound(sealed)
             if changed is not None:
@@ -583,7 +597,13 @@ def make_node_dispatcher(
                 )
                 _receipts.failed(slot, failure, phase="entry")
                 raise failure
-            expected, twin = _references(slot, module, stock, runner, args, kwargs, layer)
+            raised = _prune.raised_setting()
+            if raised is not None:
+                _audit.record_pruned(slot, f"stock's prune runs above its source: {raised}")
+            step = _prune.heavier_step(args, kwargs, steps) if pruned_moe else None
+            steps += step is not None
+            expected, twin, heavier = _references(
+                slot, module, stock, runner, args, kwargs, layer, step)
         facts = _call_facts(module, args, kwargs)
         if facts is None:
             return stock(*args, **kwargs)
@@ -605,11 +625,14 @@ def make_node_dispatcher(
         )
         if expected is not None and twin is not None:
             try:
+                outputs = _tensors(result, [], fields=True)
                 actual = _errors(
-                    [(t, 0) for t in _tensors(result, [], fields=True)],
+                    [(t, 0) for t in outputs],
                     _state_rows(runner, (*args, *kwargs.values()), layer), expected, module=module,
                 )
-                grade = _grade(slot, id(module), actual, twin, node_name=node_name or slot)
+                pruned = heavier and _prune.distances(outputs, expected, heavier)
+                grade = _grade(slot, id(module), actual, twin, node_name=node_name or slot,
+                               pruned=pruned or None, step=step and step[0])
                 if grade is not None and grade[0] < _ROW_BAR and not reported:
                     logging.getLogger(__name__).error(
                         "node audit mismatch: node=%s tensor_position=%d passing_fraction=%.6f",

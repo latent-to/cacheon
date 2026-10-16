@@ -20,7 +20,7 @@
  "qualification_continuation:cacheon.eval.oci_process.OCIQuiescenceReceipt": ["container_ids","executor_id","lease_records","manager_instance_id","namespace_digest","observed_monotonic_s","resource_entries","schema","sequence"],
  "qualification_continuation:cacheon.eval.oci_reference_session.ReferenceExchangeEvidence": ["evidence","evidence_frame_sha256","request","request_index","request_sha256","request_started_at","response_completed_at"],
  "qualification_continuation:cacheon.eval.oci_reference_session.ReferenceSessionEvidence": ["exchanges","launch_digest","preflight","ready_completed_at","reference_manifest_digest","request_plan_digest","schema","session_completed_at","session_id","session_plan_digest"],
- "qualification_continuation:cacheon.eval.oci_session_protocol.AuditReceiptFacts": ["baseline_refused","compare_errors","min_ratio","mode","n","pid","rank","slot","violations","world_size","worst_frac"],
+ "qualification_continuation:cacheon.eval.oci_session_protocol.AuditReceiptFacts": ["baseline_refused","compare_errors","min_ratio","mode","n","pid","pruned","rank","slot","violations","world_size","worst_frac"],
  "qualification_continuation:cacheon.eval.oci_session_protocol.BatchEvidence": ["prompts"],
  "qualification_continuation:cacheon.eval.oci_session_protocol.PromptEvidence": ["output_ids","prompt_tokens","top_logprobs"],
  "qualification_continuation:cacheon.eval.oci_session_protocol.RuntimePreflightFacts": ["engine_config_digest","gpu_architectures","launch_digest","loopback_only","model_content_digest","model_manifest_digest","model_revision_digest","private_writable_cache","read_only_inputs","runtime_digest","sglang_version","stack_digest","topology_digest","tree_digest","worker_distribution_digest"],

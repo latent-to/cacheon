@@ -127,9 +127,14 @@ node and compares each output with stock SGLang on the same inputs, at the
 registered tolerance.
 
 - `slot_audit_failed` — compared calls show a different function: any compared
-  call under its bar fails, however slightly. A change that alters outputs,
-  such as dropping routed experts, fails here. Compare against stock at the
+  call under its bar fails, however slightly. Compare against stock at the
   live shapes and dtypes before resubmitting.
+- `routed_expert_pruning` — the bundle drops routed experts that stock keeps.
+  DeepSeek-V4.1's stock engine already prunes at decode and verify (budget
+  `0.4`, an expert held by at most one row of the call); pruning more — a higher
+  budget or count, extra drop rules, dropping experts several rows share — fails,
+  even when every compared call stays inside its bar. It saves work by computing
+  less of the model, not by computing it faster.
 - `audit_not_covered` — the audit compared too few calls to grade the kernel.
   This is not a judgement on the bundle: the disposition is `NO_DECISION` and
   the validator re-evaluates it.
