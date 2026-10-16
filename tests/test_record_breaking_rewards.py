@@ -139,6 +139,22 @@ def test_another_baseline_does_not_compete_and_missing_margin_is_an_error(tmp_pa
             store.passed_reward_claims()
 
 
+def test_a_declared_recommission_continues_the_reward_record(tmp_path):
+    with _store(tmp_path) as store:
+        first = _qualified_settlement_candidate(store, speedups=("1.06", "1.06"))
+        lower = _qualified_settlement_candidate(store, index=1, marker="lower", arena_marker="re",
+                                                speedups=("1.05", "1.05"))
+        higher = _qualified_settlement_candidate(store, index=2, marker="higher", arena_marker="re",
+                                                 speedups=("1.1", "1.1"))
+        assert lower.hotkey in {c.hotkey for c in store.passed_reward_claims()}
+        groups = [f"{p['arena_digest']}:{p['incumbent_stack_digest']}" for p in (
+            json.loads(r[0])["primary"] for r in store._db.execute(
+                "SELECT candidate_json FROM settlement_candidates ORDER BY rowid"))]
+        store._db.execute("INSERT INTO metadata(key,value) VALUES('reward_group_continuations',?)",
+                          (json.dumps({groups[1]: groups[0]}),))
+        assert {c.hotkey for c in store.passed_reward_claims()} == {first.hotkey, higher.hotkey}
+
+
 def test_grandfathering_does_not_exempt_a_new_runtime(tmp_path, monkeypatch):
     from tests import test_chain_intake as intake
 

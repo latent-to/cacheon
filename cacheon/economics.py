@@ -571,6 +571,7 @@ def project_global_rewards(
     allocation_burn_hotkey: str = "",
     stall_bonus_terms: Mapping[str, int] | None = None,
     score_speedups: Mapping[str, int] | None = None,
+    stall_groups: Mapping[str, str] | None = None,
 ) -> GlobalRewardProjection:
     """Pool earned claims, using queue-relative scoring ratios when supplied by intake.
 
@@ -578,6 +579,7 @@ def project_global_rewards(
     validation, and publication decay clocks continue to bind the measured PASS.
     Validated PASSes can support a crown without qualifying for payment; only
     earning_claims receive credit. Older callers validate against their earning set.
+    stall_groups maps a recommissioned arena to the arena whose stall clock it continues.
     """
 
     if type(policy) is not EmissionsPolicyManifest:
@@ -685,10 +687,12 @@ def project_global_rewards(
     family_credits: list[StandingFamilyCredit] = []
     standing_by_hotkey: dict[str, int] = {}
     previous: dict[str, int] = {}
+    clocks = dict(stall_groups or {})
     for claim in sorted(
-        earning, key=lambda row: (row.arena_digest, row.crowned_block, row.digest)
+        earning, key=lambda row: (clocks.get(row.arena_digest, row.arena_digest), row.crowned_block, row.digest)
     ):
-        predecessor = previous.get(claim.arena_digest, claim.crowned_block)
+        clock = clocks.get(claim.arena_digest, claim.arena_digest)
+        predecessor = previous.get(clock, claim.crowned_block)
         scored = claim if score_speedups is None else replace(claim, speedup_ppm=score_speedups[claim.digest])
         credit = scored.credit_at(
             context.current_block, policy, predecessor_block=predecessor,
@@ -698,7 +702,7 @@ def project_global_rewards(
             ),
             stall_bonus_ppm=(WEIGHT_PPM if stall_bonus_terms is None else stall_bonus_terms[claim.digest]),
         )
-        previous[claim.arena_digest] = claim.crowned_block
+        previous[clock] = claim.crowned_block
         family_credits.append(
             StandingFamilyCredit(
                 claim.arena_digest,

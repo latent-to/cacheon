@@ -87,6 +87,7 @@ def reward_comparisons(db) -> dict[str, dict]:
     seen = set()
     comparisons = {}
     grandfathered = set(reward_grandfathered_runtimes(db))
+    continuations = reward_group_continuations(db)
     rows = db.execute(
         "SELECT sc.* FROM settlement_candidates sc JOIN reservations r USING(reservation_id) "
         "WHERE r.status='qualified' AND r.decision='PASS' "
@@ -103,14 +104,15 @@ def reward_comparisons(db) -> dict[str, dict]:
         if manifest is None:
             continue
         contribution = manifest["entries"][primary["target_id"]]
-        identity = (primary["arena_digest"], primary["target_id"],
+        # Scores describe the complete workload, including different target slots.
+        # A newly commissioned baseline has a different denominator; a declared
+        # recommission of the same baseline continues the earlier record.
+        group = _continued_group(continuations, f"{primary['arena_digest']}:{primary['incumbent_stack_digest']}")
+        identity = (group.split(":")[0], primary["target_id"],
                     json.dumps(contribution, sort_keys=True, separators=(",", ":")))
         if identity in seen and not exempt:
             continue
         seen.add(identity)
-        # Scores describe the complete workload, including different target slots.
-        # A newly commissioned baseline has a different denominator.
-        group = (primary["arena_digest"], primary["incumbent_stack_digest"])
         qualifications = tuple(payload[key] for key in ("primary", "reproduction") if key in payload)
         score = min(Decimal(q["speedup"]) for q in qualifications)
         previous, previous_id = best.get(group, (Decimal(1), None))
@@ -147,6 +149,44 @@ def reward_grandfathered_runtimes(db) -> list[str]:
     for value in values:
         require_sha256_hex(value, field="grandfathered reward runtime")
     return values
+
+
+def reward_group_continuations(db) -> dict[str, str]:
+    """Read the operator's recommissions: each later ``arena:stack`` group continues an earlier one.
+
+    Owner ruling 2026-10-16: a validator recommission must not change who is paid. Its
+    digests change with validator source even when the measured stock baseline does not
+    (the e4aced40 audit-gate recommission made 37a3330a a "first PASS" below 97f82e0f).
+    """
+    import json
+    from cacheon.stack_identity import require_sha256_hex
+
+    row = db.execute("SELECT value FROM metadata WHERE key='reward_group_continuations'").fetchone()
+    values = {} if row is None else json.loads(row[0])
+    if not isinstance(values, dict):
+        raise ValueError("reward group continuations must map later groups to earlier ones")
+    for key in (*values, *values.values()):
+        if not isinstance(key, str) or key.count(":") != 1:
+            raise ValueError("reward group continuation must name arena:stack")
+        for part in key.split(":"):
+            require_sha256_hex(part, field="reward group continuation")
+    for key in values:
+        _continued_group(values, key)
+    return values
+
+
+def reward_arena_continuations(db) -> dict[str, str]:
+    """Map each continued commission's arena to the arena whose stall clock it continues."""
+    continuations = reward_group_continuations(db)
+    return {key.split(":")[0]: _continued_group(continuations, key).split(":")[0] for key in continuations}
+
+
+def _continued_group(continuations: dict[str, str], key: str) -> str:
+    for _ in range(len(continuations) + 1):
+        if key not in continuations:
+            return key
+        key = continuations[key]
+    raise ValueError("reward group continuations form a cycle")
 
 
 # Owner ruling 2026-09-30: a later V17 PASS pays when it beats the previous best by 1.5%. The

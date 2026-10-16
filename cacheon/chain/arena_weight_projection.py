@@ -122,6 +122,7 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
                                         "discovery_claims", "earned_contributions")}
         combined["decay_start_blocks"] = {}
         combined["score_speedups"] = {}
+        combined["stall_groups"] = {}
         terms, snapshots, adjustments, seen_reservations = {}, {}, {}, set()
         bonuses, reservation_ids, submission_weights = {}, {}, {}
         evidence, standing_count, generation = set(), 0, 0
@@ -161,14 +162,15 @@ def build_static_projection(primary, *, allocation, policy, context, netuid,
             for claim in (*standing, *inputs["earning_claims"], *inputs["discovery_claims"]):
                 evidence.add(claim.retained_evidence_digest)
             for name, values in inputs.items():
-                if name in {"decay_start_blocks", "score_speedups"}:
+                if name in {"decay_start_blocks", "score_speedups", "stall_groups"}:
                     combined[name].update(values)
                 else:
                     combined[name].extend(values)
             store._bind_emissions_policy(policy)
             snapshots[key] = {"config_digest": configs[key].digest, "cursor": list(cursor),
                               "settlement_state_digest": store.settlement_state_digest(),
-                              "grandfathered_runtimes": grandfathered}
+                              "grandfathered_runtimes": grandfathered,
+                              **({"stall_groups": inputs["stall_groups"]} if inputs["stall_groups"] else {})}
         projection = project_global_rewards(
             policy, context, **combined, allocation_terms=terms,
             allocation_burn_hotkey=allocation.burn_hotkey, stall_bonus_terms=bonuses)
