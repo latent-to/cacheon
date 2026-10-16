@@ -94,6 +94,8 @@ def test_sealed_commission_block_round_trips() -> None:
     listed = _block()
     listed["policy"] = {**listed["policy"], "audit_control_delta_digests": [_h("control")]}
     assert sealed.sealed_qualification_commission(listed) is listed
+    listed["policy"]["audit_max_new_tokens"] = 64
+    assert sealed.sealed_qualification_commission(listed) is listed
 
 
 def test_pre_catalog_expansion_commission_schema_is_rejected() -> None:
@@ -137,6 +139,9 @@ def _mutations() -> list[tuple[str, dict[str, object]]]:
     case("non-string tail threshold", policy__nll_tail_threshold=0.35)
     case("non-bool hidden requirement", policy__hidden_tasks_required=1)
     case("non-list audit controls", policy__audit_control_delta_digests=_h("control"))
+    case("zero audit decode budget", policy__audit_max_new_tokens=0)
+    case("boolean audit decode budget", policy__audit_max_new_tokens=True)
+    case("string audit decode budget", policy__audit_max_new_tokens="64")
     case("open session block", session__extra=0)
     case("negative warmup", session__warmup_count=-1)
     case("non-string temperature", session__temperature=0.0)

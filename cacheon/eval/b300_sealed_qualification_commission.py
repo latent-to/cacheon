@@ -332,10 +332,9 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
     ):
         _digest(value.get(field), f"sealed qualification {field}")
     policy = value.get("policy")
-    # The one optional policy key lists validator-registered audit control deltas.
     if (
         type(policy) is not dict
-        or set(policy) - {"audit_control_delta_digests"} != _COMMISSION_POLICY_FIELDS
+        or set(policy) - {"audit_control_delta_digests", "audit_max_new_tokens"} != _COMMISSION_POLICY_FIELDS
         or type(policy.get("audit_control_delta_digests", [])) is not list
         or not isinstance(policy.get("nll_tail_threshold"), str)
         or type(policy.get("hidden_tasks_required")) is not bool
@@ -350,6 +349,7 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
     )
     _commission_int(policy.get("select_count"), "select_count", minimum=2)
     _commission_int(policy.get("audit_minimum_calls"), "audit_minimum_calls", minimum=1)
+    _commission_int(policy.get("audit_max_new_tokens", 2), "audit_max_new_tokens", minimum=1)
     session = value.get("session")
     speed = value.get("resident_speed")
     if not (type(session) is dict and "replay" in session and type(speed) is dict and "goodput" in speed):
