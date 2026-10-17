@@ -79,7 +79,9 @@ hidden judge, and selection policy.
 T is untimed. It grades trajectories sealed by the paired replay only after
 any registered eager audit A has completed and
 candidate engines have been destroyed. Neither the incumbent evaluation stack nor a
-candidate's self-reported scores can substitute for this authority.
+candidate's self-reported scores can substitute for this authority. Its teacher scoring
+reads every response position's logprob, so T turns off DeepSeek-V4.1's decoder SWA
+bounded replay, which refuses prompt logprobs.
 
 Reference identity is intentionally broader than a kernel catalog. It binds
 the controller and worker distributions, launch contract, sealed model bytes,

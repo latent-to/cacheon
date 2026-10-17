@@ -178,6 +178,18 @@ def engine_kwargs(cfg, *, active: bool = False) -> dict[str, Any]:
     return kwargs
 
 
+def _eager_audit_engine(kwargs: dict[str, Any]) -> None:
+    """Turn off every CUDA graph for the untimed audit role, prefill graphs included.
+
+    ``disable_cuda_graph`` leaves nightly SGLang's ``cuda_graph_backend_prefill`` on: the
+    DeepSeek-V4.1 audit then graded 74 prefill shapes' capture warmups, on which stock
+    disagreed with itself by p90 0.15-0.65, and no replayed prefill (B300, 2026-10-15).
+    """
+    kwargs["disable_cuda_graph"] = True
+    if "cuda_graph_backend_prefill" in kwargs:
+        kwargs["cuda_graph_backend_prefill"] = "disabled"
+
+
 def _active_execution_members(
     active_receipts: list[dict], *, expected_member_count: int
 ) -> list[str]:
@@ -454,6 +466,26 @@ def _report_running_engine_failures(engine: object) -> None:
     manager.signal_handler_class = ReportingSignalHandler
 
 
+def _bind_engine_boot(plan: str | None) -> None:
+    """Boot the engine on the NUMA node of its sealed scheduler vCPUs, before any rank touches host memory.
+
+    Each rank first-touches its host-resident tables inside sgl.Engine() (DeepSeek-V4.1 Engram: ~200 GB of huge
+    pages per TP2 lane). SGLang's own NUMA bind needs memory-policy permission the OCI runtime does not grant, and
+    the sealed pins apply only once the engine returns, so unbound boots left the tables on whichever socket each
+    rank happened to run: both lanes' on the remote socket in one Lium 4x B300 boot (2026-10-17). Children inherit
+    this affinity; _pin_engine_processes narrows it after boot.
+    """
+    if not plan:
+        return
+    cpus: set[int] = set()
+    for scheduler in json.loads(plan)["schedulers"]:
+        (node,) = Path(f"/sys/devices/system/cpu/cpu{scheduler}").glob("node[0-9]*")
+        for span in (node / "cpulist").read_text().strip().split(","):
+            low, _, high = span.partition("-")
+            cpus.update(range(int(low), int(high or low) + 1))
+    os.sched_setaffinity(0, cpus)
+
+
 def _pin_engine_processes(plan: str | None, *, schedulers: int) -> None:
     """Pin each SGLang scheduler (by TP rank) to its sealed vCPU and every other engine process to the pool.
 
@@ -563,7 +595,7 @@ def isolated_engine_session(
                 # This is a separate, untimed fidelity role.  Timed B/C/B' plans
                 # carry no audit policy and therefore retain their sealed graph
                 # configuration and zero audit overhead.
-                kwargs["disable_cuda_graph"] = True
+                _eager_audit_engine(kwargs)
             # Emitted for the stock arm too, which has no receipt directory, so
             # this cannot ride on the receipts. Without it the settings that
             # decide which backend each arm ran on -- and therefore whether the
@@ -579,6 +611,7 @@ def isolated_engine_session(
                 file=sys.stderr,
                 flush=True,
             )
+            _bind_engine_boot(os.environ.get("CACHEON_CPU_PINS"))
             engine = sgl.Engine(**kwargs)
             active_receipts: list[dict] = []
             expected_slots: list[str] = []

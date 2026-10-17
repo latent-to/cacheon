@@ -162,12 +162,11 @@ def run_continuation_quality_stage(
             if teardown.observed_monotonic_s < audit_state.audit_last_completed:
                 raise owner.QualificationRunnerError("audit-exit quiescence predates candidate teardown")
             audit = audit_witnesses[value.candidates[0].selected_delta_digest]
-            # The stage exit re-checks this triple against the runner's own vocabulary.
+            # The stage exit re-checks this triple: an audit exit carries its witness's reason.
             if audit_passed:  # the passing audit rides on the speed verdict
                 stage, decision, reason = "speed", speed_grade, speed_reason
             else:
-                stage, decision = "audit", audit.decision
-                reason = "slot_audit_failed" if decision is owner.QualificationDecision.FAIL else "audit_not_covered"
+                stage, decision, reason = "audit", audit.decision, audit.reason
             terminal = owner.QualificationStageExit(
                 owner.qualification_authority_digest(value), value.prepared.source.digest,
                 value.candidates[0].selected_delta_digest, stage, decision, reason,

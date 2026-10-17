@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from cacheon.eval.evidence_store import EvidenceArtifactRef
 from cacheon.chain.evaluation_order import (
-    finalize_reward_prefix, reward_grandfathered_runtimes, reward_comparisons,
+    finalize_reward_prefix, reward_arena_continuations, reward_grandfathered_runtimes, reward_comparisons,
 )
 from cacheon.settlement import SettlementCandidate, SettlementQualification
 
@@ -454,7 +454,7 @@ def _reward_projection_inputs(store, *, include_uncrowned: bool = False, reserva
         "validated_claims": tuple(validated_claims),
         "discovery_claims": discovery, "earned_contributions": contributions,
         "decay_start_blocks": starts, "adjustments": adjustments,
-        "score_speedups": score_speedups,
+        "score_speedups": score_speedups, "stall_groups": reward_arena_continuations(store._db),
         "standing_claims": standing, "states": states,
         "grandfathered_runtimes": reward_grandfathered_runtimes(store._db),
     }

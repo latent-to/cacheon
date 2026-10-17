@@ -27,6 +27,7 @@ from cacheon.eval.crossover_runtime import (
     ResidentSpeedPolicy,
     run_resident_crossover_speed,
 )
+from cacheon.audit_gate import reason as _audit_reason
 from cacheon.eval.engine_launch import EngineLaunchSpec, TrustedLaunchBinding
 from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence, reopen_evidence
 from cacheon.eval.device_state import DeviceStateReceipt
@@ -171,6 +172,8 @@ def _encode_record(value: object) -> object:
         QualificationTimingWitness,
     }:
         return value.to_dict()  # type: ignore[union-attr]
+    if type(value) is AuditReceiptFacts:  # an absent pruning finding keeps retained bytes
+        return {name: _encode_record(item) for name, item in value.to_dict().items()}
     if is_dataclass(value):
         return {field.name: _encode_record(getattr(value, field.name)) for field in fields(value)}
     if isinstance(value, tuple):
@@ -797,14 +800,6 @@ class ResidentSpeedWitness:
         )  # type: ignore[arg-type]
 
 
-# FAIL says the kernel's compared calls are wrong; NO_DECISION says the audit
-# role compared too little to say anything about the kernel.
-_AUDIT_REASONS = {
-    QualificationDecision.FAIL: "slot_audit_failed",
-    QualificationDecision.NO_DECISION: "audit_not_covered",
-}
-
-
 def _grade_audit(receipts, policy) -> tuple[QualificationDecision, str]:
     from cacheon.audit_gate import grade
 
@@ -861,6 +856,10 @@ class AuditWitness:
 
     def regrade(self) -> tuple[QualificationDecision, str]:
         return _grade_audit(self.receipts, self.policy)
+
+    @property
+    def reason(self) -> str | None:
+        return _audit_reason(self.decision.value, [row.to_gate_dict() for row in self.receipts])
 
     @classmethod
     def from_execution(
@@ -1629,7 +1628,7 @@ def _report_reason(
     speed_reason: str | None = None,
 ) -> str:
     if audit.decision is not QualificationDecision.PASS:
-        return _AUDIT_REASONS[audit.decision]
+        return audit.reason
     if speed is QualificationDecision.NO_DECISION:
         return "speed_noise"
     if speed is QualificationDecision.FAIL:

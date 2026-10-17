@@ -235,11 +235,13 @@ class AuditReceiptFacts:
     pid: int
     rank: int
     world_size: int
+    # Pruning findings (sglang_dsv4_prune); absent at zero, so honest receipts keep their bytes.
+    pruned: int = field(default=0, metadata={"wire_optional": True})
 
     def __post_init__(self) -> None:
         if not isinstance(self.slot, str) or NODE_ADDRESS.fullmatch(self.slot) is None:
             raise SessionProtocolError("audit receipt slot is invalid")
-        for name in ("n", "violations", "baseline_refused", "compare_errors"):
+        for name in ("n", "violations", "baseline_refused", "compare_errors", "pruned"):
             object.__setattr__(
                 self,
                 name,
@@ -311,17 +313,15 @@ class AuditReceiptFacts:
 
     @classmethod
     def from_receipt_dict(cls, value: object) -> "AuditReceiptFacts":
-        row = _exact_object(
-            value, fields=_AUDIT_RECEIPT_FIELDS, label="audit receipt"
-        )
+        optional = {"pruned"} & set(value) if isinstance(value, Mapping) else set()
+        row = _exact_object(value, fields=_AUDIT_RECEIPT_FIELDS | optional, label="audit receipt")
         return cls(**row)  # type: ignore[arg-type]
 
-    @classmethod
-    def from_dict(cls, value: object) -> "AuditReceiptFacts":
-        return cls.from_receipt_dict(value)
+    from_dict = from_receipt_dict
 
     def to_dict(self) -> dict[str, object]:
-        return {name: getattr(self, name) for name in _AUDIT_RECEIPT_FIELDS}
+        row = {name: getattr(self, name) for name in _AUDIT_RECEIPT_FIELDS}
+        return {**row, "pruned": self.pruned} if self.pruned else row
 
     def to_gate_dict(self) -> dict[str, object]:
         return self.to_dict()

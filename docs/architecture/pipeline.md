@@ -109,7 +109,12 @@ Admission runs when a queued row is first claimed, before any lease exists:
 - an exact copy of bytes that already lost under this arena inherits that `FAIL`; a
   `PASS` is never replayed;
 - a reservation for a target the commissioned arena cannot measure is released as
-  target-unavailable without a verdict.
+  target-unavailable without a verdict;
+- where the standing supervisor names a `pruning_review_root`, the operator's pruning
+  review must have read the bundle. Claude Opus 5.5 reviews each published bundle's
+  source for routed-expert pruning beyond stock while earlier bundles are evaluated. A
+  bundle it finds pruning fails as `routed_expert_pruning` before any lease, and the
+  head of the queue waits for a review that is not written yet.
 
 A crown leaves the commissioned baseline open to later commitments. The first claim
 stamps the arena service identity the row is measured under. Infrastructure errors release the
@@ -118,6 +123,7 @@ releases hold the row instead of converting it into a loss.
 
 Principal code: [`chain/arena_state.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/arena_state.py),
 [`chain/duplicate_replay.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/duplicate_replay.py),
+[`chain/pruning_review.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/pruning_review.py),
 and [`chain/evaluation_lease_store.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/evaluation_lease_store.py).
 
 ## 5. Cohort authority

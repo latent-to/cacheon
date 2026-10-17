@@ -1,7 +1,7 @@
 """Serve any named node of the served model through one audited call body.
 
-Every registered slot other than the prefix cache is a node address: a dotted name
-from ``named_modules()`` of the served model, where ``*`` stands for exactly one
+Every registered slot other than the prefix cache is a node address: a dotted path
+by which the served model reaches a module, where ``*`` stands for exactly one
 segment (``model.layers.*.mlp``). The candidate is a drop-in for that node's stock
 ``forward``: ``entry(prepared, *args, **kwargs)`` receives the stock arguments and
 returns what stock returns. ``prepare(module)`` runs once per bound node; a bundle
@@ -52,6 +52,7 @@ from cacheon.capabilities import CallDescriptor
 from cacheon.dispatch import (
     _arch_tag, _dtype_name, _dynamo_compiling, _flashinfer_tuning, _in_cuda_graph,
 )
+from cacheon.integrations import sglang_dsv4_prune as _prune
 from cacheon.integrations.sglang_cache import ADDRESS as _CACHE
 from cacheon.integrations.sglang_dsa_state import (
     KV_BUFFERS as _KV_BUFFERS, StateFormat, dsa_state_rows, state_values,
@@ -106,9 +107,10 @@ def _tensors(value: object, found: list[torch.Tensor], *, fields: bool = False) 
     """Flatten the tensors of a call value; ``fields`` also walks object attributes.
 
     A node's result may be a record rather than a tuple (the logits processor returns
-    one), and an unwalked record would leave the output ungraded. Arguments are not
-    walked that way: the engine's batch object carries dozens of tensors the node
-    does not own.
+    one), and an unwalked record would leave the output ungraded. Arguments and modules
+    are not walked that way: the engine's batch object carries dozens of tensors the
+    node does not own, and the V4.1 MoE record's experts module recursed past Python's
+    limit on every decode call of 37 layers (B300, 2026-10-15).
     """
 
     if torch.is_tensor(value):
@@ -119,7 +121,7 @@ def _tensors(value: object, found: list[torch.Tensor], *, fields: bool = False) 
     elif isinstance(value, dict):
         for item in value.values():
             _tensors(item, found, fields=fields)
-    elif fields and hasattr(value, "__dict__"):
+    elif fields and hasattr(value, "__dict__") and not isinstance(value, torch.nn.Module):
         for item in vars(value).values():
             _tensors(item, found, fields=fields)
     return found
@@ -290,8 +292,9 @@ def _errors(outputs: list, rows: list, expected: list, *, module=None) -> list[t
 
 
 def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs: dict,
-                layer: int | None = None):
-    """Stock's ``(tensor, row dim)`` answer and the honest twin's row errors against it.
+                layer: int | None = None, step: tuple | None = None):
+    """Stock's ``(tensor, row dim)`` answer, the honest twin's row errors against it, and
+    with a ``step`` stock's result pruned one step heavier (``sglang_dsv4_prune``).
 
     Both run on the live call, and the call is put back after each. What stock leaves
     in its own arguments is not part of the answer. The fused norm overwrites its
@@ -342,7 +345,11 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
     ])
     with _native(module):
         twin = run(lambda outputs: expected and _errors(outputs, rows, expected, module=module))
-    return expected, twin
+    heavier = None
+    if step is not None:
+        with step[1]:
+            heavier = run(lambda outputs: [t for t, _ in outputs])
+    return expected, twin, heavier
 
 
 def _seal(module) -> list[tuple]:
@@ -470,9 +477,13 @@ def _row_errors(actual: torch.Tensor, expected: torch.Tensor, dim: int,
     return errors[torch.isfinite(e).all(dim=1)]
 
 
-def _grade(slot: str, node: int, actual: list, twin: list,
-           *, node_name: str = "") -> tuple[float, int] | None:
-    """Pool each graded tensor's passing rows; record a unit when a window fills."""
+def _grade(slot: str, node: int, actual: list, twin: list, *, node_name: str = "",
+           pruned: dict | None = None, step: int | None = None) -> tuple[float, int] | None:
+    """Pool each graded tensor's passing rows; record a unit when a window fills.
+
+    ``pruned`` maps a result position to its rows' distances to stock pruned one step
+    heavier, pooled at the same tolerance by ``sglang_dsv4_prune``.
+    """
 
     filled = []
     for position, (errors, honest) in enumerate(zip(actual, twin)):
@@ -486,6 +497,8 @@ def _grade(slot: str, node: int, actual: list, twin: list,
         history_p90 = sorted(noise)[int(0.9 * (len(noise) - 1))]
         measured = _TWIN_FACTOR * max(noise[-1], history_p90)
         tolerance = min(_CEILING, max(_FLOOR, measured))
+        if pruned and position in pruned:
+            _prune.pool(slot, (node, position, step), errors, *pruned[position], tolerance)
         pooled = _pooled.setdefault(key, [0, 0, [], 1])
         kept = max(0, _DIAGNOSTIC_ROWS - pooled[1])
         passed = int((errors <= tolerance).sum().item())
@@ -560,20 +573,22 @@ def make_node_dispatcher(
     # layer's cache; a node without one (the whole model) keeps every layer's rows.
     layer = getattr(module, "layer_id", None)
     layer = layer if type(layer) is int else None
+    # Steps alternate per node over audited calls, so every rank runs the same references.
+    pruned_moe, steps = _prune.single_pruned_moe(module), 0
 
     @wraps(stock)
     def dispatched(*args, **kwargs):
-        nonlocal reported
+        nonlocal reported, steps
         if (
             _dynamo_compiling() or _flashinfer_tuning()
             or _receipts.is_invoking() or not registry.active
         ):
             return stock(*args, **kwargs)
         in_graph = _in_cuda_graph()
-        # Drawn, and both references run, before any rank-local branch: selection
+        # Drawn, and the references run, before any rank-local branch: selection
         # must not affect the seeded audit draws, and a node with a collective hangs unless
         # every rank runs it the same number of times with the same seeded draws.
-        expected = twin = None
+        expected = twin = heavier = step = None
         if not in_graph and _audit.sampled():
             changed = _rebound(sealed)
             if changed is not None:
@@ -582,7 +597,13 @@ def make_node_dispatcher(
                 )
                 _receipts.failed(slot, failure, phase="entry")
                 raise failure
-            expected, twin = _references(slot, module, stock, runner, args, kwargs, layer)
+            raised = _prune.raised_setting()
+            if raised is not None:
+                _audit.record_pruned(slot, f"stock's prune runs above its source: {raised}")
+            step = _prune.heavier_step(args, kwargs, steps) if pruned_moe else None
+            steps += step is not None
+            expected, twin, heavier = _references(
+                slot, module, stock, runner, args, kwargs, layer, step)
         facts = _call_facts(module, args, kwargs)
         if facts is None:
             return stock(*args, **kwargs)
@@ -604,11 +625,14 @@ def make_node_dispatcher(
         )
         if expected is not None and twin is not None:
             try:
+                outputs = _tensors(result, [], fields=True)
                 actual = _errors(
-                    [(t, 0) for t in _tensors(result, [], fields=True)],
+                    [(t, 0) for t in outputs],
                     _state_rows(runner, (*args, *kwargs.values()), layer), expected, module=module,
                 )
-                grade = _grade(slot, id(module), actual, twin, node_name=node_name or slot)
+                pruned = heavier and _prune.distances(outputs, expected, heavier)
+                grade = _grade(slot, id(module), actual, twin, node_name=node_name or slot,
+                               pruned=pruned or None, step=step and step[0])
                 if grade is not None and grade[0] < _ROW_BAR and not reported:
                     logging.getLogger(__name__).error(
                         "node audit mismatch: node=%s tensor_position=%d passing_fraction=%.6f",
@@ -628,21 +652,24 @@ def make_node_dispatcher(
 def bind(runner, registry: KernelRegistry = REGISTRY) -> list[str]:
     """Bind every registered node slot to the served model; return the bound names."""
 
-    named = dict(runner.model.named_modules())
+    # Every path, each module once per slot, and one module two slots reach is an overlap:
+    # the DeepSeek-V4.1 fork registers each decoder layer's successor as its ``_next_layer``
+    # child (upstream #42245), and the deduplicating listing named 37 of 40 layers only
+    # through that chain, so ``model.layers.*`` bound 3 of 40 (B300, 2026-10-12 and 10-15).
+    named = dict(runner.model.named_modules(remove_duplicate=False))
     bound: dict[str, str] = {}
     for slot in sorted(s for s in registry.slots() if s != _CACHE):
         pattern = node_pattern(slot)
         names = [name for name in named if pattern.match(name)]
+        names = [n for i, n in enumerate(names) if all(named[m] is not named[n] for m in names[:i])]
         error = None
         if not names:
             error = f"node slot {slot!r} names no module of the served model"
         for name in names:
             # A claimed node inside another claimed node would run as the candidate
             # while the outer node's stock reference is taken, and never otherwise.
-            clash = next(
-                (o for o in bound if o == name or o.startswith(name + ".") or name.startswith(o + ".")),
-                None,
-            )
+            clash = next((o for o in bound if named[o] is named[name] or o.startswith(name + ".")
+                          or name.startswith(o + ".")), None)
             if clash is not None:
                 error = (
                     f"node {name!r} of {slot!r} overlaps node {clash!r} of {bound[clash]!r}"

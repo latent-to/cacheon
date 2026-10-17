@@ -126,10 +126,15 @@ After the speed stage, an untimed eager run samples live calls to each claimed
 node and compares each output with stock SGLang on the same inputs, at the
 registered tolerance.
 
-- `slot_audit_failed` — compared calls show a different function: a call far
-  outside tolerance, or more than one compared call in 100 just outside it.
-  Rare near misses from low-precision rounding pass. Compare against stock at
-  the live shapes and dtypes before resubmitting.
+- `slot_audit_failed` — compared calls show a different function: any compared
+  call under its bar fails, however slightly. Compare against stock at the
+  live shapes and dtypes before resubmitting.
+- `routed_expert_pruning` — the bundle drops routed experts that stock keeps.
+  DeepSeek-V4.1's stock engine already prunes at decode and verify (budget
+  `0.4`, an expert held by at most one row of the call); pruning more — a higher
+  budget or count, extra drop rules, dropping experts several rows share — fails,
+  even when every compared call stays inside its bar. It saves work by computing
+  less of the model, not by computing it faster.
 - `audit_not_covered` — the audit compared too few calls to grade the kernel.
   This is not a judgement on the bundle: the disposition is `NO_DECISION` and
   the validator re-evaluates it.
@@ -142,6 +147,15 @@ computed for that prefix. Serving other bytes, keeping pages across a flush,
 moving a request's own slots or claiming more tokens than the key stops the
 engine as the candidate's failure. See
 [the prefix cache](../architecture/slot-contract.md#the-prefix-cache).
+
+## Pruning is reviewed before evaluation
+
+The DeepSeek-V4.1 arena reads every bundle's source before its first GPU claim.
+Claude Opus 5.5 checks whether the served code drops routed experts that stock's
+prune keeps (budget `0.4`, an expert held by at most one row of the call). Reviews
+run while earlier bundles are evaluated, so they rarely delay a bundle's turn. A
+bundle the review finds pruning fails as `routed_expert_pruning` without GPU time.
+The audit applies the same rule after the speed stage.
 
 ## Identical bytes are not re-evaluated
 

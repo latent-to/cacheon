@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import threading
 from pathlib import Path
 
@@ -32,6 +33,7 @@ from cacheon.chain.intake import (
     IntakeScope,
 )
 from cacheon.chain.publication import publish_worker_bundle, reopen_worker_bundle
+from cacheon.chain.pruning_review import REVIEW_SCHEMA, PruningReviewError, admit
 from cacheon.copy_fingerprint import SubmittedDeltaFingerprint
 from cacheon.eval.evidence_store import publish_evidence
 from cacheon.eval.qualification import QualificationDecision
@@ -522,3 +524,39 @@ def test_admission_replays_a_prior_fail_onto_identical_bytes(tmp_path: Path) -> 
     assert (replayed.status, replayed.decision) == ("failed", "FAIL")
     assert replayed.reason == f"duplicate_of:{prior.reservation_id[:16]}:{prior.reason}"
     assert leases["n"] == 1  # only the prior's own qualification lease
+
+
+def test_admission_holds_the_claim_for_its_pruning_review(tmp_path: Path) -> None:
+    """A first claim waits for the operator's pruning review; a reviewed pruner fails before any lease."""
+
+    first, second = _published_rows(tmp_path, 2)
+    service = ArenaService(_manifest(), _Provider())
+    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
+    coordinator = _coordinator(tmp_path, service, cursor, qualification_max_members=1)
+    reviews = tmp_path / "reviews"
+    reviews.mkdir(mode=0o700)
+
+    def review(row, verdict: str, content: str | None = None) -> None:
+        (reviews / f"{row.reservation_id}.json").write_text(json.dumps({
+            "schema": REVIEW_SCHEMA, "reservation_id": row.reservation_id,
+            "content_hash": content or row.arrival.content_hash, "verdict": verdict,
+        }))
+
+    with _store(tmp_path) as store:
+        assert admit(store, coordinator, reviews) is False
+        review(first, "fail")
+        assert admit(store, coordinator, reviews) is False  # the next bundle waits for its own review
+        failed = store.get(first.reservation_id)
+        review(second, "pass")
+        assert admit(store, coordinator, reviews) is True
+        assert store.preview_evaluation_claim(stage="qualification", max_members=1) == (
+            second.reservation_id,
+        )
+        leases = store._db.execute("SELECT COUNT(*) AS n FROM evaluation_leases").fetchone()["n"]
+        assert admit(store, coordinator, None) is True
+    assert (failed.status, failed.decision, failed.reason) == ("failed", "FAIL", "routed_expert_pruning")
+    assert leases == 0
+
+    review(second, "pass", content=_h("other bytes"))
+    with _store(tmp_path) as store, pytest.raises(PruningReviewError):
+        admit(store, coordinator, reviews)

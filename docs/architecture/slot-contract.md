@@ -92,9 +92,9 @@ the pinned runtime, and its documentation.
 
 ## Node addresses
 
-Every slot name other than [`tree_cache`](#the-prefix-cache) is a node address: a dotted name from
-`named_modules()` of the served model, where `*` stands for exactly one segment. `model.layers.*.mlp` is every MoE block, `model.layers.3` one decoder
-layer, `model` the whole decoder stack. One adapter,
+Every slot name other than [`tree_cache`](#the-prefix-cache) is a node address: a dotted path by which
+the served model reaches a module, where `*` stands for exactly one segment. `model.layers.*.mlp` is every MoE block, `model.layers.3` one decoder
+layer, `model` the whole decoder stack; a module reached by several paths binds once. One adapter,
 [`sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py),
 serves every width, and a bundle that lists several addresses replaces several
 nodes at once. Granularity is the model's own module tree: a span that is not a
@@ -182,7 +182,8 @@ outputs; it does not reorder execution results, router pairs or masks.
 What stock leaves in its own arguments is not graded. The fused RMSNorm overwrites
 its arguments and returns them, and a decoder layer leaves normed intermediates in
 its dead input; values reach the caller through the result and the engine state.
-A result that is a record rather than a tuple is graded through its fields.
+A result that is a record rather than a tuple is graded through its fields; a module
+in it (a MoE record carries its experts) holds weights, not an answer, and is skipped.
 
 `prepare` and `entry` receive the live module and must leave its methods alone.
 Every callable on the node's modules and their classes is recorded at binding,

@@ -188,8 +188,10 @@ promotion, integration, or release cannot renew the same bounty.
 ## Legacy V1 global projection
 
 The reward builder reopens retained PASS evidence and pays only records that beat
-the preceding rewarded v17 record against the same baseline by at least 1.5%
-(`V17_REWARD_MARGIN`); credit remains the unshrunken marginal logarithmic reward. An
+the preceding rewarded v17 or v18 record against the same baseline by at least 1.5%
+(`V17_REWARD_MARGIN`); a declared recommission of that baseline continues its record
+(`reward_group_continuations`, see the emissions policy). Credit remains the
+unshrunken marginal logarithmic reward. An
 unpaid estimate does not advance the reward record. Historical policies retain
 their configured minimum margin against the preceding rewarded record.
 
