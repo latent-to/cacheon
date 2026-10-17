@@ -114,7 +114,10 @@ existing OCI capacity fields: `cpu_millis`, `memory_bytes`, `pids_limit`,
 entry pins that GPU's SGLang scheduler, and the rest join the lane's pool for
 every other engine process. Pins bind the runtime digest; a lane GPU without a
 pin, or an engine whose scheduler ranks do not match the plan, fails the launch.
-Use it on hosts whose vCPUs differ in speed. Both lanes share one native
+Use it on hosts whose vCPUs differ in speed. The engine boots on the NUMA node(s)
+of the lane's scheduler vCPUs, so host memory each rank allocates during boot
+(DeepSeek-V4.1's Engram tables) is local to its GPUs; the per-process pins apply
+once the engine is up. Both lanes share one native
 publication store under the commissioned root, so the swapped orientation reuses
 the first build; lanes take turns building and reopening it.
 UID/GID, executable and deadlines retain their existing authorities. Absent
