@@ -163,9 +163,11 @@ audit role:
 Residual: the whole `model` node is not graded against a heavier reference. Its output is
 dozens of routing decisions downstream, where any perturbation flips later routing, so a
 pruned stack and an honest one sit about equally far from both references. A whole-model
-bundle that prunes inside its own kernels is caught only by the row bar or by owner
-disposition under the same reason. In-process replacement of stock's prune functions
-falls under the in-process tampering residual. No other arena loads the prune module, so
+bundle that prunes inside its own kernels is caught before its first claim by the
+[pruning review](../architecture/pipeline.md#4-qualification-queue-and-admission), which
+reads every bundle's source and fails a pruner under the same reason; the row bar stays
+behind it. In-process replacement of stock's prune functions falls under the in-process
+tampering residual. No other arena loads the prune module, so
 neither check runs there.
 
 ### Production audit canary

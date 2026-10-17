@@ -39,6 +39,7 @@
  "cacheon.chain.miner_feedback": {"all":null,"exceptions":[],"public":["SCHEMA","format_miner_submissions","miner_submissions"]},
  "cacheon.chain.operator_status": {"all":["OperatorStatusError","format_reservation_status","reservation_status"],"exceptions":["OperatorStatusError"]},
  "cacheon.chain.payload": {"all":null,"exceptions":["PayloadError"],"public":["ALLOWED_URL_SCHEMES","MAX_PAYLOAD_BYTES","PAID_PAYLOAD_VERSION","PAYLOAD_VERSION","PayloadError","SubmissionRef","decode_payload","encode_payload"]},
+ "cacheon.chain.pruning_review": {"all":null,"exceptions":["PruningReviewError"],"public":["PRUNING_REASON","PruningReviewError","REVIEW_SCHEMA","admit","review_verdict"]},
  "cacheon.chain.publication": {"all":["WorkerBundlePublication","WorkerBundlePublicationError","WorkerBundleSourceError","publish_worker_bundle","reopen_worker_bundle"],"exceptions":["WorkerBundlePublicationError","WorkerBundleSourceError"]},
  "cacheon.chain.publish": {"all":["BundlePublishError","DEFAULT_BUNDLE_KEY_PREFIX","PublicBundlePublication","S3PublicBundlePublisher","bundle_object_name","cmd_chain_package","cmd_chain_publish","open_public_bundle_publisher","public_object_url"],"exceptions":["BundlePublishError"]},
  "cacheon.chain.qualification_request": {"all":null,"exceptions":[],"public":["CHECKPOINT_QUALIFICATION_FIELDS","INCUMBENT_FIELDS","LEGACY_QUALIFICATION_FIELDS","QUALIFICATION_FIELDS","qualification_request_body","require_commissioned_incumbent"]},

@@ -359,6 +359,16 @@ remote-only proxy whose execution method always fails closed. Stage faults tear 
 constructed authority and rebuild it under bounded exponential backoff; every
 status change is one canonical-JSON line on stdout.
 
+`pruning_review_root` names the owner-controlled mode-0700 directory where the
+operator's pruning review writes its verdicts; an empty value claims bundles without
+one. Each verdict is `<reservation_id>.json` holding `schema`
+`cacheon-pruning-review-v1`, the `reservation_id`, the bundle's `content_hash` and a
+`verdict` of `pass` or `fail`; other fields are the operator's record. Admission fails
+a `fail` as `routed_expert_pruning`, holds a first claim that has no verdict yet, and
+stops the stage on a verdict that does not bind to its row
+(`chain/pruning_review.py`). The review process and its prompt are operator-side and
+are not in this repository.
+
 `enable_settlement` installs the transactional settlement stage. When enabled,
 `settlement_network` must name the finalized-head endpoint used to clock lease
 and commit; the stage refreshes that clock immediately before each stateful

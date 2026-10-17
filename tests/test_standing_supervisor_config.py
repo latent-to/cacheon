@@ -89,6 +89,7 @@ def _setup(tmp_path: Path) -> tuple[Path, dict[str, object]]:
         "enable_settlement": False,
         "enable_weights": False,
         "idle_poll_ms": 25,
+        "pruning_review_root": "",
         "qualification_evidence_root": str(evidence),
         "qualification_incumbent_stack_path": str(incumbent_path),
         "qualification_incumbent_tree_digest": _h("incumbent-tree"),
@@ -113,6 +114,7 @@ def test_load_standing_config_closed_and_weights_disabled(tmp_path: Path) -> Non
     config = load_standing_config(standing_path)
     assert config.enable_weights is False
     assert config.enable_settlement is False
+    assert config.pruning_review_root is None
     assert config.idle_poll_s == 0.025
     assert config.raw == raw
 

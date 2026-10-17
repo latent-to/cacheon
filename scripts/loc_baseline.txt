@@ -14,13 +14,15 @@
 # Merge 26b7cbb5 kept main's counts, under the merged tree by this branch's raises above: +60 runtime,
 # +15 docs, +7 scripts, +36 tests restored. Routed-expert pruning beyond the V4.1 fork's stock prune
 # fails as routed_expert_pruning (owner ruling 2026-10-17): +209 runtime, +44 docs, +134 tests, +3 notes.
+# Admission waits for the operator's pruning review (Claude Opus 5.5 reads each bundle's source; the old
+# path was owner disposition of whole-model pruners): +84 runtime, +27 docs, +40 tests, surface, +2 notes.
 (root) 1158
 .github 345
 bundles 2398
-cacheon 92156
+cacheon 92240
 cacheon_kernels 936
 dashboard 4281
-docs 12715
+docs 12742
 examples 396
-scripts 2128
-tests 67112
+scripts 2130
+tests 67152

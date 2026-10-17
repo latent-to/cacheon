@@ -148,6 +148,15 @@ moving a request's own slots or claiming more tokens than the key stops the
 engine as the candidate's failure. See
 [the prefix cache](../architecture/slot-contract.md#the-prefix-cache).
 
+## Pruning is reviewed before evaluation
+
+The DeepSeek-V4.1 arena reads every bundle's source before its first GPU claim.
+Claude Opus 5.5 checks whether the served code drops routed experts that stock's
+prune keeps (budget `0.4`, an expert held by at most one row of the call). Reviews
+run while earlier bundles are evaluated, so they rarely delay a bundle's turn. A
+bundle the review finds pruning fails as `routed_expert_pruning` without GPU time.
+The audit applies the same rule after the speed stage.
+
 ## Identical bytes are not re-evaluated
 
 If the validator has already failed exactly your publication bytes under exactly

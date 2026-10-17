@@ -12,6 +12,7 @@
  "cacheon/chain/follower_fallback.py": ["cacheon.follower.expired-source-burn.v1"],
  "cacheon/chain/intake.py": ["cacheon.chain.burn-weight-authority","cacheon.chain.evaluation-stack-genesis","cacheon.chain.evaluation-stack-state","cacheon.chain.finalized-arrival","cacheon.chain.finalized-payload","cacheon.chain.intake-scope","cacheon.chain.qualification-retry-group","cacheon.chain.settlement-lease","cacheon.chain.settlement-state","cacheon.economics.policy"],
  "cacheon/chain/mainnet_screen_dispatcher.py": ["cacheon-mainnet-screen-dispatcher-config-v1","cacheon.chain.mainnet-screen-dispatcher-config.v1"],
+ "cacheon/chain/pruning_review.py": ["cacheon-pruning-review-v1"],
  "cacheon/chain/publication.py": ["cacheon.chain.worker-bundle-address","cacheon.chain.worker-bundle-publication","cacheon.worker-bundle-publication.v1"],
  "cacheon/chain/qualification_settlement.py": ["cacheon.operator.reward-decay-policy.v1","cacheon.operator.reward-decay.v1","cacheon.operator.reward-grandfathering.v1","cacheon.operator.reward-record-policy.v1"],
  "cacheon/chain/remote_evaluation_dispatcher.py": ["cacheon.arena.candidate-binding","cacheon.chain.remote-evaluation-protocol.v4","cacheon.chain.remote-evaluation-request.v1","cacheon.chain.remote-evaluation-response.v1","cacheon.chain.remote-worker-credential.v1","cacheon.chain.remote-worker-transport-identity.v1","cacheon.chain.worker-bundle-publication"],
