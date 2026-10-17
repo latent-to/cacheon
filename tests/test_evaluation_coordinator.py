@@ -4,10 +4,13 @@ import dataclasses
 import json
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import cacheon.chain.evaluation_coordinator as coordinator_module
+import cacheon.chain.recoverable_qualification_dispatcher as dispatcher_module
+from cacheon.chain.recoverable_qualification_dispatcher import RecoverableQualificationDispatcher
 from cacheon.arena_service import (
     ArenaCandidateBinding,
     ArenaCapacityPolicy,
@@ -560,3 +563,31 @@ def test_admission_holds_the_claim_for_its_pruning_review(tmp_path: Path) -> Non
     review(second, "pass", content=_h("other bytes"))
     with _store(tmp_path) as store, pytest.raises(PruningReviewError):
         admit(store, coordinator, reviews)
+
+
+def test_admission_follows_the_commissioned_binding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admission previews a bound queue; unbound, the first claim after a recommission passed a pruner."""
+
+    calls: list[str] = []
+
+    class _Store:
+        def pending_qualification_recovery(self, *, owner):
+            return None
+
+        def claim_recoverable_qualification(self, **_):
+            calls.append("claim")
+
+        def close(self):
+            pass
+
+    dispatcher = object.__new__(RecoverableQualificationDispatcher)
+    dispatcher.coordinator = SimpleNamespace(
+        owner="owner", lease_blocks=1, qualification_max_members=1,
+        service=SimpleNamespace(manifest=SimpleNamespace(capacity=SimpleNamespace(max_active_qualifications=1))),
+    )
+    dispatcher.pruning_review_root = Path("reviews")
+    monkeypatch.setattr(dispatcher, "_open_store", lambda: (_Store(), (BLOCK, _block_hash(BLOCK))))
+    monkeypatch.setattr(dispatcher, "_bind_commissioned_incumbent", lambda store: calls.append("bind"))
+    monkeypatch.setattr(dispatcher_module, "admit", lambda store, coordinator, root: not calls.append("admit"))
+    assert dispatcher._claim_or_reopen() is None
+    assert calls == ["bind", "admit", "claim"]

@@ -349,14 +349,14 @@ class RecoverableQualificationDispatcher:
         store, point = self._open_store()
         try:
             recovery = store.pending_qualification_recovery(owner=self.coordinator.owner)
-            # Admission runs before the first claim (pruning_review.admit); an
-            # unreviewed bundle at the head of the queue holds the claim.
-            if recovery is None and not admit(store, self.coordinator, self.pruning_review_root):
-                return None
             if recovery is None or recovery.phase is RecoveryPhase.CLAIMED:
                 boundary = self._bind_commissioned_incumbent(store)
                 if boundary is not None:
                     return boundary
+            # Admission (pruning_review.admit: an unreviewed head holds the claim) follows the binding, since an
+            # unbound queue previews no claim: a recommission's first claim passed reviewed pruner 747f8d71 (10-17).
+            if recovery is None and not admit(store, self.coordinator, self.pruning_review_root):
+                return None
             if recovery is None:
                 recovery = store.claim_recoverable_qualification(
                     owner=self.coordinator.owner,

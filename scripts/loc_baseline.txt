@@ -18,6 +18,8 @@
 # path was owner disposition of whole-model pruners): +84 runtime, +27 docs, +40 tests, surface, +2 notes.
 # Engines boot on their sealed schedulers' NUMA node (DeepSeek Engram tables landed on the remote socket of a
 # two-socket pair, Lium 2026-10-17): +21 runtime, +3 docs, +20 tests, +2 notes.
+# Admission follows the commissioned-incumbent binding (unbound, the queue previewed no claim and the first claim after
+# the Lium recommission passed reviewed pruner 747f8d71, 2026-10-17): +0 runtime, +31 tests, +2 notes.
 (root) 1158
 .github 345
 bundles 2398
@@ -26,5 +28,5 @@ cacheon_kernels 936
 dashboard 4281
 docs 12745
 examples 396
-scripts 2132
-tests 67172
+scripts 2134
+tests 67203
