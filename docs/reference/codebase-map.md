@@ -177,8 +177,8 @@ End-to-end tests drive the production entrypoints over one private deployment
 root, and the remaining focused tests mirror authority boundaries:
 
 - `test_validator_end_to_end.py` drives intake through weight projection;
-- `test_validator_hostile_intake.py` and `test_target_catalog.py` cover hostile
-  input and target admission;
+  `test_validator_hostile_intake.py` and `test_validator_qualification_faults.py`
+  drive hostile input and pod faults, and `test_target_catalog.py` target admission;
 - `test_stack_manifest.py`, stack-planning tests, and `test_engine_tree.py`
   cover canonical composition and integration materialization;
 - qualification, OCI, audit, and reference-protocol tests cover the paired

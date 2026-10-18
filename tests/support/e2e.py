@@ -245,16 +245,60 @@ def commission(root: Path, profile) -> tuple[dict, Path, dict]:
         "state": "READY_FOR_REGISTRATION", "worker_epoch": sha256_hex(root.name.encode())[:32],
         "worker_image": preflight.requested_image,
     }
+    ready_path = _seal_ready(pod / "ready-receipt.json", ready)
+    return _materialize(root, profile, ready_path, pod / "commissioned"), ready_path, ready
+
+
+def _seal_ready(path: Path, ready: dict) -> Path:
     ready["receipt_digest"] = spool.spool_digest("cacheon.current-pod-commission.v1", ready)
-    ready_path = pod / "ready-receipt.json"
-    sealed_json(ready_path, ready)
-    materialized = deployment.materialize_b300_identities(
-        ready_receipt=ready_path, authority_config=authority_path, measurement_config=measurement,
-        calibration_package=calibration, calibration_projection_receipt=projection,
-        prompt_authority=prompt, output_root=private(pod / "commissioned"),
+    sealed_json(path, ready)
+    return path
+
+
+def _materialize(root: Path, profile, ready_path: Path, output: Path) -> dict:
+    pod = root / "pod"
+    gpus = tuple(gpu(index, profile.gpu) for index in range(profile.host))
+    return deployment.materialize_b300_identities(
+        ready_receipt=ready_path, authority_config=pod / "authority-config.json",
+        measurement_config=pod / "measurement-config.json", calibration_package=pod / "calibration-package.json",
+        calibration_projection_receipt=pod / "calibration-projection-receipt.json",
+        prompt_authority=pod / "prompt-authority.json", output_root=private(output),
         gpu_provisioner=lambda selected, *, deadline: tuple(gpus[index] for index in selected),
     )
-    return materialized, ready_path, ready
+
+
+def _register(root: Path, materialized: dict, ready_path: Path, output: Path) -> dict:
+    """``make-registration`` binds the READY receipt, readiness and credential for the CPU side."""
+
+    manifest = json.loads(Path(materialized["arena_service_manifest"]).read_text())
+    run("cacheon.chain.remote_worker_service", "make-registration", "--ready-receipt", str(ready_path),
+        "--worker-readiness", materialized["worker_readiness"], "--known-hosts", str(root / "known_hosts"),
+        "--pod-host", "pod.example", "--pod-port", "22",
+        "--service-identity", deployment._manifest_from_dict(manifest).service_id,
+        "--remote-service", str(REPO / "cacheon/chain/remote_worker_service.py"),
+        "--adapter", str(REPO / "cacheon/eval/b300_remote_worker_adapter.py"),
+        "--credential", str(root / "credential.secret"), "--credential-id", "e2e-qualification-v1",
+        "--output", str(output))
+    return verify_registration(spool.load_json(output))
+
+
+def replace_worker(root: Path, profile, ready: dict, tag: str) -> dict:
+    """The operator replaces the pod: a fresh READY epoch, its registration, the dispatcher re-pointed."""
+
+    fresh = {**ready, "created_at_unix": int(time.time()), "worker_epoch": sha256_hex(tag.encode())[:32]}
+    del fresh["receipt_digest"]
+    ready_path = _seal_ready(root / "pod" / f"ready-receipt-{tag}.json", fresh)
+    materialized = _materialize(root, profile, ready_path, root / "pod" / f"commissioned-{tag}")
+    path = root / f"registration-{tag}.json"
+    registration = _register(root, materialized, ready_path, path)
+    dispatcher = root / "validator" / "dispatcher.json"
+    config = json.loads(dispatcher.read_text())
+    config.update(registration_digest=registration["registration_digest"], registration_path=str(path),
+                  transport_identity_digest=registration["transport_identity_digest"],
+                  worker_readiness=json.loads(Path(materialized["worker_readiness"]).read_text()))
+    dispatcher.unlink()
+    sealed_json(dispatcher, config)
+    return registration
 
 
 def seal_authority(root: Path, materialized: dict, ready_path: Path, ready: dict):
@@ -267,16 +311,8 @@ def seal_authority(root: Path, materialized: dict, ready_path: Path, ready: dict
     known_hosts.write_text("pod.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE2E\n")
     known_hosts.chmod(0o600)
     manifest = json.loads(Path(materialized["arena_service_manifest"]).read_text())
-    service_id = deployment._manifest_from_dict(manifest).service_id
     registration_path = root / "registration.json"
-    run("cacheon.chain.remote_worker_service", "make-registration", "--ready-receipt", str(ready_path),
-        "--worker-readiness", materialized["worker_readiness"], "--known-hosts", str(known_hosts),
-        "--pod-host", "pod.example", "--pod-port", "22", "--service-identity", service_id,
-        "--remote-service", str(REPO / "cacheon/chain/remote_worker_service.py"),
-        "--adapter", str(REPO / "cacheon/eval/b300_remote_worker_adapter.py"),
-        "--credential", str(secret), "--credential-id", "e2e-qualification-v1",
-        "--output", str(registration_path))
-    registration = verify_registration(spool.load_json(registration_path))
+    registration = _register(root, materialized, ready_path, registration_path)
     inputs, composition, _ = deployment.replay_commissioned_composition(
         registration, ready, commissioned_root=Path(materialized["deployment"]).parent)
     catalog = default_target_catalog()
@@ -319,11 +355,11 @@ def seal_authority(root: Path, materialized: dict, ready_path: Path, ready: dict
 class Supervisor:
     """The standing CPU supervisor process, observed through its status lines."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, config: Path | None = None) -> None:
         self.log = (root / "supervisor.stderr").open("a")
         self.process = subprocess.Popen(
             [sys.executable, "-m", "cacheon.chain.standing_cpu_supervisor",
-             "--config", str(root / "validator" / "standing.json")],
+             "--config", str(config or root / "validator" / "standing.json")],
             cwd=REPO, env=chain_env(), stdout=subprocess.PIPE, stderr=self.log, text=True)
         self.lines: queue.Queue[dict] = queue.Queue()
         threading.Thread(target=self._pump, daemon=True).start()
@@ -355,7 +391,7 @@ def supervisor_processes():
     """Fixture body: start supervisors; reap any a failed assertion left running."""
 
     started: list[Supervisor] = []
-    yield lambda root: started.append(Supervisor(root)) or started[-1]
+    yield lambda root, config=None: started.append(Supervisor(root, config)) or started[-1]
     for supervisor in started:
         if supervisor.process.poll() is None:
             supervisor.process.kill()
@@ -366,8 +402,8 @@ def waiting(status: dict) -> bool:
     return status["last_disposition"] == "waiting" and status["request_id"] is not None
 
 
-def carriers(root: Path) -> list[Path]:
-    outbox = root / "spool" / "outbox"
+def carriers(root: Path, spool_name: str = "spool") -> list[Path]:
+    outbox = root / spool_name / "outbox"
     return sorted(path for path in outbox.iterdir() if path.is_dir()) if outbox.is_dir() else []
 
 
@@ -389,8 +425,13 @@ def pod_request(root: Path, sealed, carrier: Path):
                            identity=identity, credential=credential)
 
 
-def pod_answer(root: Path, sealed, carrier: Path, decision: QualificationDecision) -> str:
-    """Play the GPU pod: verify the authenticated request, then seal its verdict."""
+def pod_answer(root: Path, sealed, carrier: Path, decision: QualificationDecision, *,
+               incumbent_tree_digest: str | None = None, tamper=None) -> str:
+    """Play the GPU pod: verify the authenticated request, then seal its verdict.
+
+    ``incumbent_tree_digest`` plays a pod that measured against another incumbent tree;
+    ``tamper`` rewrites the finalized result before RESULT_READY, as a hostile pod or shuttle would.
+    """
 
     pod = pod_request(root, sealed, carrier)
     request, wire, publication = pod.request, pod.wire, pod.publication
@@ -452,21 +493,24 @@ def pod_answer(root: Path, sealed, carrier: Path, decision: QualificationDecisio
         report_digest=pod_output("report"), settlement_qualification=settlement)
     product = capture_remote_qualification_product(
         batch=QualificationIntakeBatch(authority.digest, (outcome,), attempt), authority_manifest=authority,
-        incumbent_stack=sealed.incumbent, incumbent_tree_digest=sealed.incumbent_tree.tree_digest,
+        incumbent_stack=sealed.incumbent,
+        incumbent_tree_digest=incumbent_tree_digest or sealed.incumbent_tree.tree_digest,
         screen_lane=wire.body["screen_lane"], service_digest=wire.body["service_digest"],
         readiness=WorkerReadiness(**sealed.registration["worker_readiness"]), evidence_root=evidence,
         evidence_references=(attempt,))
-    write_response(root, pod, seal_remote_response(wire, product, pod.identity, pod.credential))
+    write_response(pod, seal_remote_response(wire, product, pod.identity, pod.credential), tamper)
     return reservation.reservation_digest
 
 
-def write_response(root: Path, pod, response) -> None:
+def write_response(pod, response, tamper=None) -> None:
     """The adapter's terminal write: the sealed response, its journal, then RESULT_READY."""
 
     request_id = pod.request["request_id"]
-    result = private(root / "spool" / "results" / request_id)
+    result = private(pod.carrier.parent.parent / "results" / request_id)  # the carrier's own spool
     (result / "response.json").write_bytes(spool.spool_canonical_json(response.to_dict()) + b"\n")
     append_event(journal_path(result), request_id, "adapter.terminal", "completed")
     spool.finalize_adapter_response(pod.request, pod.carrier, result, identity=pod.identity,
                                     credential=pod.credential)
+    if tamper is not None:
+        tamper(result)
     spool.atomic_bytes(result / "RESULT_READY", (request_id + "\n").encode(), mode=0o400)
