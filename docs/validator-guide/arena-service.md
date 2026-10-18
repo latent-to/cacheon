@@ -292,5 +292,5 @@ Next: [Authoritative qualification](qualification.md).
 
 - [Arena service types and registry](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py)
 - [B300 deployment materializer](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_deployment.py)
-- [Arena service tests](https://github.com/latent-to/cacheon/blob/main/tests/test_arena_service.py)
+- [End-to-end validator test](https://github.com/latent-to/cacheon/blob/main/tests/test_validator_end_to_end.py)
 - [Qualification intake projection](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_intake.py)

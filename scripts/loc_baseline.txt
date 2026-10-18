@@ -38,6 +38,8 @@
 # The arena operator becomes a tracked, parameterized recipe (owner 2026-10-19): the Muse r26 operator lifted into
 # scripts/arena templates, one operator.json per arena, a render tool and a launcher: +1,640 scripts (+3 notes),
 # +35 examples, +135 docs, +1 root. Casualty: the untracked per-task copy-and-edit derivation on the validator VM.
+# Tranche-2 wave 2: a hostile-intake end-to-end module over a shared deployment harness replaces 18 intake, scan,
+# payload and payment test files (owner 2026-10-19): +848 tests, -4,454 tests, +2 notes.
 (root) 1159
 .github 345
 bundles 2398
@@ -47,4 +49,4 @@ dashboard 4281
 docs 12890
 examples 577
 scripts 3733
-tests 50045
+tests 46439

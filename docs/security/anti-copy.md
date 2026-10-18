@@ -130,4 +130,4 @@ When investigating a suspected copy:
 - [Submitted-delta fingerprints](https://github.com/latent-to/cacheon/blob/main/cacheon/copy_fingerprint.py)
 - [Finalized copy reconciliation](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/intake.py)
 - [Validator loop integration](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/validator_loop.py)
-- [Copy behavior tests](https://github.com/latent-to/cacheon/blob/main/tests/test_copy_fingerprint.py)
+- [Copy behavior tests](https://github.com/latent-to/cacheon/blob/main/tests/test_validator_hostile_intake.py)

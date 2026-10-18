@@ -31,7 +31,6 @@ dashboard/app.py 932
 tests/test_chain_intake.py 1599
 tests/test_device_state.py 942
 tests/test_engine_tree.py 1063
-tests/test_eval_cost.py 1019
 tests/test_oci_backend.py 1138
 tests/test_qualification_continuation.py 915
 tests/test_qualification_runner.py 1843

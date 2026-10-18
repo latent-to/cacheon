@@ -173,10 +173,11 @@ object.
 
 ## Tests as executable maps
 
-Tests mirror the authority boundaries rather than one monolithic integration
-fixture:
+End-to-end tests drive the production entrypoints over one private deployment
+root, and the remaining focused tests mirror authority boundaries:
 
-- `test_static.py` and `test_target_catalog.py` cover hostile
+- `test_validator_end_to_end.py` drives intake through weight projection;
+- `test_validator_hostile_intake.py` and `test_target_catalog.py` cover hostile
   input and target admission;
 - `test_stack_manifest.py`, stack-planning tests, and `test_engine_tree.py`
   cover canonical composition and integration materialization;
@@ -184,8 +185,7 @@ fixture:
   replay, registered eager audit A, and pristine T;
 - chain-intake, settlement, economics, and weight-publication tests cover
   durable economic transitions; and
-- `test_chain_publish.py` and `test_chain_archive.py` cover public proposal
-  transport and private digest-bound recovery respectively.
+- `test_chain_archive.py` covers private digest-bound recovery.
 
 When learning a type, search for both its successful construction and its
 rejection tests. The negative cases usually reveal which fields are security
