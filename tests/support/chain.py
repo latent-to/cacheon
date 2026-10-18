@@ -50,6 +50,7 @@ class SimulatedMetagraph:
     def __init__(self, hotkeys, permits=None, last_updates=None, *, block=0, owner_coldkey=""):
         self.uids = list(range(len(hotkeys)))
         self.hotkeys = list(hotkeys)
+        self.coldkeys = [f"{hotkey}-coldkey" for hotkey in hotkeys]  # the miner wallets' coldkey names
         self.validator_permit = list(permits) if permits is not None else [True] * len(hotkeys)
         self.last_update = list(last_updates) if last_updates is not None else [0] * len(hotkeys)
         self.block = block
@@ -59,8 +60,14 @@ class SimulatedMetagraph:
 class SimulatedSubtensor:
     def __init__(self, *, hotkeys, revealed=None, block=100,
                  registered=None, events=None, weight_rows=None, last_updates=None,
-                 weights_version=29, owner="", extrinsics=None, state_path=None):
+                 weights_version=29, owner="", extrinsics=None, state_path=None,
+                 commits=None, rate_limit=0, reveal_delay=0, lost_submissions=0,
+                 registrations=(), finalize=None):
         self._hotkeys = list(hotkeys)
+        self._registrations = [list(row) for row in registrations]  # [from_block, hotkeys by uid] changes
+        # Finality moving while a call is in flight: after the named call ("weights" or "set_weights")
+        # the finalized head becomes the given block, once.
+        self._finalize = dict(finalize or {})
         self._weights_version = weights_version
         self._revealed = dict(revealed or {})  # hotkey -> ((block, data), ...)
         self._block = block
@@ -70,6 +77,12 @@ class SimulatedSubtensor:
         self._last_updates = last_updates
         self._owner = owner
         self._extrinsics = {int(key): list(rows) for key, rows in (extrinsics or {}).items()}
+        # Commit-reveal weights: [hotkey, commit_block, uids, uint16 values, reveal_block] rows; a row
+        # is the hotkey's sparse vector from its reveal block on, and timelocked until then.
+        self._commits = [list(row) for row in commits or ()]
+        self._rate_limit = rate_limit
+        self._reveal_delay = reveal_delay
+        self._lost_submissions = lost_submissions  # the next N signed submissions never reach the chain
         self._state_path = state_path  # set when reopened from a file: mutations persist there
         self.substrate = types.SimpleNamespace(
             get_events=self._get_events,
@@ -89,12 +102,34 @@ class SimulatedSubtensor:
 
     def metagraph(self, netuid=None, block=None):
         self.metagraph_calls.append(block)
+        block = self._block if block is None else block
+        revealed, hotkeys = self._revealed_weights(block), self._members(block)
         return SimulatedMetagraph(
-            self._hotkeys,
-            last_updates=self._last_updates,
-            block=self._block if block is None else block,
+            hotkeys,
+            last_updates=self._last_updates if self._last_updates is not None else [
+                revealed.get(hotkey, (0,))[0] for hotkey in hotkeys],
+            block=block,
             owner_coldkey=self._owner,
         )
+
+    def _members(self, block):
+        """Hotkeys by UID at ``block``: the latest registration change at or before it."""
+
+        return [hotkeys for start, hotkeys in [[0, self._hotkeys], *self._registrations] if start <= block][-1]
+
+    def _finalized_after(self, call):
+        if call in self._finalize:
+            self._block = self._finalize.pop(call)
+            self._persist(block=self._block, finalize=self._finalize)
+
+    def _revealed_weights(self, block):
+        """Each hotkey's latest revealed vector at ``block``: hotkey -> (reveal_block, uids, values)."""
+
+        latest = {}
+        for hotkey, _, uids, values, reveal_block in self._commits:
+            if reveal_block <= block and reveal_block >= latest.get(hotkey, (-1,))[0]:
+                latest[hotkey] = (reveal_block, uids, values)
+        return latest
 
     def sign_and_send_extrinsic(self, *, call, wallet, wait_for_inclusion, wait_for_finalization):
         """Include one coldkey-signed call at the head; a transfer emits its Balances event."""
@@ -111,17 +146,29 @@ class SimulatedSubtensor:
         return types.SimpleNamespace(success=True, message="", extrinsic_receipt=types.SimpleNamespace(
             block_number=self._block, extrinsic_idx=index))
 
-    def _persist(self):
+    def _persist(self, **fields):
         if self._state_path is None:
             return
         state = json.loads(Path(self._state_path).read_text())
         state["revealed"] = {hotkey: [list(row) for row in rows] for hotkey, rows in self._revealed.items()}
         state["extrinsics"] = {str(block): rows for block, rows in self._extrinsics.items()}
-        Path(self._state_path).write_text(json.dumps(state))
+        state["commits"], state["lost_submissions"] = self._commits, self._lost_submissions
+        Path(self._state_path).write_text(json.dumps({**state, **fields}))
 
     def weights(self, netuid=None, block=None):
         self.weight_calls.append(block)
-        return list(self._weight_rows)
+        block = self._block if block is None else block
+        revealed, hotkeys = self._revealed_weights(block), self._members(block)
+        rows = list(self._weight_rows) + [
+            (hotkeys.index(hotkey), list(zip(uids, values)))
+            for hotkey, (_, uids, values) in revealed.items() if hotkey in hotkeys]
+        self._finalized_after("weights")
+        return rows
+
+    def get_timelocked_weight_commits(self, netuid, block=None):
+        block = self._block if block is None else block
+        return [(hotkey, commit_block, "", reveal_block)
+                for hotkey, commit_block, _, _, reveal_block in self._commits if reveal_block > block]
 
     def get_current_block(self):
         return self._block
@@ -174,11 +221,22 @@ class SimulatedSubtensor:
             "wait_for_inclusion": wait_for_inclusion,
             "wait_for_finalization": wait_for_finalization,
         })
-        return True
+        if self._state_path is None:
+            return True
+        if self._lost_submissions:
+            self._lost_submissions -= 1
+            self._persist()
+            raise ConnectionError("the signed submission never reached the chain")
+        top = max(weights)  # the SDK's uint16 max-upscale
+        reveal_block = self._block + self._reveal_delay
+        self._commits.append([wallet.hotkey.ss58_address, self._block, list(uids),
+                              [round(value / top * 65_535) for value in weights], reveal_block])
+        self._persist()
+        self._finalized_after("set_weights")
+        return types.SimpleNamespace(success=True, message="", data={"reveal_round": reveal_block})
 
     def get_hyperparameter(self, param_name, netuid=None, block=None):
-        assert param_name == "WeightsVersionKey"
-        return self._weights_version
+        return {"WeightsVersionKey": self._weights_version, "WeightsSetRateLimit": self._rate_limit}[param_name]
 
     def is_hotkey_registered(self, *, hotkey_ss58, netuid):
         return hotkey_ss58 in self._registered
@@ -190,6 +248,8 @@ def write_state(path: Path, *, hotkeys, revealed, block: int, validator: str, ow
     path.write_text(json.dumps({
         "block": block, "hotkeys": list(hotkeys), "validator": validator, "owner": owner, "extrinsics": {},
         "revealed": {hotkey: [list(row) for row in rows] for hotkey, rows in revealed.items()},
+        "commits": [], "rate_limit": 0, "reveal_delay": 0, "lost_submissions": 0, "registrations": [],
+        "finalize": {},
     }))
     return path
 
@@ -197,8 +257,17 @@ def write_state(path: Path, *, hotkeys, revealed, block: int, validator: str, ow
 def advance(path: Path, block: int) -> None:
     """Finalize the chain up to ``block``."""
 
+    amend(path, block=block)
+
+
+def amend(path: Path, **fields) -> dict:
+    """Rewrite named chain fields (owner, rate limit, reveal delay, commits, ...); returns the new state."""
+
     state = json.loads(path.read_text())
-    path.write_text(json.dumps({**state, "block": block}))
+    assert set(fields) <= set(state), set(fields) - set(state)
+    state.update(fields)
+    path.write_text(json.dumps(state))
+    return state
 
 
 def reopen_state(path: str | Path) -> SimulatedSubtensor:
@@ -206,7 +275,10 @@ def reopen_state(path: str | Path) -> SimulatedSubtensor:
     return SimulatedSubtensor(
         hotkeys=state["hotkeys"], block=state["block"], owner=state["owner"],
         revealed={key: tuple(map(tuple, rows)) for key, rows in state["revealed"].items()},
-        extrinsics=state["extrinsics"], state_path=Path(path),
+        extrinsics=state["extrinsics"], state_path=Path(path), commits=state["commits"],
+        rate_limit=state["rate_limit"], reveal_delay=state["reveal_delay"],
+        lost_submissions=state["lost_submissions"], registrations=state["registrations"],
+        finalize=state["finalize"],
     )
 
 

@@ -79,11 +79,13 @@ def sealed_json(path: Path, value: object) -> str:
     return sha256_hex(raw)
 
 
-def run(*argv: str, env: dict[str, str] | None = None) -> str:
+def run(*argv: str, env: dict[str, str] | None = None, code: int = 0) -> str:
+    """Run one module entrypoint to its expected exit code; a nonzero exit also returns stderr."""
+
     done = subprocess.run([sys.executable, "-m", *argv], cwd=REPO, env=env,
                           capture_output=True, text=True, timeout=300)
-    assert done.returncode == 0, done.stdout + done.stderr
-    return done.stdout
+    assert done.returncode == code, done.stdout + done.stderr
+    return done.stdout if code == 0 else done.stdout + done.stderr
 
 
 def chain_env() -> dict[str, str]:
@@ -425,10 +427,11 @@ def pod_request(root: Path, sealed, carrier: Path):
                            identity=identity, credential=credential)
 
 
-def pod_answer(root: Path, sealed, carrier: Path, decision: QualificationDecision, *,
+def pod_answer(root: Path, sealed, carrier: Path, decision: QualificationDecision, *, speedup: str = "1.06",
                incumbent_tree_digest: str | None = None, tamper=None) -> str:
     """Play the GPU pod: verify the authenticated request, then seal its verdict.
 
+    ``speedup`` is the PASS's measured speedup over the commissioned baseline;
     ``incumbent_tree_digest`` plays a pod that measured against another incumbent tree;
     ``tamper`` rewrites the finalized result before RESULT_READY, as a hostile pod or shuttle would.
     """
@@ -443,7 +446,7 @@ def pod_answer(root: Path, sealed, carrier: Path, decision: QualificationDecisio
     evidence = private(root / "pod" / "evidence")
     attempt = publish_evidence(evidence, canonical_json_bytes({
         "decision": decision.value, "request_id": request["request_id"],
-        "speed_witness": {"resident_policy": {"min_margin": "0.01"}}}),
+        "speed_witness": {"resident_policy": {"version": 17}}}),  # the live paired-replay policy
         domain="qualification.cohort-attempt", media_type="application/json",
         schema="cacheon.qualification.cohort-attempt.v1")
     authority = QualificationAuthorityManifest(
@@ -484,7 +487,7 @@ def pod_answer(root: Path, sealed, carrier: Path, decision: QualificationDecisio
             incumbent_stack_digest=arm.baseline_before.stack_digest,
             incumbent_tree_digest=arm.baseline_before.tree_digest,
             candidate_stack_digest=arm.challenger.stack_digest, candidate_tree_digest=arm.challenger.tree_digest,
-            speedup="1.06", incumbent_manifest=incumbent, candidate_manifest=arm.candidate,
+            speedup=speedup, incumbent_manifest=incumbent, candidate_manifest=arm.candidate,
             audit_control_digest=audit.control.digest, audit_policy=audit,
             audit_evidence_digest=pod_output("audit-evidence"))
     outcome = QualificationIntakeOutcome(

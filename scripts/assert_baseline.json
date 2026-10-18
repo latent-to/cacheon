@@ -14,7 +14,7 @@
 "tests/test_chain_intake.py": 234,
 "tests/test_chain_operator_status.py": 51,
 "tests/test_cli_chain.py": 22,
-"tests/test_cli_weights.py": 92,
+"tests/test_cli_weights.py": 9,
 "tests/test_compat.py": 6,
 "tests/test_crossover_runtime.py": 24,
 "tests/test_cuda_ext_cache.py": 65,
@@ -77,12 +77,11 @@
 "tests/test_validator_end_to_end.py": 29,
 "tests/test_validator_hostile_intake.py": 25,
 "tests/test_validator_qualification_faults.py": 44,
+"tests/test_validator_weights.py": 58,
 "tests/test_vendor_provenance.py": 29,
-"tests/test_weight_hold_release.py": 5,
 "tests/test_weight_offer_service.py": 24,
 "tests/test_weight_producer_rewards.py": 20,
-"tests/test_weight_publication.py": 159,
+"tests/test_weight_publication.py": 54,
 "tests/test_weight_push_auth.py": 17,
-"tests/test_weight_share.py": 66,
-"tests/test_weight_submission_cadence.py": 7
+"tests/test_weight_share.py": 66
 }
