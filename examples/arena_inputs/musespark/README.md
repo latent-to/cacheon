@@ -20,7 +20,9 @@ The configuration is the cookbook's B300 NVFP4 cell plus the capacity flags
 InferenceX published for the same lane: `trtllm_mha` attention, page size 128,
 FP8 KV cache, `swa-full-tokens-ratio` 0.1 and `mem-fraction-static` 0.85 (the
 cookbook defaults, page size 64 and ratio 0.8, saturate the full-attention KV
-pool at 24 sessions), 48 running requests, 48-row decode graphs, 16K breakable
+pool at 24 sessions), 32 running requests and 32-row decode graphs (twice the
+16 sealed sessions; this arena replays 16, since the public four-GPU rows fall
+from 203 tok/s per user at 16 sessions to 90 at 24), 16K breakable
 prefill graphs, layernorm sequence parallel with MegaMoE prefill, and DFlash2
 speculation with eight draft tokens and block verification. `engine_env`
 carries `SGLANG_DFLASH_EAGER_DRAFT_SAMPLER=1`, `TVM_FFI_CUDA_ARCH_LIST=10.3a`
