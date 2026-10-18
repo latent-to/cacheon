@@ -34,6 +34,7 @@
 # Muse Spark development requests (the DeepSeek recipe re-tokenized) and the measured boot bounds: +4 examples, +1 note.
 # Muse Spark seals 16 sessions with the 2x capacity rule (32 running, 32-row decode graphs; owner 2026-10-18): +2 examples, +1 note.
 # One CPU end-to-end validator test replaces six composition-tier files (owner 2026-10-19): +767 tests, -1,868 tests.
+# Tranche-2 wave 0 deletes 61 pod-, engine- and helper-tier test files and two support modules: -16,131 tests.
 (root) 1158
 .github 345
 bundles 2398
@@ -42,5 +43,5 @@ cacheon_kernels 936
 dashboard 4281
 docs 12755
 examples 542
-scripts 2143
-tests 66176
+scripts 2090
+tests 50045
