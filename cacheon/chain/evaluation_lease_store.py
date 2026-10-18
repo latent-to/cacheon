@@ -344,12 +344,16 @@ class EvaluationLeaseStoreMixin:
         return tuple(expired)
 
     def preview_evaluation_claim(
-        self, *, stage: str, max_members: int | None = None
+        self, *, stage: str, max_members: int | None = None,
+        owner: str | None = None, max_active: int | None = None,
     ) -> tuple[str, ...]:
         """Return the exact ordered member IDs the next claim would bind.
 
         This is a read-only snapshot.  The later claim repeats the same selector
-        under ``BEGIN IMMEDIATE`` and is the authority if the queue changed.
+        under ``BEGIN IMMEDIATE`` and is the authority if the queue changed. A claimer's
+        preview passes its ``owner`` and the arena's ``max_active`` to see the capacity the
+        claim sees; the one-lease default let a second pair's lease empty the admission
+        preview and an unreviewed pruner through (73263b71, 2026-10-18).
         """
 
         bound = self.policy.max_cohort if max_members is None else max_members
@@ -361,7 +365,8 @@ class EvaluationLeaseStoreMixin:
         ):
             raise _intake_error("evaluation lease preview bounds are malformed")
         return tuple(
-            row["reservation_id"] for row in self._select_evaluation_rows(stage, bound)
+            row["reservation_id"]
+            for row in self._select_evaluation_rows(stage, bound, owner=owner, max_active=max_active)
         )
 
     def claim_evaluation_lease(

@@ -59,7 +59,10 @@ def admit(store, coordinator, review_root: Path | None) -> bool:
         return True
     while True:
         preview = store.preview_evaluation_claim(
-            stage="qualification", max_members=coordinator.qualification_max_members
+            stage="qualification",
+            max_members=coordinator.qualification_max_members,
+            owner=coordinator.owner,
+            max_active=coordinator.service.manifest.capacity.max_active_qualifications,
         )
         for reservation_id in preview:
             row = store.get(reservation_id)

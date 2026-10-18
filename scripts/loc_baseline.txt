@@ -20,13 +20,15 @@
 # two-socket pair, Lium 2026-10-17): +21 runtime, +3 docs, +20 tests, +2 notes.
 # Admission follows the commissioned-incumbent binding (unbound, the queue previewed no claim and the first claim after
 # the Lium recommission passed reviewed pruner 747f8d71, 2026-10-17): +0 runtime, +31 tests, +2 notes.
+# Admission previews as the claimer under the arena's capacity (the one-lease default let a second pair's lease
+# empty the preview and admit reviewed pruner 73263b71 unreviewed, Verda 2026-10-18): +8 runtime, +36 tests, +2 notes.
 (root) 1158
 .github 345
 bundles 2398
-cacheon 92261
+cacheon 92269
 cacheon_kernels 936
 dashboard 4281
 docs 12745
 examples 396
-scripts 2134
-tests 67203
+scripts 2136
+tests 67239
