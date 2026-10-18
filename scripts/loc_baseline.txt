@@ -53,7 +53,10 @@
 # follower and commit test files and 11 producer tests (owner 2026-10-19): +525 tests, -1,655 tests, -2 scripts, +2 notes.
 # Tranche-2 wave 6: parallel-arena and static-allocation end-to-end modules replace five arena, baseline, worker-pool and
 # reward test files and 8 allocation tests (owner 2026-10-19): +826 tests, -1,723 tests, -2 scripts, +2 notes.
-(root) 1157
+# Tranche-2 wave 7: an operator end-to-end module (fee credits, status and miner reports, explain, snapshot and restore
+# through a simulated S3 SDK, downtime requeue and claims) replaces five operator test files and trims the miner-feedback
+# file to its production-reason table (owner 2026-10-19): +369 tests, -2,209 tests, -1 root, -4 scripts, +3 notes.
+(root) 1156
 .github 345
 bundles 2398
 cacheon 92337
@@ -61,5 +64,5 @@ cacheon_kernels 936
 dashboard 4281
 docs 12958
 examples 582
-scripts 4328
-tests 38080
+scripts 4327
+tests 36240

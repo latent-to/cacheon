@@ -178,14 +178,14 @@ roots, and the remaining focused tests mirror authority boundaries:
 
 - `test_validator_end_to_end.py` drives intake through weight projection, and the
   other `test_validator_*.py` modules hostile input, pod faults, crowns, weights,
-  the weight service and arenas; `test_target_catalog.py` drives target admission;
+  the weight service, arenas and the operator commands, including private
+  digest-bound recovery; `test_target_catalog.py` drives target admission;
 - `test_stack_manifest.py`, stack-planning tests, and `test_engine_tree.py`
   cover canonical composition and integration materialization;
 - qualification, OCI, audit, and reference-protocol tests cover the paired
-  replay, registered eager audit A, and pristine T;
+  replay, registered eager audit A, and pristine T; and
 - chain-intake, settlement, economics, and weight-publication tests cover
-  durable economic transitions; and
-- `test_chain_archive.py` covers private digest-bound recovery.
+  durable economic transitions.
 
 When learning a type, search for both its successful construction and its
 rejection tests. The negative cases usually reveal which fields are security

@@ -44,6 +44,7 @@ from cacheon.engine_tree import inspect_contribution, materialize_engine_tree
 from cacheon.eval import b300_deployment as deployment
 from cacheon.eval.b300_publication_intake import resolve_cohort_publications
 from cacheon.eval.b300_registered_qualification_inputs import ATTRIBUTION_SCHEMA
+from cacheon.eval.candidate_failure_product import candidate_failure_digest, publish_candidate_failure
 from cacheon.eval.evidence_store import publish_evidence
 from cacheon.eval.oci_backend import runtime_identity_from_preflight
 from cacheon.eval.oci_session_protocol import SlotAuditPolicy
@@ -469,12 +470,13 @@ def pod_request(root: Path, sealed, carrier: Path):
 
 
 def pod_answer(root: Path, sealed, carrier: Path, decision: QualificationDecision, *, speedup: str = "1.06",
-               incumbent_tree_digest: str | None = None, tamper=None) -> str:
+               incumbent_tree_digest: str | None = None, tamper=None, raised: str = "") -> str:
     """Play the GPU pod: verify the authenticated request, then seal its verdict.
 
     ``speedup`` is the PASS's measured speedup over the commissioned baseline;
     ``incumbent_tree_digest`` plays a pod that measured against another incumbent tree;
-    ``tamper`` rewrites the finalized result before RESULT_READY, as a hostile pod or shuttle would.
+    ``tamper`` rewrites the finalized result before RESULT_READY, as a hostile pod or shuttle would;
+    ``raised`` makes the FAIL the pod's candidate-failure product carrying that rank failure.
     """
 
     pod = pod_request(root, sealed, carrier)
@@ -485,14 +487,21 @@ def pod_answer(root: Path, sealed, carrier: Path, decision: QualificationDecisio
         return canonical_digest("e2e.pod-output", {"field": name, "request": request["request_id"]})
 
     evidence = private(root / "pod" / "evidence")
-    attempt = publish_evidence(evidence, canonical_json_bytes({
-        "decision": decision.value, "request_id": request["request_id"],
-        "speed_witness": {"resident_policy": {"version": 17}}}),  # the live paired-replay policy
-        domain="qualification.cohort-attempt", media_type="application/json",
-        schema="cacheon.qualification.cohort-attempt.v1")
     authority = QualificationAuthorityManifest(
         "registered", pod_output("authority"), pod_output("source"), pod_output("commitment"),
         pod_output("secret-reference"), (reservation.selected_delta_digest,), (reservation,))
+    if raised:
+        attempt, failure = publish_candidate_failure(
+            evidence, authority_manifest_digest=authority.digest, source_digest=authority.source_digest,
+            culprit_reservation_digest=reservation.reservation_digest, target_id=reservation.target_id,
+            selected_delta_digest=reservation.selected_delta_digest, arm_digest=pod_output("arm"),
+            launch_digest=pod_output("launch"), failure_kind="candidate_exception", failure=raised)
+    else:
+        attempt = publish_evidence(evidence, canonical_json_bytes({
+            "decision": decision.value, "request_id": request["request_id"],
+            "speed_witness": {"resident_policy": {"version": 17}}}),  # the live paired-replay policy
+            domain="qualification.cohort-attempt", media_type="application/json",
+            schema="cacheon.qualification.cohort-attempt.v1")
     settlement = None
     if decision is QualificationDecision.PASS:
         catalog, context, incumbent = sealed.catalog, sealed.context, sealed.incumbent
@@ -533,8 +542,9 @@ def pod_answer(root: Path, sealed, carrier: Path, decision: QualificationDecisio
             audit_evidence_digest=pod_output("audit-evidence"))
     outcome = QualificationIntakeOutcome(
         reservation.reservation_digest, reservation.selected_delta_digest, authority.digest, decision,
-        "qualified" if settlement else "speed_regression", False, attempt_artifact_sha256=attempt.sha256,
-        report_digest=pod_output("report"), settlement_qualification=settlement)
+        "qualified" if settlement else "candidate_exception" if raised else "speed_regression", False,
+        attempt_artifact_sha256=attempt.sha256, settlement_qualification=settlement,
+        report_digest=candidate_failure_digest(failure) if raised else pod_output("report"))
     product = capture_remote_qualification_product(
         batch=QualificationIntakeBatch(authority.digest, (outcome,), attempt), authority_manifest=authority,
         incumbent_stack=sealed.incumbent,
