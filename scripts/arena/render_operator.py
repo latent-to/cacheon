@@ -33,7 +33,7 @@ TEMPLATES = Path(__file__).resolve().with_name("templates")
 SCHEMA = "cacheon-arena-operator-v1"
 PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size", "replay_load",
-        "tokenizer_asset", "model_in_ram", "owner", "node"}
+        "tokenizer_asset", "model_in_ram", "owner", "audit_control_delta_digests", "node"}
 NODE_KEYS = {"name", "scheduler_starts", "client_cpus"}
 PACKET = ("cacheon_b300_qualification_adapter.py", "finalize-authority.py", "numeric_answer_judge.py",
           "prompt-authority.current.json", "qualification_capabilities.py")
@@ -48,6 +48,7 @@ OPERATOR = {
     "prepare_worker.py.tmpl": "prepare_worker.py",
     "runtime_service.py": "runtime_service.py",
     "runtime_uid_preflight.py": "runtime_uid_preflight.py",
+    "twin.sh.tmpl": "twin_{slug}.sh",
     "worker_runtime.py.tmpl": "worker_runtime.py",
 }
 # The retained bootstrap inputs archive, extracted into the pod's shared root by launch_stage.
@@ -92,6 +93,9 @@ def load_operator(path: Path) -> dict:
         devices = [int(value) for value in lane.split(",")]
         if len(devices) != width or devices != sorted(devices) or not cpus:
             raise SystemExit(f"{path}: client_cpus lane {lane!r} must name {width} sorted devices")
+    controls = operator["audit_control_delta_digests"]
+    if controls != sorted(set(controls)) or not all(re.fullmatch(r"[0-9a-f]{64}", d) for d in controls):
+        raise SystemExit(f"{path}: audit_control_delta_digests must be sorted, distinct, lowercase sha256 hex")
     return operator
 
 
@@ -179,6 +183,15 @@ def main() -> None:
     if len(loads) != 1:
         raise SystemExit(f"{capabilities.name}: expected one replay load, found {loads}")
     text = text.replace(loads[0], f'"load": {operator["replay_load"]}')
+    # The registered audit controls are the arena's own bundles (a wrong control for this model's node address):
+    # their digests replace the previous arena's in the sealed policy, as the replay load does.
+    pattern = re.compile(r'(?P<indent>[ \t]*)"audit_control_delta_digests": \[(?:\s*"[0-9a-f]{64}",)*\s*\]')
+    matches = list(pattern.finditer(text))
+    if len(matches) != 1:
+        raise SystemExit(f"{capabilities.name}: expected one audit control list, found {len(matches)}")
+    indent = matches[0].group("indent")
+    rows = "".join(f'{indent}    "{digest}",\n' for digest in operator["audit_control_delta_digests"])
+    text = text[:matches[0].start()] + f'{indent}"audit_control_delta_digests": [\n{rows}{indent}]' + text[matches[0].end():]
     check(capabilities.name, text)
     capabilities.chmod(0o600)
     capabilities.write_text(text)

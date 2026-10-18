@@ -40,13 +40,16 @@
 # +35 examples, +135 docs, +1 root. Casualty: the untracked per-task copy-and-edit derivation on the validator VM.
 # Tranche-2 wave 2: a hostile-intake end-to-end module over a shared deployment harness replaces 18 intake, scan,
 # payload and payment test files (owner 2026-10-19): +848 tests, -4,454 tests, +2 notes.
+# The arena's own inputs become tracked tools (owner 2026-10-19): prompt pool and authority builders, image retention,
+# runtime-seed harvest, the off-chain twin template, and the sealed audit controls as an operator parameter:
+# +599 scripts (3 of them these notes), +5 examples, +65 docs. Casualty: the per-node scratch copies of each.
 (root) 1159
 .github 345
 bundles 2398
 cacheon 92337
 cacheon_kernels 936
 dashboard 4281
-docs 12890
-examples 577
-scripts 3733
+docs 12955
+examples 582
+scripts 4332
 tests 46439

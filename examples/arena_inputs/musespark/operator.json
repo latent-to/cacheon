@@ -8,6 +8,7 @@
   "tokenizer_asset": "tokenizer-muse",
   "model_in_ram": false,
   "owner": "musespark-node",
+  "audit_control_delta_digests": ["15229c59e8c6916f9f3b04809b57355bfc9227007303f1a5157727b2973bef29"],
   "node": {
     "name": "8-GPU Verda",
     "scheduler_starts": [4, 34, 64, 94, 124, 154, 184, 214],
