@@ -70,10 +70,12 @@ submission; DeepSeek-V4.1-Flash showed that a model's layer loop can bypass its
 decoder layers' `forward`, so the executing addresses are an observation, not
 an assumption.
 
-`development-requests.json` is not yet generated. Produce it with the
-DeepSeek-V4.1-Flash recipe and this model's tokenizer: eight synthetic prompts
-of exactly 8,192 tokens, then two batches of the same eight 512-token prefixes,
-eight output tokens each at zero temperature with EOS stopping disabled.
+`development-requests.json` follows the DeepSeek-V4.1-Flash recipe with this
+model's tokenizer: the same eight public synthetic prompts, decoded from the
+DeepSeek file with its tokenizer and re-tokenized with the Muse tokenizer (each
+gives 8,236-8,263 tokens, cut to exactly 8,192), then two batches of the same
+eight 512-token prefixes, eight output tokens each at zero temperature with EOS
+stopping disabled. No special tokens are added, as in the DeepSeek file.
 
 ```bash
 python -m cacheon.cli check /bundles/my_bundle \
@@ -81,6 +83,8 @@ python -m cacheon.cli check /bundles/my_bundle \
   --requests /arena/development-requests.json --output /work/check-001
 ```
 
-Use the default four-window minimum. The 1,800-second limit per engine is
-unmeasured for this model: a cold boot loads 533 GB of weights and captures
-decode graphs for target and draft, so the first measured boot sets the bound.
+Use the default four-window minimum. Measured on the Verda 8xB300 node on
+2026-10-18: a cold boot from network storage with an empty runtime cache took
+933 s, and boots from a warm runtime seed took 243-283 s, so the 1,800-second
+limit per engine holds only with a seed (`--runtime-seed`), as on
+DeepSeek-V4.1-Flash.

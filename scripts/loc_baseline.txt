@@ -28,6 +28,7 @@
 # Muse Spark seals SGLang's unified-cache out-of-window release switch (the Muse hook forces it off; measured hit rate
 # 0.34 and 15.7 tok/s per user at 24 sessions, 0.95 with it on, Verda 2026-10-18): +4 runtime, +1 docs, +6 examples,
 # +1 tests, +3 notes (the notes themselves are the +3 under scripts).
+# Muse Spark development requests (the DeepSeek recipe re-tokenized) and the measured boot bounds: +4 examples, +1 note.
 (root) 1158
 .github 345
 bundles 2398
@@ -35,6 +36,6 @@ cacheon 92332
 cacheon_kernels 936
 dashboard 4281
 docs 12753
-examples 536
-scripts 2142
+examples 540
+scripts 2143
 tests 67277
