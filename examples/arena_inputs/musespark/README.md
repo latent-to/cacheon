@@ -8,8 +8,10 @@ to Meta's gated `meta-models/Muse-Spark-Open-816B-A42B-NVFP4` (revision
 `4239e4db19376904f2e82c167e78f70abb5455fe`): the same 128 LFS objects by SHA-256
 and size. The draft revision is `46c90f412549c472941a68382d91a99e5e6372a0`.
 Keep this folder outside the submitted bundle. Mount it read-only at `/arena`,
-the model at `/model`, the draft where `engine-config.json` names it
-(`/cacheon/input/draft`), and a writable result/cache directory at `/work`.
+the model at `/cacheon/input/model` with the draft download inside it as
+`/cacheon/input/model/dflash2` (a draft is sealed as one directory under the
+model root, so the model identity covers its bytes and nothing else is
+mounted), and a writable result/cache directory at `/work`.
 
 The engine image is SGLang's day-0 Muse Spark image, pinned by digest in the
 `Dockerfile` (`lmsysorg/sglang:dev-muse-spark-open@sha256:8cfc5a72…`, a
@@ -70,7 +72,7 @@ eight output tokens each at zero temperature with EOS stopping disabled.
 
 ```bash
 python -m cacheon.cli check /bundles/my_bundle \
-  --model /model --engine-config /arena/engine-config.json \
+  --model /cacheon/input/model --engine-config /arena/engine-config.json \
   --requests /arena/development-requests.json --output /work/check-001
 ```
 

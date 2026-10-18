@@ -16,9 +16,13 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from cacheon.stack_identity import canonical_digest
 from cacheon._strict import NODE_ADDRESS, require_digest
+from functools import partial
+
+from cacheon.eval import oci_engine_options as _options
 from cacheon.eval.oci_engine_options import (
     ENGINE_ENV_KINDS as _ENGINE_ENV_KINDS,
     ENGINE_KWARG_KINDS as _ENGINE_KWARG_KINDS,
+    _TOKEN,
 )
 
 
@@ -45,7 +49,6 @@ MAX_AUDIT_RECEIPTS = 4_096
 CONTAINER_MODEL_PATH = "/cacheon/input/model"
 
 _HEX_128 = re.compile(r"[0-9a-f]{32}\Z")
-_TOKEN = re.compile(r"[A-Za-z0-9_.:+/@-]{1,256}\Z")
 _ARCHITECTURE = re.compile(r"sm[0-9]{2,3}[a-z]?\Z")
 
 ENGINE_CONFIG_FIELDS = frozenset("""
@@ -63,6 +66,14 @@ topology_digest tree_digest worker_distribution_digest
 
 class SessionProtocolError(ValueError):
     """A session value or frame is malformed, ambiguous, or out of bounds."""
+
+
+# The value checkers live beside the option kinds they serve; bound here to this protocol's error.
+_bool = partial(_options._bool, error=SessionProtocolError)
+_bounded_int = partial(_options._bounded_int, error=SessionProtocolError)
+_bounded_float = partial(_options._bounded_float, error=SessionProtocolError)
+_optional_token = partial(_options._optional_token, error=SessionProtocolError)
+_validate_options = partial(_options._validate_options, error=SessionProtocolError)
 
 
 @dataclass(frozen=True)
@@ -333,35 +344,6 @@ def _exact_object(value: object, *, fields: frozenset[str], label: str) -> Mappi
     return value
 
 
-def _bool(value: object, *, field_name: str) -> bool:
-    if type(value) is not bool:
-        raise SessionProtocolError(f"{field_name} must be boolean")
-    return value
-
-
-def _bounded_int(value: object, *, field_name: str, minimum: int, maximum: int) -> int:
-    if type(value) is not int or not minimum <= value <= maximum:
-        raise SessionProtocolError(f"{field_name} must be an integer in [{minimum}, {maximum}]")
-    return value
-
-
-def _bounded_float(value: object, *, field_name: str, minimum: float, maximum: float) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise SessionProtocolError(f"{field_name} must be numeric")
-    result = float(value)
-    if not math.isfinite(result) or not minimum <= result <= maximum:
-        raise SessionProtocolError(f"{field_name} must be finite and in [{minimum}, {maximum}]")
-    return result
-
-
-def _optional_token(value: object, *, field_name: str) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str) or _TOKEN.fullmatch(value) is None:
-        raise SessionProtocolError(f"{field_name} must be null or a bounded runtime token")
-    return value
-
-
 def _digest(value: object, *, field_name: str) -> str:
     return require_digest(value, field=field_name, error=SessionProtocolError)
 
@@ -374,46 +356,6 @@ def _binding_id(value: object, *, field_name: str) -> str:
     ):
         raise SessionProtocolError(f"{field_name} must be nonzero 128-bit lowercase hex")
     return value
-
-
-def _validate_options(value: object, kinds: Mapping[str, str], *, label: str) -> dict[str, object]:
-    if not isinstance(value, Mapping):
-        raise SessionProtocolError(f"{label} must be an object")
-    unknown = set(value) - set(kinds)
-    if unknown:
-        raise SessionProtocolError(f"{label} contains unsupported keys: {sorted(unknown)!r}")
-    result: dict[str, object] = {}
-    for key in sorted(value):
-        item = value[key]
-        kind = kinds[key]
-        field_name = f"{label}.{key}"
-        if kind == "bool":
-            result[key] = _bool(item, field_name=field_name)
-        elif kind == "positive_int":
-            result[key] = _bounded_int(
-                item, field_name=field_name, minimum=1, maximum=16_777_216
-            )
-        elif kind == "token":
-            result[key] = _optional_token(item, field_name=field_name)
-            if result[key] is None:
-                raise SessionProtocolError(f"{field_name} must not be null")
-        elif kind == "int_list":
-            if (
-                not isinstance(item, (list, tuple))
-                or not 1 <= len(item) <= 128
-                or any(
-                    type(value) is not int or not 1 <= value <= 16_777_216
-                    for value in item
-                )
-                or list(item) != sorted(set(item))
-            ):
-                raise SessionProtocolError(
-                    f"{field_name} must be a strictly increasing bounded int array"
-                )
-            result[key] = list(item)
-        else:  # pragma: no cover - validator-owned table invariant
-            raise AssertionError(f"unknown engine kwarg kind {kind!r}")
-    return result
 
 
 @dataclass(frozen=True)
@@ -473,6 +415,12 @@ class EngineSessionConfig:
         for name, kinds in (("engine_kwargs", _ENGINE_KWARG_KINDS), ("engine_env", _ENGINE_ENV_KINDS)):
             set_value(self, name, MappingProxyType(
                 _validate_options(getattr(self, name), kinds, label=f"engine_config.{name}")))
+        draft = self.engine_kwargs.get("speculative_draft_model_path")
+        if draft is not None and not _options._sealed_draft_path(draft, root=CONTAINER_MODEL_PATH):
+            raise SessionProtocolError(
+                f"engine_config.engine_kwargs.speculative_draft_model_path must be one directory "
+                f"under {CONTAINER_MODEL_PATH!r}"
+            )
 
     def to_dict(self) -> dict[str, object]:
         return {name: dict(value) if isinstance(value, Mapping) else value
@@ -480,11 +428,8 @@ class EngineSessionConfig:
 
     @property
     def digest(self) -> str:
-        # Stack identities deliberately reject JSON floats.  Bind the exact
-        # binary64 value through its shortest round-trippable decimal spelling.
-        identity = self.to_dict()
-        identity["mem_fraction_static"] = format(self.mem_fraction_static, ".17g")
-        return canonical_digest("cacheon.eval.engine-session-config", identity)
+        return canonical_digest("cacheon.eval.engine-session-config",
+                                _options._digest_identity(self.to_dict()))
 
     @classmethod
     def from_dict(cls, value: object) -> "EngineSessionConfig":

@@ -155,6 +155,20 @@ def test_engine_config_is_exact_immutable_and_digest_stable(steps, tokens) -> No
     assert config.digest != _config(engine_kwargs=source | {"page_size": 64}).digest
 
 
+def test_engine_config_binds_the_swa_ratio_and_a_draft_under_the_model_root() -> None:
+    # Stack identities reject floats; the one float kwarg is spelled like mem_fraction_static.
+    hybrid = _config(engine_kwargs={"swa_full_tokens_ratio": 0.1,
+                                    "speculative_draft_model_path": "/cacheon/input/model/dflash2"},
+                     engine_env={"SGLANG_DFLASH_EAGER_DRAFT_SAMPLER": "1", "TVM_FFI_CUDA_ARCH_LIST": "10.3a"})
+    assert hybrid.engine_kwargs["swa_full_tokens_ratio"] == 0.1
+    assert EngineSessionConfig.from_dict(hybrid.to_dict()) == hybrid
+    assert hybrid.digest == EngineSessionConfig.from_dict(hybrid.to_dict()).digest
+    assert hybrid.digest != _config(engine_kwargs={"swa_full_tokens_ratio": 0.2,
+                                                   "speculative_draft_model_path": "/cacheon/input/model/dflash2"},
+                                    engine_env=dict(hybrid.engine_env)).digest
+    assert _config(engine_kwargs={"swa_full_tokens_ratio": 1}).engine_kwargs["swa_full_tokens_ratio"] == 1.0
+
+
 @pytest.mark.parametrize(
     ("changes", "match"),
     [
@@ -175,6 +189,12 @@ def test_engine_config_is_exact_immutable_and_digest_stable(steps, tokens) -> No
         ({"engine_kwargs": {"speculative_num_draft_tokens": -1}}, "speculative_num_draft_tokens"),
         ({"engine_kwargs": {"speculative_algorithm": "bad value"}}, "speculative_algorithm"),
         ({"engine_kwargs": {"ep_size": 0}}, "ep_size"),
+        ({"engine_kwargs": {"swa_full_tokens_ratio": 0}}, r"swa_full_tokens_ratio must be in \(0, 1\]"),
+        ({"engine_kwargs": {"swa_full_tokens_ratio": 1.5}}, "swa_full_tokens_ratio"),
+        ({"engine_kwargs": {"swa_full_tokens_ratio": "0.1"}}, "swa_full_tokens_ratio must be numeric"),
+        ({"engine_kwargs": {"speculative_draft_model_path": "/cacheon/input/draft"}}, "under"),
+        ({"engine_kwargs": {"speculative_draft_model_path": "/cacheon/input/model/../x"}}, "under"),
+        ({"engine_env": {"TVM_FFI_CUDA_ARCH_LIST": "10.3a 12.0"}}, "TVM_FFI_CUDA_ARCH_LIST"),
         ({"engine_env": {"LD_PRELOAD": "/x.so"}}, "engine_env contains unsupported keys"),
         ({"engine_env": {"SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT": "bad value"}}, "HOST_TABLE_LAYOUT"),
         ({"engine_env": {"SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE": 1}}, "ENABLE_DSV41_ENGRAM_HOST_TABLE"),

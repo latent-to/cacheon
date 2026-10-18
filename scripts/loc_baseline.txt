@@ -22,13 +22,16 @@
 # the Lium recommission passed reviewed pruner 747f8d71, 2026-10-17): +0 runtime, +31 tests, +2 notes.
 # Admission previews as the claimer under the arena's capacity (the one-lease default let a second pair's lease
 # empty the preview and admit reviewed pruner 73263b71 unreviewed, Verda 2026-10-18): +8 runtime, +36 tests, +2 notes.
+# Muse Spark arena inputs and the engine options its stock arm needs (hybrid-SWA ratio as the one float kwarg,
+# a draft sealed under the model root; the value checkers move out of the oversized protocol module):
+# +59 runtime, +7 docs, +2 examples, +37 tests, +3 notes.
 (root) 1158
 .github 345
 bundles 2398
-cacheon 92269
+cacheon 92328
 cacheon_kernels 936
 dashboard 4281
-docs 12745
-examples 528
-scripts 2136
-tests 67239
+docs 12752
+examples 530
+scripts 2139
+tests 67276

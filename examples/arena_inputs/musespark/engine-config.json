@@ -27,7 +27,7 @@
  "reasoning_parser": "muse",
  "speculative_algorithm": "DFLASH",
  "speculative_draft_attention_backend": "fa4",
- "speculative_draft_model_path": "/cacheon/input/draft",
+ "speculative_draft_model_path": "/cacheon/input/model/dflash2",
  "speculative_num_draft_tokens": 8,
  "speculative_use_block_verification": true,
  "swa_full_tokens_ratio": 0.1,

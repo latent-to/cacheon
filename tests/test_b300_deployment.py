@@ -458,6 +458,23 @@ def test_dsv41_baseline_recipe_reaches_the_sealed_engine() -> None:
     assert config.digest != deployment._engine_template({"engine_config": without_limit}).digest
 
 
+def test_musespark_stock_recipe_reaches_the_sealed_engine() -> None:
+    from cacheon.eval.oci_session_protocol import EngineSessionConfig
+
+    recipe = json.loads((Path(__file__).parents[1] / "examples/arena_inputs/musespark/engine-config.json").read_text())
+    row = _m3_engine_config()
+    owned = set(row) - {"engine_kwargs"} | {"max_running_requests"}
+    row.update({key: value for key, value in recipe.items() if key in owned})
+    row["engine_kwargs"] = {key: value for key, value in recipe.items() if key not in owned}
+    config = deployment._engine_template({"engine_config": row})
+    assert config.tp_size == 4 and config.engine_kwargs["ep_size"] == 4
+    assert config.engine_kwargs["swa_full_tokens_ratio"] == 0.1
+    assert config.engine_kwargs["speculative_draft_model_path"] == "/cacheon/input/model/dflash2"
+    assert dict(config.engine_env) == recipe["engine_env"]
+    assert EngineSessionConfig.from_dict(config.to_dict()) == config
+    assert len(config.digest) == 64
+
+
 def test_workload_parser_seals_cell_against_batches() -> None:
     prompt = {
         "prompt_seed_scheme": "sealed-prompts-v1",
