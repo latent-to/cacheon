@@ -76,7 +76,9 @@ registration_credential(reg, Path(reg["credential_path"]))
 for name in ("registration.json", "ready-receipt.json", "worker-readiness.json", "arena-service-manifest.json", "deployment.json",
              "calibration-capture.json", "cacheon_b300_qualification_adapter.py", "pod-remote-worker-service.py"):
     shutil.copyfile(handoff / name, stage / name); (stage / name).chmod(0o400)
-for path in (spool, spool/'state', evidence, stage/'logs'):
+# The plane is the arena's own intake root on this VM; its first pair creates it (the intake unit and
+# database live there), later pairs find it.
+for path in (spool, spool/'state', evidence, stage/'logs', PLANE, PLANE/'state'):
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
 def save(name, value):
     path = stage / name

@@ -189,6 +189,9 @@ sh /path/to/workers/<tag>/recovery-operator/twin_<slug>.sh /data/<arena> <tag> s
 The identity bundle reads about 1.00 and fails the speed floor, and the
 registered broken and faithful controls grade as documented in
 [Arena service](arena-service.md#deployment-composition). Connecting the
-handoff to the intake and starting the pair units
-(`connect_worker.py --start`, wrapped by `await_commission.py`) is a separate,
-deliberate step; nothing in the launch does it.
+handoff is a separate, deliberate step; nothing in the launch does it.
+`connect_worker.py` without `--start` fetches the handoff and prepares the
+pair's stage on the validator VM together with the arena's plane: its own
+intake unit, intake database and fee, created by the arena's first pair and
+found by later ones. Nothing is installed or started until `--start`, which
+`await_commission.py` passes once the commission completes.

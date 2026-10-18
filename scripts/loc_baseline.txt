@@ -45,6 +45,8 @@
 # +599 scripts (3 of them these notes), +5 examples, +65 docs. Casualty: the per-node scratch copies of each.
 # Tranche-2 wave 3: a qualification-fault end-to-end module replaces 14 dispatcher, supervisor, recovery and pod-adapter
 # test files (owner 2026-10-19): +410 tests, -5,768 tests, -2 root, +2 notes; (root) and scripts lock the deletions in.
+# The first pair of an arena creates its plane root on the VM (the Muse connect failed on the hand-made DeepSeek
+# assumption, 2026-10-19): +2 scripts, +3 docs, +2 notes.
 # Tranche-2 wave 4: a crown, reward and weight-publication end-to-end module replaces two hold and cadence test files
 # and 41 set-weights CLI and journal tests (owner 2026-10-19): +442 tests, -1,416 tests, -2 scripts, +2 notes.
 (root) 1157
@@ -53,7 +55,7 @@ bundles 2398
 cacheon 92337
 cacheon_kernels 936
 dashboard 4281
-docs 12955
+docs 12958
 examples 582
-scripts 4324
+scripts 4328
 tests 40107
