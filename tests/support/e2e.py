@@ -12,18 +12,17 @@ and which values are test-supplied is stated in
 from __future__ import annotations
 
 import json
-import math
 import os
 import queue
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
-
-import pytest
 
 from cacheon.chain import fetch, validator_loop
 from cacheon.chain import remote_worker_spool as spool
@@ -31,9 +30,13 @@ from cacheon.chain.evaluation_coordinator import WorkerReadiness
 from cacheon.chain.intake import IntakePolicy, IntakeScope
 from cacheon.chain.payload import encode_payload
 from cacheon.chain.qualification_request import require_commissioned_incumbent
+from cacheon.chain.remote_qualification_hold import (
+    RemoteQualificationHoldReason, capture_remote_qualification_hold,
+)
 from cacheon.chain.remote_evaluation_dispatcher import (
     RemoteEvaluationRequest, capture_remote_qualification_product, seal_remote_response,
 )
+from cacheon.chain.ssh_worker_transport import _dispatcher_heartbeat
 from cacheon.chain.remote_worker_registration import (
     registration_credential, registration_transport_identity, verify_registration,
 )
@@ -56,7 +59,7 @@ from cacheon.stack_manifest import ProposalContributionRef
 from cacheon.stack_plan import plan_candidate_stack, plan_marginal_arm
 from cacheon.target_catalog import default_target_catalog
 from tests.support.b300 import gpu
-from tests.support.chain import amend, reopen_state, write_state
+from tests.support.chain import reopen_state, write_state
 from tests.support.preflight import preflight_receipt
 
 REPO = Path(__file__).resolve().parents[2]
@@ -122,6 +125,13 @@ def miner_bundle(root: Path, hotkey: str, forward: str | None = None) -> Path:
     return bundle
 
 
+def labelled(hotkey: str) -> str:
+    """A distinct forward body per miner: none is a copy of another or of the example."""
+
+    return (f"def forward(module, *args, **kwargs):\n    label = {hotkey!r}\n"
+            "    return module.forward(*args, **kwargs)\n")
+
+
 def package(bundle: Path, validator_key) -> tuple[str, Path]:
     """``chain-package`` seals the archive for the validator; returns its content hash."""
 
@@ -162,50 +172,16 @@ def intake(root: Path, state: Path, origin: dict[str, Path], monkeypatch, **opti
     return fetched
 
 
-def scope(root: Path) -> IntakeScope:
-    return IntakeScope(reopen_state(root / "chain.json").get_block_hash(0), NETUID)
+def store_rows(root: Path, query: str) -> list[sqlite3.Row]:
+    """Read what the root's intake store retained, read-only."""
+
+    with closing(sqlite3.connect(f"file:{root / 'validator' / 'intake.sqlite3'}?mode=ro", uri=True)) as db:
+        db.row_factory = sqlite3.Row
+        return db.execute(query).fetchall()
 
 
-def weights_root(tmp_path: Path, monkeypatch, name: str, reveals: dict[str, int], *, profile=None,
-                 peers: tuple[str, ...] = ()):
-    """Distinct bundles revealed at the given blocks and fetched; a signed vector reveals three blocks later.
-
-    UIDs run validator, subnet owner, burn sink, ``peers``, then ``reveals``. With a ``profile`` the
-    arena is commissioned and the standing composition sealed.
-    """
-
-    root, key = deployment_root(tmp_path, name, monkeypatch)
-    origin, revealed = {}, {}
-    for hotkey, block in reveals.items():
-        body = (f"def forward(module, *args, **kwargs):\n    label = {hotkey!r}\n"
-                "    return module.forward(*args, **kwargs)\n")
-        content_hash, archive = package(miner_bundle(root, hotkey, body), key)
-        revealed[hotkey] = (reveal(hotkey, content_hash, archive, origin, block),)
-    state = chain(root, revealed, ("subnet-owner", "burn-sink", *peers, *reveals), owner="subnet-owner-coldkey")
-    amend(state, reveal_delay=3)
-    assert len(intake(root, state, origin, monkeypatch)) == len(reveals)
-    if profile is None:
-        return root, state, None
-    materialized, ready_path, ready = commission(root, profile)
-    return root, state, seal_authority(root, materialized, ready_path, ready)
-
-
-def reward_credit(record: tuple[str, int], earlier: tuple[str, int] | None, block: int,
-                  decay_start: int | None) -> float:
-    """``docs/reference/emissions-policy.md`` at half-life 100: ln(s) x stall bonus x decay from the confirmed start.
-
-    A record is the PASS's speedup and reveal block; ``earlier`` is the best earlier rewarded record.
-    """
-
-    (c, b), (q, p) = record, earlier or ("1", record[1])
-    s = math.floor(float(c) / float(q) * 1_000_000) / 1_000_000
-    age = 0 if decay_start is None else block - decay_start
-    return math.log(s) * (1 + math.sqrt((b - p) / 1800)) * 2 ** (-age / 100)
-
-
-def reward_shares(**credits: float) -> dict[str, float]:
-    total = sum(credits.values())
-    return {hotkey.replace("_", "-"): pytest.approx(credit / total, abs=2e-6) for hotkey, credit in credits.items()}
+def scope(root: Path, state: Path | None = None) -> IntakeScope:
+    return IntakeScope(reopen_state(state or root / "chain.json").get_block_hash(0), NETUID)
 
 
 def commission(root: Path, profile) -> tuple[dict, Path, dict]:
@@ -289,7 +265,7 @@ def commission(root: Path, profile) -> tuple[dict, Path, dict]:
         "runtime": {"path": str(pod / "runtime"), "tree_digest": sha256_hex(b"runtime-tree")},
         "schema": "cacheon-current-pod-commission-v1",
         "source": {"path": str(REPO), "tree_digest": sha256_hex(b"source-tree"), "revision": "0" * 40},
-        "state": "READY_FOR_REGISTRATION", "worker_epoch": sha256_hex(root.name.encode())[:32],
+        "state": "READY_FOR_REGISTRATION", "worker_epoch": sha256_hex(str(root).encode())[:32],
         "worker_image": preflight.requested_image,
     }
     ready_path = _seal_ready(pod / "ready-receipt.json", ready)
@@ -339,18 +315,30 @@ def replace_worker(root: Path, profile, ready: dict, tag: str) -> dict:
     path = root / f"registration-{tag}.json"
     registration = _register(root, materialized, ready_path, path)
     dispatcher = root / "validator" / "dispatcher.json"
-    config = json.loads(dispatcher.read_text())
-    config.update(registration_digest=registration["registration_digest"], registration_path=str(path),
-                  transport_identity_digest=registration["transport_identity_digest"],
-                  worker_readiness=json.loads(Path(materialized["worker_readiness"]).read_text()))
-    dispatcher.unlink()
-    sealed_json(dispatcher, config)
+    reseal(dispatcher, dispatcher, registration_digest=registration["registration_digest"],
+           registration_path=str(path), transport_identity_digest=registration["transport_identity_digest"],
+           worker_readiness=json.loads(Path(materialized["worker_readiness"]).read_text()))
     return registration
 
 
-def seal_authority(root: Path, materialized: dict, ready_path: Path, ready: dict):
-    """The operator registers the worker and seals the standing composition."""
+def reseal(source: Path, target: Path, **fields) -> Path:
+    """The operator derives a sealed config: ``source`` with ``fields`` replaced, sealed at ``target``."""
 
+    value = {**json.loads(source.read_text()), **fields}
+    target.unlink(missing_ok=True)
+    sealed_json(target, value)
+    return target
+
+
+def seal_authority(root: Path, materialized: dict, ready_path: Path, ready: dict, *, state: Path | None = None,
+                   intake_db: Path | None = None, legacy: bool = False):
+    """The operator registers the worker and seals the standing composition.
+
+    Another arena on the same validator names the first root's chain ``state`` and, when it shares
+    that intake store, its ``intake_db``; ``legacy`` makes this arena the default for bundles.
+    """
+
+    state, intake_db = state or root / "chain.json", intake_db or root / "validator" / "intake.sqlite3"
     secret = root / "credential.secret"
     secret.write_bytes(os.urandom(32))
     secret.chmod(0o400)
@@ -370,12 +358,13 @@ def seal_authority(root: Path, materialized: dict, ready_path: Path, ready: dict
     sealed_json(validator / "incumbent-stack.json", incumbent.to_dict())
     policy = IntakePolicy()
     sealed_json(validator / "dispatcher.json", {
-        "accept_legacy_bundles": False, "arena_service_manifest": manifest,
+        "accept_legacy_bundles": legacy, "arena_service_manifest": manifest,
         "credential_digest": registration["credential_digest"], "credential_path": str(secret),
         "heartbeat_interval_ms": 1000, "heartbeat_join_timeout_ms": 2000, "idle_poll_ms": 100,
-        "intake_db": str(validator / "intake.sqlite3"),
+        "intake_db": str(intake_db),
         "intake_policy": {name: getattr(policy, name) for name in policy.__dataclass_fields__},
-        "intake_scope": scope(root).to_dict(), "lease_blocks": 20, "lock_attempts": 20, "lock_retry_delay_ms": 50,
+        "intake_scope": scope(root, state).to_dict(), "lease_blocks": 20,
+        "lock_attempts": 1000, "lock_retry_delay_ms": 100,  # the values mainnet dispatcher configs seal
         "owner": f"e2e-{root.name}", "registration_digest": registration["registration_digest"],
         "registration_path": str(registration_path), "response_timeout_seconds": 1,
         "restart_initial_backoff_ms": 100, "restart_max_backoff_ms": 400,
@@ -392,11 +381,11 @@ def seal_authority(root: Path, materialized: dict, ready_path: Path, ready: dict
         "restart_initial_backoff_ms": 100, "restart_max_backoff_ms": 400,
         "schema": "cacheon-standing-supervisor-config-v1",
         "screen_dispatcher_config": str(validator / "dispatcher.json"),
-        "settlement_network": str(root / "chain.json"), "stall_timeout_ms": 600_000,
+        "settlement_network": str(state), "stall_timeout_ms": 600_000,
         "weights_stage_config": "",
     })
     return SimpleNamespace(registration=registration, catalog=catalog, context=context, manifest=manifest,
-                           incumbent=incumbent, incumbent_tree=tree, scope=scope(root), policy=policy)
+                           incumbent=incumbent, incumbent_tree=tree, scope=scope(root, state), policy=policy)
 
 
 class Supervisor:
@@ -443,6 +432,13 @@ def supervisor_processes():
         if supervisor.process.poll() is None:
             supervisor.process.kill()
             supervisor.process.wait(timeout=30)
+
+
+def relay(root: Path, sealed, spool_name: str = "spool"):
+    """The SSH shuttle's own liveness writer for one spool, standing in for the relay process."""
+
+    path = private(root / spool_name / "state") / "heartbeat.json"
+    return _dispatcher_heartbeat(sealed.registration, path, lambda: None)
 
 
 def waiting(status: dict) -> bool:
@@ -548,6 +544,16 @@ def pod_answer(root: Path, sealed, carrier: Path, decision: QualificationDecisio
         evidence_references=(attempt,))
     write_response(pod, seal_remote_response(wire, product, pod.identity, pod.credential), tamper)
     return reservation.reservation_digest
+
+
+def pod_hold(root: Path, sealed, carrier: Path) -> None:
+    """The worker HOLD the pod adapter returns when the qualification worker raised."""
+
+    pod = pod_request(root, sealed, carrier)
+    product = capture_remote_qualification_hold(
+        pod.wire, reason=RemoteQualificationHoldReason.QUALIFICATION_WORKER_ERROR,
+        failure_type="RuntimeError", failure_message="qualification worker raised")
+    write_response(pod, seal_remote_response(pod.wire, product, pod.identity, pod.credential))
 
 
 def write_response(pod, response, tamper=None) -> None:

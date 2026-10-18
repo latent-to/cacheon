@@ -18,37 +18,27 @@ publication journal (``weight_publications``) and the commits the chain received
 from __future__ import annotations
 
 import json
-import re
 import signal
-import sqlite3
 import subprocess
 import sys
 import time
-from contextlib import closing
 from pathlib import Path
 
 import pytest
 
-from cacheon.chain.ssh_worker_transport import _dispatcher_heartbeat
 from cacheon.eval.qualification import QualificationDecision
 from tests.support import e2e
+from tests.support import weight_roles as roles
 from tests.support.chain import advance, amend, write_state
 
 supervisors = pytest.fixture(e2e.supervisor_processes, name="supervisors")
 PROFILE = e2e.PROFILES["h100-tp1"]
 BURN, RECONCILE = "--burn-to-subnet-owner", ("--reconcile-only", "--validator-hotkey", "validator")
-POLICY = ("--half-life-blocks", "100", "--discovery-lifetime-blocks", "20",
-          "--discovery-pool-ppm", "100000", "--refresh-blocks", "10")
+POLICY = roles.Signer.POLICY
 INTENT, PENDING = ("intent", "before_sdk_submission"), ("pending", "sdk_result_unconfirmed")
 CONFIRMED, BOUND = ("confirmed", "authoritative_readback"), ("confirmed", "preexisting_authoritative_readback")
 DEADLINE, REHELD = ("held", "publication_readback_deadline_expired"), ("held", "projection_changed_while_unresolved")
 MEMBERS = ["validator", "subnet-owner", "burn-sink", "miner-queued"]
-
-
-def _rows(root: Path, query: str) -> list[sqlite3.Row]:
-    with closing(sqlite3.connect(f"file:{root / 'validator' / 'intake.sqlite3'}?mode=ro", uri=True)) as db:
-        db.row_factory = sqlite3.Row
-        return db.execute(query).fetchall()
 
 
 def _commits(state: Path) -> list[list]:
@@ -71,46 +61,13 @@ def _out_of_band(state: Path, uid: int) -> None:
     amend(state, commits=[*_commits(state), ["validator", head, [uid], [65_535], head]])
 
 
-class _Signer:
-    """``cacheon set-weights`` against one root; a call returns the journal records it appended."""
-
-    def __init__(self, root: Path, state: Path) -> None:
-        self.root, self.state, self.seen, self.output = root, state, 0, ""
-
-    def argv(self, *flags: str) -> tuple[str, ...]:
-        return ("cacheon.cli", "set-weights", "--intake-db", str(self.root / "validator" / "intake.sqlite3"),
-                "--netuid", str(e2e.NETUID), "--network", str(self.state), "--wallet-path", str(self.state),
-                *POLICY, *flags)
-
-    def __call__(self, *flags: str, block: int | None = None, code: int = 0) -> list[tuple[str, str]]:
-        if block is not None:
-            advance(self.state, block)
-        self.output = e2e.run(*self.argv(*flags), env=e2e.chain_env(), code=code)
-        return self.appended()
-
-    def journal(self) -> list[tuple[str, str]]:
-        return [(row["status"], json.loads(row["record_json"])["reason"]) for row in _rows(
-            self.root, "SELECT status, record_json FROM weight_publications ORDER BY sequence")]
-
-    def appended(self) -> list[tuple[str, str]]:
-        journal = self.journal()
-        appended, self.seen = journal[self.seen:], len(journal)
-        return appended
-
-    def shares(self) -> dict[str, float]:
-        """The vector the last call signed or would sign, by hotkey."""
-
-        (rows,) = re.findall(r"SET-WEIGHTS-PAYLOAD .* rows=(\[.*\])", self.output)
-        return {hotkey: float(weight) for weight, hotkey in re.findall(r"'weight': ([^,]+), 'hotkey': '([^']+)'", rows)}
-
-
 # Finalized order, the speedup each PASS measured against the commissioned baseline, and its reveal block.
 RECORDS = {"miner-first": ("1.06", 10), "miner-tie": ("1.06", 20), "miner-faster": ("1.1", 82),
            "miner-marginal": ("1.1164", 90), "miner-short": ("1.11", 95)}
 
 
 def _credit(hotkey: str, earlier: str | None, block: int, decay_start: int | None) -> float:
-    return e2e.reward_credit(RECORDS[hotkey], RECORDS.get(earlier), block, decay_start)
+    return roles.reward_credit(RECORDS[hotkey], RECORDS.get(earlier), block, decay_start)
 
 
 def _pass(supervisor, root: Path, sealed, index: int) -> None:
@@ -120,13 +77,12 @@ def _pass(supervisor, root: Path, sealed, index: int) -> None:
 
 
 def test_crowns_and_rewards_follow_the_finalized_record(tmp_path, monkeypatch, supervisors):
-    root, state, sealed = e2e.weights_root(tmp_path, monkeypatch, "weights-record",
+    root, state, sealed = roles.weights_root(tmp_path, monkeypatch, "weights-record",
                                            {hotkey: block for hotkey, (_, block) in RECORDS.items()}, profile=PROFILE)
-    sign = _Signer(root, state)
+    sign = roles.Signer(root, state)
     # Before any crown a real vector cannot be projected at all; only a burn can be published.
     assert sign(code=1) == [] and "global projection requires typed arena authorities" in sign.output
-    relay =e2e.private(root / "spool" / "state") / "heartbeat.json"
-    with _dispatcher_heartbeat(sealed.registration, relay, lambda: None):
+    with e2e.relay(root, sealed):
         supervisor = supervisors(root)
         _pass(supervisor, root, sealed, 0)
         supervisor.until(lambda status: status["last_stage"] == "settlement")
@@ -143,7 +99,7 @@ def test_crowns_and_rewards_follow_the_finalized_record(tmp_path, monkeypatch, s
     assert sign() == [INTENT, PENDING] and sign.shares() == {"miner-first": 1.0}
     assert sign(block=103) == [CONFIRMED]
 
-    with _dispatcher_heartbeat(sealed.registration, relay, lambda: None):
+    with e2e.relay(root, sealed):
         supervisor = supervisors(root)
         supervisor.until(lambda status: status["last_stage"] == "settlement")
         for index in (2, 3, 4):
@@ -152,13 +108,13 @@ def test_crowns_and_rewards_follow_the_finalized_record(tmp_path, monkeypatch, s
         assert supervisor.stop(signal.SIGTERM) == 0
 
     # Finalized order settles: a tie keeps the earlier crown, and each later crown must beat the last.
-    hotkeys = {row["reservation_id"]: row["hotkey"] for row in _rows(root, "SELECT * FROM reservations")}
-    assert {hotkeys[row["reservation_id"]]: row["status"] for row in _rows(
+    hotkeys = {row["reservation_id"]: row["hotkey"] for row in e2e.store_rows(root, "SELECT * FROM reservations")}
+    assert {hotkeys[row["reservation_id"]]: row["status"] for row in e2e.store_rows(
         root, "SELECT * FROM settlement_candidates")} == {
         "miner-first": "crowned", "miner-tie": "held", "miner-faster": "crowned",
         "miner-marginal": "crowned", "miner-short": "held"}
     events = [(hotkeys[row["reservation_id"]], row["event_digest"], json.loads(row["event_json"]))
-              for row in _rows(root, "SELECT * FROM settlement_events ORDER BY sequence")]
+              for row in e2e.store_rows(root, "SELECT * FROM settlement_events ORDER BY sequence")]
     crowned = ("ADOPTION", "adopted"), ("STACK_TRANSITION", "incumbent_updated")
     assert [(event["event_type"], hotkey, event["reason"]) for hotkey, _, event in events] == [
         ("CROWN", "miner-first", "qualified_win"), *((kind, "miner-first", why) for kind, why in crowned),
@@ -174,20 +130,20 @@ def test_crowns_and_rewards_follow_the_finalized_record(tmp_path, monkeypatch, s
 
     # Only records 1.5% over the best earlier rewarded PASS earn: the marginal crown is unpaid.
     # A new claim's decay waits for the first confirmed vector that pays it.
-    assert sign("--dry-run", block=200) == [] and sign.shares() == e2e.reward_shares(
+    assert sign("--dry-run", block=200) == [] and sign.shares() == roles.reward_shares(
         miner_first=_credit("miner-first", None, 200, 103),
         miner_faster=_credit("miner-faster", "miner-first", 200, None))
     assert sign() == [INTENT, PENDING]
     assert sign(block=203) == [CONFIRMED]
     for block in (203, 303):
-        assert sign("--dry-run", block=block) == [] and sign.shares() == e2e.reward_shares(
+        assert sign("--dry-run", block=block) == [] and sign.shares() == roles.reward_shares(
             miner_first=_credit("miner-first", None, block, 103),
             miner_faster=_credit("miner-faster", "miner-first", block, 203))
 
 
 def test_burn_bootstrap_publishes_holds_and_releases_through_the_journal(tmp_path, monkeypatch):
-    root, state, _ = e2e.weights_root(tmp_path, monkeypatch, "weights-burn", {"miner-queued": e2e.REVEAL_BLOCK})
-    sign = _Signer(root, state)
+    root, state, _ = roles.weights_root(tmp_path, monkeypatch, "weights-burn", {"miner-queued": e2e.REVEAL_BLOCK})
+    sign = roles.Signer(root, state)
 
     # Nothing is crowned: the full pool goes to the subnet owner or a registered burn hotkey.
     assert sign(BURN, "--dry-run") == [] and sign.shares() == {"subnet-owner": 1.0}
@@ -256,8 +212,8 @@ def test_burn_bootstrap_publishes_holds_and_releases_through_the_journal(tmp_pat
 
 
 def test_finality_and_registration_changes_never_sign_a_stale_uid_mapping(tmp_path, monkeypatch):
-    root, state, _ = e2e.weights_root(tmp_path, monkeypatch, "weights-races", {"miner-queued": e2e.REVEAL_BLOCK})
-    sign = _Signer(root, state)
+    root, state, _ = roles.weights_root(tmp_path, monkeypatch, "weights-races", {"miner-queued": e2e.REVEAL_BLOCK})
+    sign = roles.Signer(root, state)
     moved = [*MEMBERS[:1], "newcomer", *MEMBERS[2:], "subnet-owner"]  # the owner re-registered at uid 4
     again = [*moved[:4], "late-joiner", "subnet-owner"]  # and then at uid 5
 
