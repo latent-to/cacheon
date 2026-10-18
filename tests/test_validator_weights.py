@@ -18,7 +18,6 @@ publication journal (``weight_publications``) and the commits the chain received
 from __future__ import annotations
 
 import json
-import math
 import re
 import signal
 import sqlite3
@@ -44,25 +43,6 @@ INTENT, PENDING = ("intent", "before_sdk_submission"), ("pending", "sdk_result_u
 CONFIRMED, BOUND = ("confirmed", "authoritative_readback"), ("confirmed", "preexisting_authoritative_readback")
 DEADLINE, REHELD = ("held", "publication_readback_deadline_expired"), ("held", "projection_changed_while_unresolved")
 MEMBERS = ["validator", "subnet-owner", "burn-sink", "miner-queued"]
-
-
-def _deploy(tmp_path: Path, monkeypatch, name: str, reveals: dict[str, int], *, commission: bool):
-    """Distinct bundles revealed at the given blocks and fetched; uid 1 is the subnet owner's."""
-
-    root, key = e2e.deployment_root(tmp_path, name, monkeypatch)
-    origin, revealed = {}, {}
-    for hotkey, block in reveals.items():
-        body = (f"def forward(module, *args, **kwargs):\n    label = {hotkey!r}\n"
-                "    return module.forward(*args, **kwargs)\n")
-        content_hash, archive = e2e.package(e2e.miner_bundle(root, hotkey, body), key)
-        revealed[hotkey] = (e2e.reveal(hotkey, content_hash, archive, origin, block),)
-    state = e2e.chain(root, revealed, ("subnet-owner", "burn-sink", *reveals), owner="subnet-owner-coldkey")
-    amend(state, reveal_delay=3)
-    assert len(e2e.intake(root, state, origin, monkeypatch)) == len(reveals)
-    if not commission:
-        return root, state, None
-    materialized, ready_path, ready = e2e.commission(root, PROFILE)
-    return root, state, e2e.seal_authority(root, materialized, ready_path, ready)
 
 
 def _rows(root: Path, query: str) -> list[sqlite3.Row]:
@@ -130,17 +110,7 @@ RECORDS = {"miner-first": ("1.06", 10), "miner-tie": ("1.06", 20), "miner-faster
 
 
 def _credit(hotkey: str, earlier: str | None, block: int, decay_start: int | None) -> float:
-    """``docs/reference/emissions-policy.md``: ln(s) x stall bonus x decay from the confirmed start."""
-
-    (c, b), (q, p) = RECORDS[hotkey], RECORDS[earlier] if earlier else ("1", RECORDS[hotkey][1])
-    s = math.floor(float(c) / float(q) * 1_000_000) / 1_000_000
-    age = 0 if decay_start is None else block - decay_start
-    return math.log(s) * (1 + math.sqrt((b - p) / 1800)) * 2 ** (-age / 100)
-
-
-def _shares(**credits: float) -> dict[str, float]:
-    total = sum(credits.values())
-    return {hotkey.replace("_", "-"): pytest.approx(credit / total, abs=2e-6) for hotkey, credit in credits.items()}
+    return e2e.reward_credit(RECORDS[hotkey], RECORDS.get(earlier), block, decay_start)
 
 
 def _pass(supervisor, root: Path, sealed, index: int) -> None:
@@ -150,8 +120,8 @@ def _pass(supervisor, root: Path, sealed, index: int) -> None:
 
 
 def test_crowns_and_rewards_follow_the_finalized_record(tmp_path, monkeypatch, supervisors):
-    root, state, sealed = _deploy(tmp_path, monkeypatch, "weights-record",
-                                  {hotkey: block for hotkey, (_, block) in RECORDS.items()}, commission=True)
+    root, state, sealed = e2e.weights_root(tmp_path, monkeypatch, "weights-record",
+                                           {hotkey: block for hotkey, (_, block) in RECORDS.items()}, profile=PROFILE)
     sign = _Signer(root, state)
     # Before any crown a real vector cannot be projected at all; only a burn can be published.
     assert sign(code=1) == [] and "global projection requires typed arena authorities" in sign.output
@@ -204,20 +174,19 @@ def test_crowns_and_rewards_follow_the_finalized_record(tmp_path, monkeypatch, s
 
     # Only records 1.5% over the best earlier rewarded PASS earn: the marginal crown is unpaid.
     # A new claim's decay waits for the first confirmed vector that pays it.
-    assert sign("--dry-run", block=200) == [] and sign.shares() == _shares(
+    assert sign("--dry-run", block=200) == [] and sign.shares() == e2e.reward_shares(
         miner_first=_credit("miner-first", None, 200, 103),
         miner_faster=_credit("miner-faster", "miner-first", 200, None))
     assert sign() == [INTENT, PENDING]
     assert sign(block=203) == [CONFIRMED]
     for block in (203, 303):
-        assert sign("--dry-run", block=block) == [] and sign.shares() == _shares(
+        assert sign("--dry-run", block=block) == [] and sign.shares() == e2e.reward_shares(
             miner_first=_credit("miner-first", None, block, 103),
             miner_faster=_credit("miner-faster", "miner-first", block, 203))
 
 
 def test_burn_bootstrap_publishes_holds_and_releases_through_the_journal(tmp_path, monkeypatch):
-    root, state, _ = _deploy(tmp_path, monkeypatch, "weights-burn", {"miner-queued": e2e.REVEAL_BLOCK},
-                             commission=False)
+    root, state, _ = e2e.weights_root(tmp_path, monkeypatch, "weights-burn", {"miner-queued": e2e.REVEAL_BLOCK})
     sign = _Signer(root, state)
 
     # Nothing is crowned: the full pool goes to the subnet owner or a registered burn hotkey.
@@ -287,8 +256,7 @@ def test_burn_bootstrap_publishes_holds_and_releases_through_the_journal(tmp_pat
 
 
 def test_finality_and_registration_changes_never_sign_a_stale_uid_mapping(tmp_path, monkeypatch):
-    root, state, _ = _deploy(tmp_path, monkeypatch, "weights-races", {"miner-queued": e2e.REVEAL_BLOCK},
-                             commission=False)
+    root, state, _ = e2e.weights_root(tmp_path, monkeypatch, "weights-races", {"miner-queued": e2e.REVEAL_BLOCK})
     sign = _Signer(root, state)
     moved = [*MEMBERS[:1], "newcomer", *MEMBERS[2:], "subnet-owner"]  # the owner re-registered at uid 4
     again = [*moved[:4], "late-joiner", "subnet-owner"]  # and then at uid 5

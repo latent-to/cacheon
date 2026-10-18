@@ -35,7 +35,6 @@
 "tests/test_evaluation_recovery_store.py": 45,
 "tests/test_evaluation_worker_pool.py": 31,
 "tests/test_fixed_incumbent_rewards.py": 9,
-"tests/test_follow_expected_authority.py": 8,
 "tests/test_launch_execution_receipts.py": 40,
 "tests/test_marginal_runtime.py": 18,
 "tests/test_miner_feedback.py": 59,
@@ -77,11 +76,10 @@
 "tests/test_validator_end_to_end.py": 29,
 "tests/test_validator_hostile_intake.py": 25,
 "tests/test_validator_qualification_faults.py": 44,
-"tests/test_validator_weights.py": 58,
+"tests/test_validator_weight_service.py": 54,
+"tests/test_validator_weights.py": 62,
 "tests/test_vendor_provenance.py": 29,
-"tests/test_weight_offer_service.py": 24,
-"tests/test_weight_producer_rewards.py": 20,
-"tests/test_weight_publication.py": 54,
-"tests/test_weight_push_auth.py": 17,
-"tests/test_weight_share.py": 66
+"tests/test_weight_offer_service.py": 6,
+"tests/test_weight_producer_rewards.py": 12,
+"tests/test_weight_publication.py": 54
 }

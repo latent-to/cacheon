@@ -4,12 +4,15 @@ It answers the SDK calls ``cacheon.chain`` makes (storage history, canonical
 events, finalized head, metagraph, weight readback, signing) from in-memory
 state and records what was submitted. In-process suites construct it directly;
 end-to-end subprocesses reach it through ``tests/support/simulated_chain``,
-which reopens the same state from a JSON file named by ``--network``.
+whose long-lived client reads the JSON file named by ``--network`` on every call.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import os
 import types
 from pathlib import Path
 
@@ -62,8 +65,9 @@ class SimulatedSubtensor:
                  registered=None, events=None, weight_rows=None, last_updates=None,
                  weights_version=29, owner="", extrinsics=None, state_path=None,
                  commits=None, rate_limit=0, reveal_delay=0, lost_submissions=0,
-                 registrations=(), finalize=None):
+                 registrations=(), finalize=None, unpermitted=()):
         self._hotkeys = list(hotkeys)
+        self._unpermitted = set(unpermitted)  # hotkeys without validator_permit
         self._registrations = [list(row) for row in registrations]  # [from_block, hotkeys by uid] changes
         # Finality moving while a call is in flight: after the named call ("weights" or "set_weights")
         # the finalized head becomes the given block, once.
@@ -106,6 +110,7 @@ class SimulatedSubtensor:
         revealed, hotkeys = self._revealed_weights(block), self._members(block)
         return SimulatedMetagraph(
             hotkeys,
+            permits=[hotkey not in self._unpermitted for hotkey in hotkeys],
             last_updates=self._last_updates if self._last_updates is not None else [
                 revealed.get(hotkey, (0,))[0] for hotkey in hotkeys],
             block=block,
@@ -153,7 +158,7 @@ class SimulatedSubtensor:
         state["revealed"] = {hotkey: [list(row) for row in rows] for hotkey, rows in self._revealed.items()}
         state["extrinsics"] = {str(block): rows for block, rows in self._extrinsics.items()}
         state["commits"], state["lost_submissions"] = self._commits, self._lost_submissions
-        Path(self._state_path).write_text(json.dumps({**state, **fields}))
+        _write(Path(self._state_path), {**state, **fields})
 
     def weights(self, netuid=None, block=None):
         self.weight_calls.append(block)
@@ -242,15 +247,23 @@ class SimulatedSubtensor:
         return hotkey_ss58 in self._registered
 
 
+def _write(path: Path, state: dict) -> None:
+    """Replace the chain file atomically: other processes read it on every call."""
+
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(state))
+    temporary.replace(path)
+
+
 def write_state(path: Path, *, hotkeys, revealed, block: int, validator: str, owner: str = "") -> Path:
     """Persist the chain a subprocess reopens: ``revealed`` is hotkey -> ((block, data), ...)."""
 
-    path.write_text(json.dumps({
+    _write(path, {
         "block": block, "hotkeys": list(hotkeys), "validator": validator, "owner": owner, "extrinsics": {},
         "revealed": {hotkey: [list(row) for row in rows] for hotkey, rows in revealed.items()},
         "commits": [], "rate_limit": 0, "reveal_delay": 0, "lost_submissions": 0, "registrations": [],
-        "finalize": {},
-    }))
+        "finalize": {}, "unpermitted": [],
+    })
     return path
 
 
@@ -266,7 +279,7 @@ def amend(path: Path, **fields) -> dict:
     state = json.loads(path.read_text())
     assert set(fields) <= set(state), set(fields) - set(state)
     state.update(fields)
-    path.write_text(json.dumps(state))
+    _write(path, state)
     return state
 
 
@@ -278,15 +291,37 @@ def reopen_state(path: str | Path) -> SimulatedSubtensor:
         extrinsics=state["extrinsics"], state_path=Path(path), commits=state["commits"],
         rate_limit=state["rate_limit"], reveal_delay=state["reveal_delay"],
         lost_submissions=state["lost_submissions"], registrations=state["registrations"],
-        finalize=state["finalize"],
+        finalize=state["finalize"], unpermitted=state["unpermitted"],
     )
 
 
+class LiveEndpoint:
+    """A long-lived SDK client: every call reads the chain file as it is now, as a node serves new blocks."""
+
+    def __init__(self, path: str | Path) -> None:
+        self._path = Path(path)
+
+    def __getattr__(self, name):
+        return getattr(reopen_state(self._path), name)
+
+
+class SimulatedKeypair:
+    """An sr25519 stand-in: a hotkey's signature is a SHA-256 MAC under its address."""
+
+    def __init__(self, ss58_address: str) -> None:
+        self.ss58_address = ss58_address
+
+    def sign(self, data: bytes) -> bytes:
+        return hmac.new(self.ss58_address.encode(), bytes(data), hashlib.sha256).digest()
+
+    def verify(self, data: bytes, signature: bytes) -> bool:
+        return hmac.compare_digest(self.sign(data), bytes(signature))
+
+
 def state_wallet(path: str | Path | None, hotkey: str | None = None):
-    """With a state path, the validator's registered signer; without one, the named miner's keys."""
+    """With a state path, the validator's registered signer; without one, the named hotkey's keys."""
 
     if path is None:
-        return types.SimpleNamespace(hotkey=types.SimpleNamespace(ss58_address=hotkey),
+        return types.SimpleNamespace(hotkey=SimulatedKeypair(hotkey),
                                      coldkey=types.SimpleNamespace(ss58_address=f"{hotkey}-coldkey"))
-    ss58 = json.loads(Path(path).read_text())["validator"]
-    return types.SimpleNamespace(hotkey=types.SimpleNamespace(ss58_address=ss58))
+    return types.SimpleNamespace(hotkey=SimulatedKeypair(json.loads(Path(path).read_text())["validator"]))

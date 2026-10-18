@@ -12,6 +12,7 @@ and which values are test-supplied is stated in
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import shutil
@@ -21,6 +22,8 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from cacheon.chain import fetch, validator_loop
 from cacheon.chain import remote_worker_spool as spool
@@ -53,7 +56,7 @@ from cacheon.stack_manifest import ProposalContributionRef
 from cacheon.stack_plan import plan_candidate_stack, plan_marginal_arm
 from cacheon.target_catalog import default_target_catalog
 from tests.support.b300 import gpu
-from tests.support.chain import reopen_state, write_state
+from tests.support.chain import amend, reopen_state, write_state
 from tests.support.preflight import preflight_receipt
 
 REPO = Path(__file__).resolve().parents[2]
@@ -161,6 +164,48 @@ def intake(root: Path, state: Path, origin: dict[str, Path], monkeypatch, **opti
 
 def scope(root: Path) -> IntakeScope:
     return IntakeScope(reopen_state(root / "chain.json").get_block_hash(0), NETUID)
+
+
+def weights_root(tmp_path: Path, monkeypatch, name: str, reveals: dict[str, int], *, profile=None,
+                 peers: tuple[str, ...] = ()):
+    """Distinct bundles revealed at the given blocks and fetched; a signed vector reveals three blocks later.
+
+    UIDs run validator, subnet owner, burn sink, ``peers``, then ``reveals``. With a ``profile`` the
+    arena is commissioned and the standing composition sealed.
+    """
+
+    root, key = deployment_root(tmp_path, name, monkeypatch)
+    origin, revealed = {}, {}
+    for hotkey, block in reveals.items():
+        body = (f"def forward(module, *args, **kwargs):\n    label = {hotkey!r}\n"
+                "    return module.forward(*args, **kwargs)\n")
+        content_hash, archive = package(miner_bundle(root, hotkey, body), key)
+        revealed[hotkey] = (reveal(hotkey, content_hash, archive, origin, block),)
+    state = chain(root, revealed, ("subnet-owner", "burn-sink", *peers, *reveals), owner="subnet-owner-coldkey")
+    amend(state, reveal_delay=3)
+    assert len(intake(root, state, origin, monkeypatch)) == len(reveals)
+    if profile is None:
+        return root, state, None
+    materialized, ready_path, ready = commission(root, profile)
+    return root, state, seal_authority(root, materialized, ready_path, ready)
+
+
+def reward_credit(record: tuple[str, int], earlier: tuple[str, int] | None, block: int,
+                  decay_start: int | None) -> float:
+    """``docs/reference/emissions-policy.md`` at half-life 100: ln(s) x stall bonus x decay from the confirmed start.
+
+    A record is the PASS's speedup and reveal block; ``earlier`` is the best earlier rewarded record.
+    """
+
+    (c, b), (q, p) = record, earlier or ("1", record[1])
+    s = math.floor(float(c) / float(q) * 1_000_000) / 1_000_000
+    age = 0 if decay_start is None else block - decay_start
+    return math.log(s) * (1 + math.sqrt((b - p) / 1800)) * 2 ** (-age / 100)
+
+
+def reward_shares(**credits: float) -> dict[str, float]:
+    total = sum(credits.values())
+    return {hotkey.replace("_", "-"): pytest.approx(credit / total, abs=2e-6) for hotkey, credit in credits.items()}
 
 
 def commission(root: Path, profile) -> tuple[dict, Path, dict]:

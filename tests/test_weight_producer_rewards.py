@@ -1,4 +1,9 @@
-"""Retained PASS attribution and publication clocks in the production producer."""
+"""Retained PASS attribution and publication clocks in the production producer.
+
+Decay starting at the first confirmed publication, from the signer's own journal or the
+follower's, runs end to end in ``tests/test_validator_weights.py`` and
+``tests/test_validator_weight_service.py``.
+"""
 
 import json
 from dataclasses import replace
@@ -6,9 +11,7 @@ from dataclasses import replace
 import pytest
 
 from cacheon.chain import qualification_settlement as rewards
-from cacheon.chain.intake import (
-    IntakeError, SQLiteFollowerWeightPublicationJournal, SQLiteWeightPublicationJournal,
-)
+from cacheon.chain.intake import IntakeError, SQLiteFollowerWeightPublicationJournal
 from cacheon.chain.weight_share import CurrentWeightOffer
 from cacheon.chain.weights import WeightPublicationRecord
 from cacheon.economics import ArenaRewardAuthority, EconomicsError, project_global_rewards
@@ -54,48 +57,6 @@ def test_rebuilt_payload_keeps_original_pass_across_arenas(changed):
         ).standing for block in (200, 300)]
         assert credits[0] == credits[1]
     assert earned.to_dict() == before
-
-
-@pytest.mark.parametrize("reason", ["", "block_inclusion"])
-@pytest.mark.parametrize("channel", ["direct", "follower"])
-def test_decay_waits_for_fresh_confirmation_and_survives_restart(tmp_path, channel, reason):
-    with intake._store(tmp_path) as store, intake._store(tmp_path / "signer") as signer:
-        candidate = intake._qualified_settlement_candidate(store)
-        lease = store.lease_settlement_cohort(current_block=11)
-        plan, evidence = intake._settlement_plan(store, lease)
-        store.commit_settlement(lease, plan, evidence, current_block=11)
-        claims = store.passed_reward_claims()
-        retained = [row[0] for row in store._db.execute("SELECT qualification_json FROM settlement_qualifications")]
-        context = intake._context("validator", candidate.hotkey)
-        projection = store.build_weight_projection(policy=intake.POLICY, context=context, netuid=intake.SCOPE.netuid)
-        assert rewards.reward_decay_adjustments(store)[-1]["start_block"] is None
-        if channel == "direct":
-            journal = SQLiteWeightPublicationJournal(store, projection)
-        else:
-            journal = SQLiteFollowerWeightPublicationJournal(signer, CurrentWeightOffer.from_legacy_projection(projection))
-        previous = None
-        for status, update, expected in [("pending", 0, None), ("confirmed", 11, None), ("confirmed", 20, 20), ("confirmed", 30, 20)]:
-            included = reason and status == "confirmed"  # the live signer: confirmed_block set, last_update 0
-            record = WeightPublicationRecord(
-                projection.digest, status, prior_record_digest=previous, submit_block=10, retry_after_block=10,
-                confirmed_block=update, confirmed_last_update=0 if included else update, reason=reason if included else "",
-            )
-            journal.compare_and_swap(previous, record)
-            previous = record.digest
-            if channel == "follower":
-                rewards.reconcile_follower_reward_decay(store, signer.path, validator_hotkey="validator")
-            assert rewards.reward_decay_adjustments(store)[-1]["start_block"] == expected
-        assert store.passed_reward_claims() == claims
-        assert [row[0] for row in store._db.execute("SELECT qualification_json FROM settlement_qualifications")] == retained
-    with intake._store(tmp_path) as store:
-        if channel == "follower":
-            rewards.reconcile_follower_reward_decay(store, signer.path, validator_hotkey="validator")
-        assert len(rewards.reward_decay_adjustments(store)) == 2
-        claim = store.passed_reward_claims()[0]
-        assert claim == claims[0] and claim.crowned_block == candidate.finalized_block
-        assert claim.credit_at(120, _policy(), decay_start_block=20) == claim.credit_at(20, _policy(), decay_start_block=20) // 2
-        with pytest.raises(IntakeError, match="already fixed"):
-            rewards.record_reward_decay_start(store, claim_digest=claim.digest, start_block=30, reason="retry")
 
 
 def test_migrated_legacy_claims_keep_their_clock_and_new_claims_wait(tmp_path):

@@ -49,6 +49,8 @@
 # assumption, 2026-10-19): +2 scripts, +3 docs, +2 notes.
 # Tranche-2 wave 4: a crown, reward and weight-publication end-to-end module replaces two hold and cadence test files
 # and 41 set-weights CLI and journal tests (owner 2026-10-19): +442 tests, -1,416 tests, -2 scripts, +2 notes.
+# Tranche-2 wave 5: a weight-service end-to-end module (producer, gateway and follower processes) replaces five gateway,
+# follower and commit test files and 11 producer tests (owner 2026-10-19): +525 tests, -1,655 tests, -2 scripts, +2 notes.
 (root) 1157
 .github 345
 bundles 2398
@@ -58,4 +60,4 @@ dashboard 4281
 docs 12958
 examples 582
 scripts 4328
-tests 40107
+tests 38977
