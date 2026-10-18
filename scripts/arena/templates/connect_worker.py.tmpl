@@ -1,0 +1,108 @@
+"""Install a real worker handoff into the existing CPU intake and supervisor.
+
+Run on the CPU controller after commission_worker.py finishes on the worker.
+The image proof must refer to the exact image in that handoff. --start activates
+the prepared units and moves the existing intake to the same exported source.
+"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tarfile
+
+parser=argparse.ArgumentParser(description=__doc__)
+for name in ('base','state-root','host','user','pod-stage','known-hosts','image-proof','tag','owner','source','source-metadata'):
+    parser.add_argument('--'+name,required=True)
+parser.add_argument('--start',action='store_true')
+# r24 (Lium 4x B300): passed through to prepare_cpu_pair_@SLUG@.py.
+parser.add_argument('--pod-port',default='22')
+parser.add_argument('--pruning-review-root',default='')
+args=parser.parse_args()
+base,state=Path(args.base),Path(args.state_root)
+helper=Path(__file__).resolve().parent
+os.umask(0o077)
+image_proof=json.loads(Path(args.image_proof).read_bytes())
+metadata=json.loads(Path(args.source_metadata).read_bytes())
+archive=Path(args.source)
+with archive.open('rb') as stream:assert hashlib.file_digest(stream,'sha256').hexdigest()==metadata['sha256']
+source=state/('source-'+metadata['revision'])
+if not source.exists():
+    source.mkdir(mode=0o700,parents=True)
+    with tarfile.open(archive,mode='r:') as incoming:incoming.extractall(source,filter='data')
+    for path in [source,*source.rglob('*')]:path.chmod(path.stat().st_mode & ~0o222)
+ssh=['ssh','-i',str(base/'ssh_key'),'-o','BatchMode=yes','-o','StrictHostKeyChecking=yes',
+     '-o','UserKnownHostsFile='+args.known_hosts,'-o','ConnectTimeout=15',args.user+'@'+args.host]
+handoff=state/'handoffs'/args.tag
+handoff.mkdir(mode=0o700,parents=True,exist_ok=True)
+raw=subprocess.check_output(ssh+['sudo','-n','cat',args.pod_stage+'/cpu-handoff.json'],timeout=30)
+receipt=json.loads(raw)
+(handoff/'cpu-handoff.json').write_bytes(raw)
+output=handoff/'cpu-handoff.tar'
+if not output.exists():
+    partial=output.with_suffix('.partial')
+    with partial.open('wb') as stream:
+        subprocess.run(ssh+['sudo','-n','cat',args.pod_stage+'/cpu-handoff.tar'],
+                       stdout=stream,check=True,timeout=180)
+        stream.flush();os.fsync(stream.fileno())
+    assert partial.stat().st_size==receipt['bytes']
+    with partial.open('rb') as stream:assert hashlib.file_digest(stream,'sha256').hexdigest()==receipt['sha256']
+    partial.rename(output)
+with tarfile.open(output,mode='r:') as incoming:
+    ready=json.load(incoming.extractfile('ready-receipt.json'))
+assert any(row['image'].split('@',1)[1]==ready['worker_image'].split('@',1)[1]
+           for row in image_proof['images']), 'handoff image is not retained on CPU'
+assert ready['source']['revision']==metadata['revision']
+stage=state/'workers'/args.tag
+if not (stage/'prepared.json').exists():
+    subprocess.run(['/root/cacheon-ops/venv/bin/python','-B',str(helper/'prepare_cpu_pair_@SLUG@.py'),
+        args.tag,str(output),str(handoff/'cpu-handoff.json'),'500000000',
+        '--source',str(source),'--stage',str(stage),'--pod-host',args.host,'--owner',args.owner,
+        '--spool-root',str(state/'spool'),'--evidence-root',str(state/'evidence'),
+        '--runtime-script',str(helper/'worker_runtime.py'),'--pod-port',args.pod_port,
+        '--pruning-review-root',args.pruning_review_root],check=True,timeout=120)
+if args.start:
+    # The C++20 rotation changed the patcher hash embedded in queued identities.
+    # Run the evaluator's static identity comparison before starting its worker.
+    preflight='''import json,sqlite3,sys
+sys.path.insert(0,sys.argv[1])
+from cacheon.engine_tree import inspect_contribution
+from cacheon.target_catalog import default_target_catalog
+config=json.load(open(sys.argv[2]));catalog=default_target_catalog()
+db=sqlite3.connect('file:'+config['intake_db']+'?mode=ro',uri=True)
+arena=config['arena_service_manifest']['runtime']['arena_id']
+rows=db.execute("SELECT reservation_id,publication_root,delta_fingerprint_json FROM reservations WHERE competition_arena=? AND status='published'",(arena,)).fetchall()
+for key,root,raw in rows:
+ expected=json.loads(raw);observed=inspect_contribution(root,catalog=catalog)
+ if observed.selected_delta_digest!=expected['selected_delta_digest']:
+  raise RuntimeError('queued publication '+key+' has a different validator build identity; retain its original fingerprint and reconcile the source rotation before GPU dispatch')
+print('QUEUED_IDENTITIES_VERIFIED',len(rows))
+'''
+    subprocess.run(['/root/cacheon-ops/venv/bin/python','-B','-c',preflight,
+                    str(source),str(stage/'mainnet-screen-dispatcher.json')],check=True,timeout=120)
+    prepared=json.loads((stage/'prepared.json').read_bytes())
+    for name in prepared['units']:
+        unit=stage/name
+        shutil.copyfile(unit,Path('/etc/systemd/system')/unit.name)
+    intake=Path(subprocess.check_output(['systemctl','show','cacheon-@SLUG@-intake.service',
+                                        '--value','-p','FragmentPath'],text=True).strip())
+    previous=intake.read_text()
+    lines=[('Environment=PYTHONPATH='+str(source)) if line.startswith('Environment=PYTHONPATH=')
+           else ('WorkingDirectory='+str(source)) if line.startswith('WorkingDirectory=') else line
+           for line in previous.splitlines()]
+    updated='\n'.join(lines)+'\n'
+    if updated!=previous:
+        backup=stage/'intake-unit-before.service';backup.write_text(previous)
+        intake.write_text(updated)
+    subprocess.run(['systemctl','daemon-reload'],check=True)
+    if updated!=previous:subprocess.run(['systemctl','restart','cacheon-@SLUG@-intake.service'],check=True)
+    subprocess.run(['systemctl','start','cacheon-eval-@SLUG@-pair-'+args.tag+'.service'],check=True,timeout=180)
+    # The dashboard follows the durable spool registration across spot hosts.
+    logs = state/'logs'; logs.mkdir(mode=0o700, exist_ok=True)
+    epoch = json.loads((stage/'registration.json').read_bytes())['worker_epoch']
+    link = logs/('mainnet-standing-supervisor-'+epoch+'.log')
+    if not link.exists(): link.symlink_to(stage/'logs/supervisor.log')
+print(json.dumps({'stage':str(stage),'source':str(source),'started':args.start,
+                  'intake_db':'/root/cacheon-ops/@SLUG@-plane/state/intake.sqlite3'}))

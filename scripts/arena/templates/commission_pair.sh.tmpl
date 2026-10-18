@@ -1,0 +1,118 @@
+#!/bin/sh
+# Commission one @MODEL_PROFILE_KEY@ TP@TP@ pair on this box with the proven GLM sequence (commission_stage.sh, 2026-09-29):
+# READY receipt, deployment profile, declaration, base authority, bootstrap materialization and registration, calibration
+# seal, finalize, final materialization and registration, pod install, CPU handoff archive. CPU-only: the runtime
+# preflight inside base-authority boots the image without GPUs. usage: commission_pair_@SLUG@.sh TAG LANE BASE SEED
+set -eu
+TAG=$1; LANE=$2; BASE=$3; SEED=$4
+NODE=/data/cacheon-dsv41/node; STAGE=$NODE/pair-$TAG; QA=$STAGE/qualification-authority; L=$STAGE/chain-logs
+SRC=/data/cacheon-dsv41/stage-e0d4a039/source; PACKET=/data/cacheon-dsv41/packet
+PY=/data/cacheon-b300/controller-venv-h3/bin/python
+REV=$(python3 -c 'import json;print(json.load(open("/root/cacheon-dsv41/image.complete.json"))["source_commit"])')
+IMAGE=$(python3 -c 'import json;print(json.load(open("/data/cacheon-dsv41/stage-e0d4a039/config.json"))["fixed_image"])')
+MODEL=/mnt/rootdisk/models/@MODEL_PROFILE_KEY@
+RECEIPT=$(/bin/ls /data/cacheon-dsv41/model-receipts/model-provision-sha256-*.json)
+# The registration binds the CPU VM's absolute known_hosts and credential paths; the same paths are created here so
+# make-registration can validate them, and the handoff installs the same bytes at the same paths on the VM.
+HOSTADDR=95.133.253.85; OPS=/root/cacheon-ops/state; KNOWN=$OPS/dsv41-b300-known-hosts
+SERVICE=$STAGE/worker-bootstrap/bin/remote_worker_service.py; A=$QA/cacheon_b300_qualification_adapter.py
+CRED=$OPS/@SLUG@-b300-pair-$TAG-credential.secret; CRED_ID=@SLUG@-b300-pair-$TAG
+step() { echo "STEP $1 $(date -u +%H:%M:%SZ)"; }
+sid() { $PY -c 'import json,sys;from cacheon.chain.mainnet_screen_dispatcher import _manifest_from_dict;print(_manifest_from_dict(json.load(open(sys.argv[1]))).service_id)' "$STAGE/commissioned/arena-service-manifest.json"; }
+register() { $PY -B -m cacheon.chain.remote_worker_service make-registration --ready-receipt "$STAGE/ready-receipt.json" --worker-readiness "$STAGE/commissioned/worker-readiness.json" --known-hosts "$KNOWN" --pod-host $HOSTADDR --pod-port 22 --service-identity "$1" --remote-service "$SERVICE" --adapter "$A" --credential "$CRED" --credential-id "$CRED_ID" --python-executable "$PY" --lane-devices "$LANE" --max-response-bytes 67108864 --bind-ready-receipt --output "$STAGE/registration.json"; }
+materialize() { $PY -B -m cacheon.eval.b300_deployment materialize --ready-receipt "$STAGE/ready-receipt.json" --authority-config "$1/authority-config.json" --measurement-config "$1/measurement-config.json" --calibration-package "$2" --calibration-projection-receipt "$3" --prompt-authority "$QA/prompt-authority.current.json" --output-root "$STAGE/commissioned"; }
+test "$(id -u)" = 0
+test ! -e "$STAGE"
+test -d "$SEED" && test -d "$SRC" && test -f "$RECEIPT" && test -d "$MODEL"
+umask 077
+step 0-layout
+mkdir -m 700 -p "$NODE" "$STAGE" "$QA" "$L" "$STAGE/controller-cwd" "$STAGE/remote-worker" "$STAGE/remote-worker/tmp" "$STAGE/remote-worker/logs" "$STAGE/worker-bootstrap" "$STAGE/worker-bootstrap/bin"
+for f in qualification_capabilities.py numeric_answer_judge.py finalize-authority.py prompt-authority.current.json; do cp "$PACKET/$f" "$QA/$f"; chmod 400 "$QA/$f"; done
+cp "$PACKET/cacheon_b300_qualification_adapter.py" "$A"; chmod 500 "$A"
+mkdir -p -m 700 "$OPS"; test ! -e "$CRED"; head -c 48 /dev/urandom > "$CRED"; chmod 400 "$CRED"; test "$(stat -c %s "$CRED")" = 48
+cp "$CRED" "$STAGE/remote-worker/credential.secret"; chmod 400 "$STAGE/remote-worker/credential.secret"
+# The sshd answering on the public address does not use /etc/ssh/ssh_host_ed25519_key (observed 2026-10-09): pin the key the CPU VM really sees.
+if [ ! -f "$KNOWN" ]; then ssh-keyscan -T 10 -t ed25519 "$HOSTADDR" 2>/dev/null | grep -v '^#' > "$KNOWN"; chmod 600 "$KNOWN"; fi
+test "$(wc -l < "$KNOWN")" = 1
+ACTIVE=$(sshd -T 2>/dev/null | awk '/^hostkey /{print $2}' | while read k; do [ -f "$k.pub" ] && ssh-keygen -lf "$k.pub" | awk '{print $2}'; done | tr '\n' ' ')
+PINNED=$(ssh-keygen -lf "$KNOWN" | awk '{print $2}')
+echo "known_hosts: $PINNED $HOSTADDR (sshd active keys: $ACTIVE)"
+case " $ACTIVE " in *" $PINNED "*) ;; *) echo "pinned host key is not an active sshd host key"; exit 1;; esac
+$PY - "$PACKET/remote_worker_service.@SLUG@.py" "$SERVICE" "$STAGE" <<'PY'
+import pathlib, sys
+src, dst, stage = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
+text = src.read_text()
+for old, new in (("/data/cacheon-b300/remote-worker", f"{stage}/remote-worker"), ("/data/cacheon-b300/worker-bootstrap", f"{stage}/worker-bootstrap"),
+                 ("/data/cacheon-b300/source-", f"{stage}/source-"), ("/data/cacheon-b300/.source-", f"{stage}/.source-")):
+    assert old in text, old
+    text = text.replace(old, new)
+assert "/data/cacheon-b300/" not in text, "unreplaced pod path"
+dst.write_text(text); dst.chmod(0o500); print("service copy written:", dst, len(text.splitlines()), "lines")
+PY
+$PY -B -m py_compile "$SERVICE" && rm -rf "$STAGE/worker-bootstrap/bin/__pycache__"
+cd "$STAGE/controller-cwd"
+export PYTHONPATH=$SRC PYTHONDONTWRITEBYTECODE=1
+test "$($PY -B -c 'import cacheon;print(cacheon.__file__)')" = "$SRC/cacheon/__init__.py"
+step 0b-replay-tokenizer-preflight
+$PY -B /root/cacheon-dsv41/preflight_replay_tokenizer.py "$QA/qualification_capabilities.py" > "$L/0b-replay-tokenizer-preflight.json"
+step 1-commission
+$PY - "$STAGE/commission-command.json" "$PY" "$SERVICE" "$SRC" "$REV" "$SEED" "$MODEL" "$RECEIPT" "$IMAGE" "$LANE" "$BASE" "$HOSTADDR" "$STAGE/ready-receipt.json" <<'PY'
+import json, sys
+out, py, service, src, rev, seed, model, receipt, image, lane, base, host, ready = sys.argv[1:]
+cmd = [py, "-B", service, "commission-current-pod", "--source-root", src, "--source-revision", rev, "--runtime-root", seed, "--model-root", model,
+       "--model-receipt", receipt, "--worker-image", image, "--python-executable", py, "--lane-devices", lane, "--baseline-devices", base,
+       "--pod-endpoint", f"{host}:22", "--output", ready]
+open(out, "w").write(json.dumps(cmd) + "\n")
+PY
+chmod 600 "$STAGE/commission-command.json"
+$PY -c 'import json,subprocess,sys; sys.exit(subprocess.call(json.load(open(sys.argv[1]))))' "$STAGE/commission-command.json" > "$L/1-commission.log" 2>&1
+tail -c 300 "$L/1-commission.log"; echo
+step 1b-deployment
+$PY -B /root/cacheon-dsv41/fill_deployment_@SLUG@.py "$STAGE/ready-receipt.json" "$RECEIPT" "$STAGE" "$QA/deployment.json" > "$L/1b-deployment.log" 2>&1
+chmod 400 "$QA/deployment.json"; tail -c 300 "$L/1b-deployment.log"; echo
+step 2-declaration
+$PY -B "$QA/qualification_capabilities.py" declaration > "$QA/qualification-declaration.json" 2> "$L/2-declaration.err"
+chmod 400 "$QA/qualification-declaration.json"
+step 3-base-authority
+$PY -B "$QA/qualification_capabilities.py" base-authority --declaration "$QA/qualification-declaration.json" --output-root "$STAGE/bootstrap-authority" > "$L/3-base-authority.log" 2>&1
+step 4-materialize-bootstrap
+materialize "$STAGE/bootstrap-authority" "$STAGE/bootstrap-authority/calibration.json" "$STAGE/bootstrap-authority/projection.json" > "$L/4-materialize.log" 2>&1
+step 5-registration-bootstrap
+register "$(sid)" > "$L/5-registration.log" 2>&1
+step 6-seal-calibration
+$PY -B "$A" --seal-calibration-from-durable > "$STAGE/calibration-capture.json" 2> "$L/6-seal.err"
+$PY -c 'import json,sys; d=json.load(open(sys.argv[1])); print("SEALED_INCUMBENT", {k: v.get("artifact_digest", "")[:12] for k, v in d["incumbent_stack"]["entries"].items()})' "$STAGE/calibration-capture.json"
+step 7-finalize
+$PY -B "$QA/finalize-authority.py" "$STAGE/bootstrap-authority/authority-config.json" "$STAGE/bootstrap-authority/measurement-config.json" "$STAGE/calibration-capture.json" "$STAGE/final-authority" "$QA/calibration-v3-width0/calibration-pair.json" "$QA/calibration-v3-width0/primary/projection.json" "$QA/calibration-v3-width0/reproduction/projection.json" > "$L/7-finalize.log" 2>&1
+mv "$STAGE/commissioned" "$STAGE/commissioned-bootstrap"
+step 8-materialize-final
+materialize "$STAGE/final-authority" "$QA/calibration-v3-width0/calibration-pair.json" "$QA/calibration-v3-width0/primary/projection.json" > "$L/8-materialize-final.log" 2>&1
+mv "$STAGE/registration.json" "$STAGE/registration-bootstrap.json"
+step 9-registration-final
+register "$(sid)" > "$L/9-registration.log" 2>&1
+echo "SERVICE_ID=$(sid)"
+step 10-pod-install
+cp "$STAGE/ready-receipt.json" "$STAGE/worker-bootstrap/ready-receipt.json"; chmod 400 "$STAGE/worker-bootstrap/ready-receipt.json"
+cp "$STAGE/registration.json" "$STAGE/remote-worker/registration.json"; chmod 400 "$STAGE/remote-worker/registration.json"
+cp "$A" "$STAGE/worker-bootstrap/bin/cacheon-b300-evaluation-adapter"; chmod 500 "$STAGE/worker-bootstrap/bin/cacheon-b300-evaluation-adapter"
+cp "$QA/deployment.json" "$STAGE/worker-bootstrap/bin/deployment.json"; chmod 400 "$STAGE/worker-bootstrap/bin/deployment.json"
+step 11-handoff
+$PY - "$STAGE" "$SERVICE" "$KNOWN" "$CRED" <<'PY'
+import hashlib, json, sys, tarfile
+from pathlib import Path
+stage, service, known = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+files = {stage / 'ready-receipt.json': 'ready-receipt.json', stage / 'commissioned/worker-readiness.json': 'worker-readiness.json',
+         stage / 'commissioned/arena-service-manifest.json': 'arena-service-manifest.json',
+         stage / 'qualification-authority/cacheon_b300_qualification_adapter.py': 'cacheon_b300_qualification_adapter.py',
+         stage / 'qualification-authority/deployment.json': 'deployment.json', stage / 'calibration-capture.json': 'calibration-capture.json',
+         stage / 'registration.json': 'registration.json', service: 'pod-remote-worker-service.py', known: 'known_hosts',
+         Path(sys.argv[4]): 'credential.secret'}
+out = stage / 'cpu-handoff.tar'
+with tarfile.open(out, 'x') as archive:
+    for path, name in files.items():
+        archive.add(path, arcname=name, recursive=False)
+receipt = {'archive': str(out), 'sha256': hashlib.sha256(out.read_bytes()).hexdigest(), 'bytes': out.stat().st_size, 'files': list(files.values())}
+(stage / 'cpu-handoff.json').write_text(json.dumps(receipt, indent=2) + '\n')
+print('HANDOFF', json.dumps(receipt)[:300])
+PY
+step DONE

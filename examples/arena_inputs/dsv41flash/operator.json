@@ -1,0 +1,19 @@
+{
+  "schema": "cacheon-arena-operator-v1",
+  "arena_id": "dsv41flash-b300-node-v1",
+  "slug": "dsv41",
+  "model_profile_key": "DeepSeek-V4.1-Flash",
+  "tensor_parallel_size": 2,
+  "replay_load": 24,
+  "tokenizer_asset": "tokenizer-nvfp4",
+  "model_in_ram": true,
+  "owner": "dsv41-spot-recovery",
+  "node": {
+    "name": "8-GPU Verda",
+    "scheduler_starts": [4, 34, 64, 94, 124, 154, 184, 214],
+    "client_cpus": {
+      "6,7": [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+      "2,3": [66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77]
+    }
+  }
+}

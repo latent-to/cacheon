@@ -1,0 +1,97 @@
+{
+  "architecture": "sm103",
+  "arena_id": "@ARENA_ID@",
+  "docker_binary": "/data/cacheon-dsv41/stage-e0d4a039/bin/docker",
+  "gid": 65534,
+  "image": "127.0.0.1:5000/cacheon-dsv41flash@sha256:ec139e00c99cef5ef07b5d1270e7fd368bc3333a7bba6577319ce7822223776d",
+  "incumbent": "stock",
+  "machine": "x86_64",
+  "model_content_digest": "e4ad901814dd1261d2698315b2533ce541fae90a25d9462cec6f6573e85ee546",
+  "model_manifest_digest": "e567299cc58caae92342e25f768aec05aeecce63f6240b7ea059b6262fbd84f0",
+  "model_profile_key": "@MODEL_PROFILE_KEY@",
+  "model_receipt_digest": "17708636027d9005a0618445024ead27c5b1f336fbf0e5a1b3c1cd14276c5f32",
+  "model_revision_digest": "6360eec093f91d51bbb2c066af45613b757f83a422397f32d357bd8c079e77b0",
+  "oci_platform": "linux/amd64",
+  "python_executable": "/usr/bin/python3.12",
+  "python_platform": "linux-x86_64",
+  "qualification_policy": {
+    "audit_minimum_calls": 4,
+    "hidden_tasks_per_prompt": 0,
+    "hidden_tasks_required": false,
+    "nll_tail_threshold": "0.35",
+    "select_count": 8,
+    "tokens_per_prompt": 9238,
+    "topk_width": 0
+  },
+  "resources": {
+    "runtime": {
+      "cpu_pins": {
+        "0": [
+          0,
+          1,
+          120,
+          121
+        ],
+        "1": [
+          15,
+          16,
+          135,
+          136
+        ],
+        "2": [
+          30,
+          31,
+          150,
+          151
+        ],
+        "3": [
+          45,
+          46,
+          165,
+          166
+        ],
+        "4": [
+          60,
+          61,
+          180,
+          181
+        ],
+        "5": [
+          75,
+          76,
+          195,
+          196
+        ],
+        "6": [
+          90,
+          91,
+          210,
+          211
+        ],
+        "7": [
+          105,
+          106,
+          225,
+          226
+        ]
+      }
+    }
+  },
+  "sglang_version": "0.5.21",
+  "source_commit": "e0d4a0396ea98e914d448d497a72cf86568b411a",
+  "speed_policy": {
+    "max_conditioning_slowdown": "0",
+    "max_qualification_seconds": 14400,
+    "max_stage_seconds": 7200,
+    "max_window_scatter": "0",
+    "min_windows": 0
+  },
+  "stage_root": "/data/cacheon-dsv41/node/pair-0-1",
+  "tensor_parallel_size": @TP@,
+  "topology_class": "nvlink-sxm6",
+  "topology_digest": "15245668e86fe8e43e38e8e2aed7640b0df96da12516ca87487882d37aeaa107",
+  "uid": 65534,
+  "worker_digest": "eb5eed02e31e774f67ff9bd4eef243b7b097fe502425b1333e4fee679fa5ed7a",
+  "worker_distribution": "cacheon-harness",
+  "worker_version": "0.0.1"
+}

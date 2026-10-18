@@ -1,0 +1,118 @@
+"""Run the retained bootstrap and commissioner for one real worker generation."""
+import argparse
+import hashlib
+import json
+import os
+import pwd
+from pathlib import Path
+import subprocess
+import tarfile
+import time
+
+parser = argparse.ArgumentParser(description=__doc__)
+for name in ('shared', 'root', 'host', 'user', 'known-hosts', 'tag', 'lane', 'baseline'):
+    parser.add_argument('--'+name, required=True)
+parser.add_argument('--model-proof',type=Path)
+parser.add_argument('--model-input',type=Path)
+parser.add_argument('--pod-port',default='22')
+# r23: a warm runtime seed harvested from one stock boot on this pod (the fresh-pod step; cold leases
+# compile ~2,500 kernels and outran the 1,800 s init bound, 2026-10-17 Lium). Absent: the image-shipped cache.
+parser.add_argument('--runtime-seed',type=Path)
+args = parser.parse_args()
+os.environ['PATH'] = str(Path(pwd.getpwnam(args.user).pw_dir)/'.local/bin')+os.pathsep+os.environ['PATH']
+shared, root = Path(args.shared), Path(args.root)
+helper = Path(__file__).resolve().parent
+source = root/'build/src'
+boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+log_root = root/'logs'
+os.umask(0o077)
+
+def run(name, argv, timeout):
+    """Keep each original command's output and fail at its actual exit status."""
+    print('START', name, int(time.time()), flush=True)
+    with (log_root/(name+'.log')).open('xb', buffering=0) as log:
+        subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=log,
+                       stderr=subprocess.STDOUT, check=True, timeout=timeout)
+    print('DONE', name, int(time.time()), flush=True)
+
+status = 1
+try:
+    deadline = time.monotonic()+3600
+    proof, image_ref = args.model_proof, root/'worker-image-ref'
+    while not (image_ref.exists() and (proof is None or proof.exists())):
+        assert time.monotonic()<deadline, 'model restoration or image publication did not finish'
+        time.sleep(2)
+    assert Path('/proc/sys/kernel/random/boot_id').read_text().strip()==boot
+    model_input = args.model_input or shared/'model-download.complete.json'
+    download = json.loads(model_input.read_bytes())
+    receipt, = (shared/'commission-inputs/model-receipts').glob('model-provision-sha256-*.json')
+    expected = json.loads(receipt.read_bytes())
+    model_root=download['path']
+    if proof is not None:
+        model=json.loads(proof.read_bytes())
+        assert model['content_digest']==expected['content_digest'] and model['files']==len(expected['files'])
+        assert Path(model['ram_root']).is_mount(), 'the recorded RAM model did not survive this boot'
+        model_root=model['model_root']
+    run('bootstrap-'+args.tag, ['/usr/bin/python3', '-B', str(helper/'bootstrap_worker.py'),
+        '--source-root', str(source), '--root', str(shared), '--model-dir', model_root,@RAM_MODEL_ARGS@
+        '--model-receipt', str(receipt), '--token-file', str(root/'credentials/model-token'),
+        '--model-repo', download['repo'], '--model-revision', download['revision'],
+        '--image', image_ref.read_text().strip()], 3600)
+    bootstrap = json.loads((shared/'bootstrap-complete.json').read_bytes())
+    seed_name = 'runtime-seed-'+bootstrap['image_id'].split(':',1)[1]
+    seed = shared/'commission-inputs'/seed_name
+    archive = shared/(seed_name+'.tar')
+    seed_receipt = shared/(seed_name+'.json')
+    if args.runtime_seed is not None:
+        seed = args.runtime_seed
+        seed_receipt = seed.parent/(seed.name+'.json')
+        assert seed.is_absolute() and seed.is_dir() and not seed.is_symlink()
+        files = sorted(p for p in seed.rglob('*') if p.is_file())
+        assert files and all(p.is_file() or p.is_dir() for p in seed.rglob('*'))
+        assert not any(p.is_symlink() for p in seed.rglob('*'))
+        for path in [seed,*seed.rglob('*')]:path.chmod(path.stat().st_mode & ~0o222)
+        tree = hashlib.sha256()
+        for path in files:
+            with path.open('rb') as stream:tree.update(f'{path.relative_to(seed)}\0{hashlib.file_digest(stream,"sha256").hexdigest()}\n'.encode())
+        receipt = {'image_id':bootstrap['image_id'],'tree_sha256':tree.hexdigest(),'files':len(files),
+                   'bytes':sum(p.stat().st_size for p in files),'families':sorted(p.name for p in seed.iterdir()),
+                   'kind':'harvested-stock-boot','compiled_model_cache':True}
+        # r24: a seed already commissioned once keeps its receipt; reuse requires the same bytes.
+        if seed_receipt.exists():
+            assert json.loads(seed_receipt.read_bytes())==receipt, 'runtime seed differs from its receipt'
+        else:
+            with seed_receipt.open('x') as out:out.write(json.dumps(receipt)+'\n')
+    elif not seed.exists():
+        with archive.open('xb') as out:
+            subprocess.run(['docker','run','--rm','--network=none','--runtime=runc',
+                '--read-only','--env=NVIDIA_VISIBLE_DEVICES=void','--env=CUDA_VISIBLE_DEVICES=',
+                '--entrypoint=tar',bootstrap['image'],'-C','/root/.cache','-cf','-','sglang'],
+                stdin=subprocess.DEVNULL,stdout=out,check=True,timeout=60)
+            out.flush();os.fsync(out.fileno())
+        seed.mkdir(mode=0o755)
+        with tarfile.open(archive,mode='r:') as incoming:incoming.extractall(seed,filter='data')
+        files = [p for p in seed.rglob('*') if p.is_file()]
+        assert files and not any(p.is_symlink() for p in seed.rglob('*'))
+        for path in [seed,*seed.rglob('*')]:path.chmod(path.stat().st_mode & ~0o222)
+        with archive.open('rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
+        seed_receipt.write_text(json.dumps({
+            'image_id':bootstrap['image_id'],'archive_sha256':digest,
+            'files':len(files),'bytes':sum(p.stat().st_size for p in files),
+            'kind':'image-shipped-cache','compiled_model_cache':False})+'\n')
+    assert json.loads(seed_receipt.read_bytes())['image_id']==bootstrap['image_id']
+    run('prepare-'+args.tag, ['/usr/bin/python3','-B',str(helper/'prepare_worker.py'),
+        '--shared',str(shared),'--root',str(root),'--known-hosts',args.known_hosts,
+        '--tag',args.tag,'--pod-host',args.host,'--pod-user',args.user,
+        '--lane',args.lane,'--baseline',args.baseline,'--model-input',str(model_input),
+        '--pod-port',args.pod_port], 120)
+    run('commission-'+args.tag, ['bash',str(root/'operator/commission.sh'),args.tag,
+        args.lane,args.baseline,str(seed)], 2400)
+    run('runtime-uid-'+args.tag, ['/usr/bin/python3','-B',str(helper/'runtime_uid_preflight.py'),
+        '--shared',str(shared),'--root',str(root),'--tag',args.tag], 1800)
+    stage = root/('node/pair-'+args.tag)
+    (root/('commission-'+args.tag+'.complete')).write_text(json.dumps({
+        'stage':str(stage),'handoff':str(stage/'cpu-handoff.tar'),
+        'boot_id':boot,'completed':int(time.time())})+'\n')
+    status = 0
+finally:
+    (root/('commission-'+args.tag+'.exit')).write_text(str(status)+'\n')

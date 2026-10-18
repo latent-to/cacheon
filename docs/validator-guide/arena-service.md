@@ -104,7 +104,9 @@ TP1 therefore needs two GPUs, including an explicit pair within an eight-GPU
 host. TP4 uses two four-GPU lanes. Spare devices are never allocated implicitly.
 Pass the materializer's output as `--commissioned-root` to the remote adapter
 (or `commissioned_root` to its Python builders). Omission preserves the
-historical GLM path.
+historical GLM path. The operator that runs the materializer, the commissioner
+and the registration for one pair is rendered per arena from
+`scripts/arena/`; see [Commissioning a new arena](new-arena.md).
 
 Optional sealed `resources.runtime` and `resources.prebuild` objects override
 existing OCI capacity fields: `cpu_millis`, `memory_bytes`, `pids_limit`,

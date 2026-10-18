@@ -1,0 +1,154 @@
+"""Prepare one @MODEL_PROFILE_KEY@ pair's CPU-side stage on the validator VM from the pod's handoff archive.
+
+usage: prepare_cpu_pair_@SLUG@.py TAG HANDOFF_TAR HANDOFF_JSON FEE_RAO --source SOURCE
+       --stage STAGE --pod-host HOST --owner OWNER --spool-root SPOOL --evidence-root EVIDENCE
+Writes STAGE with the verified registration, READY receipt, manifest, deployment
+profile, calibration capture, spool state, incumbent stack, dispatcher config (GLM's live config as the base,
+this pair's identities, the plane's own intake database, legacy bundles refused), standing-supervisor config
+(qualification on, settlement and weights off) and the systemd unit texts (supervisor, relay, plane intake). The
+credential and known_hosts land at the absolute paths the registration binds. Nothing is installed or started:
+the operator reviews the stage, installs the units, and starts them on the owner's order. Mirrors the Qwen
+multi-pair recipe (QWEN_RESUME_2026-10-02/prepare_cpu_pair.py) on the DSV4 source.
+"""
+import argparse, hashlib, json, os, shlex, shutil, sys, tarfile
+from pathlib import Path
+
+os.umask(0o077)
+parser = argparse.ArgumentParser(description=__doc__)
+for name in ('tag', 'handoff_tar', 'handoff_json', 'fee_rao'):
+    parser.add_argument(name)
+for name in ('source', 'stage', 'pod-host', 'owner', 'spool-root', 'evidence-root'):
+    parser.add_argument('--'+name, required=True)
+parser.add_argument('--runtime-script', type=Path, default=Path(__file__).with_name('worker_runtime.py'))
+# r24 (Lium 4x B300): the pod's SSH port (40307 there) and the pruning-review verdict root the PR 154 supervisor
+# requires in its closed standing config ('' claims bundles unreviewed).
+parser.add_argument('--pod-port', type=int, default=22)
+parser.add_argument('--pruning-review-root', default='')
+args = parser.parse_args()
+TAG, HANDOFF_TAR, HANDOFF_JSON, FEE_RAO = args.tag, args.handoff_tar, args.handoff_json, args.fee_rao
+PLANE = Path("/root/cacheon-ops/@SLUG@-plane")
+SOURCE = Path(args.source).resolve(strict=True)
+GLM_CONFIG = Path("/root/cacheon-ops/stage/glm-baseline-20261005/monday-config")
+VENV_PY = "/root/cacheon-ops/venv/bin/python"       # GLM's live supervisor and relay interpreter (3.12)
+PROD_PY = "/root/miniconda3/envs/prod/bin/python"   # the chain SDK interpreter the live intakes use (3.10)
+CHAIN = "wss://archive.sub.latent.to:443"           # GLM's live intake endpoint
+POD_HOST = args.pod_host
+ARENA = "@ARENA_ID@"
+assert SOURCE.is_dir() and GLM_CONFIG.is_dir()
+int(FEE_RAO)
+stage = Path(args.stage).resolve()
+spool, evidence = Path(args.spool_root).resolve(), Path(args.evidence_root).resolve()
+stage.mkdir(mode=0o700, parents=True, exist_ok=False)
+receipt = json.loads(Path(HANDOFF_JSON).read_bytes())
+raw = Path(HANDOFF_TAR).read_bytes()
+assert hashlib.sha256(raw).hexdigest() == receipt["sha256"] and len(raw) == receipt["bytes"]
+handoff = stage / "handoff"; handoff.mkdir(mode=0o700)
+with tarfile.open(HANDOFF_TAR) as archive:
+    archive.extractall(handoff, filter="data")
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(SOURCE))
+from cacheon.chain.mainnet_screen_dispatcher import load_config
+from cacheon.chain.remote_worker_registration import registration_credential, verify_readiness, verify_ready_receipt, verify_registration
+from cacheon.chain.standing_cpu_supervisor import build_standing_supervisor, load_standing_config
+
+reg = verify_registration(json.loads((handoff / "registration.json").read_bytes()))
+ready = verify_ready_receipt(json.loads((handoff / "ready-receipt.json").read_bytes()))
+readiness, _ = verify_readiness(json.loads((handoff / "worker-readiness.json").read_bytes()))
+manifest = json.loads((handoff / "arena-service-manifest.json").read_bytes())
+capture = json.loads((handoff / "calibration-capture.json").read_bytes())
+lane, baseline = ready['lane']['devices'], ready['lane']['baseline_devices']
+assert len(lane) == len(baseline) == @TP@ and len(set(lane+baseline)) == @GPUS@
+assert reg["pod_host"] == POD_HOST and reg["pod_port"] == args.pod_port, (reg["pod_host"], reg["pod_port"])
+assert reg["ready_receipt_digest"] == ready["receipt_digest"]
+assert ready["lane"]["devices"] == lane and ready["lane"]["baseline_devices"] == baseline, ready["lane"]
+assert ready["source"]["revision"] == SOURCE.name.split("-", 1)[1]
+assert readiness["arena_id"] == ARENA and manifest["runtime"]["arena_id"] == ARENA
+assert reg["credential_id"] == f"@SLUG@-b300-pair-{TAG}", reg["credential_id"]
+# Credential and known_hosts at the exact absolute paths the registration binds (same bytes as the pod).
+for leaf, target, mode in (("credential.secret", Path(reg["credential_path"]), 0o400), ("known_hosts", Path(reg["known_hosts_path"]), 0o600)):
+    data = (handoff / leaf).read_bytes()
+    if target.exists():
+        assert target.read_bytes() == data, f"{target} differs from the handoff"
+    else:
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        target.write_bytes(data); target.chmod(mode)
+registration_credential(reg, Path(reg["credential_path"]))
+for name in ("registration.json", "ready-receipt.json", "worker-readiness.json", "arena-service-manifest.json", "deployment.json",
+             "calibration-capture.json", "cacheon_b300_qualification_adapter.py", "pod-remote-worker-service.py"):
+    shutil.copyfile(handoff / name, stage / name); (stage / name).chmod(0o400)
+for path in (spool, spool/'state', evidence, stage/'logs'):
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+def save(name, value):
+    path = stage / name
+    temporary = path.with_name(path.name + '.new')
+    with temporary.open('x') as output:
+        json.dump(value, output, indent=2, sort_keys=True); output.write('\n')
+        output.flush(); os.fsync(output.fileno())
+    temporary.chmod(0o400); temporary.replace(path)
+save(spool/'state/current-registration.json', reg)
+save("qualification-incumbent-stack.json", capture["incumbent_stack"])
+dispatch = json.loads((GLM_CONFIG / "mainnet-screen-dispatcher.json").read_bytes())
+dispatch.update(owner=args.owner, arena_service_manifest=manifest, worker_readiness=reg["worker_readiness"],
+                registration_path=str(stage / "registration.json"), registration_digest=reg["registration_digest"],
+                credential_path=reg["credential_path"], credential_digest=reg["credential_digest"],
+                transport_identity_digest=reg["transport_identity_digest"], spool_root=str(spool),
+                intake_db=str(PLANE / "state/intake.sqlite3"), accept_legacy_bundles=False)
+save("mainnet-screen-dispatcher.json", dispatch)
+loaded = load_config(stage / "mainnet-screen-dispatcher.json")
+assert loaded.manifest.runtime.arena_id == ARENA
+standing = json.loads((GLM_CONFIG / "standing-supervisor.json").read_bytes())
+standing.pop("enable_screen", None)
+standing.update(enable_qualification=True, enable_settlement=False, enable_weights=False, weights_stage_config="",
+                qualification_evidence_root=str(evidence),
+                qualification_incumbent_stack_path=str(stage / "qualification-incumbent-stack.json"),
+                qualification_incumbent_tree_digest=capture["incumbent_tree_digest"],
+                screen_dispatcher_config=str(stage / "mainnet-screen-dispatcher.json"),
+                pruning_review_root=args.pruning_review_root)
+save("standing-supervisor.json", standing)
+# The supervisor itself can only be built once the intake has written the live finalized cursor into the
+# intake store (mainnet_screen_dispatcher._read refuses an empty store), so activation starts the intake unit
+# first and the relay/supervisor units after its first sync; here only the sealed config shape is validated.
+standing_config = load_standing_config(stage / "standing-supervisor.json")
+assert standing_config.enable_qualification and not standing_config.enable_settlement and not standing_config.enable_weights
+deployment = json.loads((handoff/'deployment.json').read_bytes())
+pod_pair = Path(deployment['stage_root'])
+service = str(pod_pair/'worker-bootstrap/bin/remote_worker_service.py')
+runtime = args.runtime_script.resolve(strict=True)
+relay_unit = f"cacheon-eval-@SLUG@-relay-pair-{TAG}"  # unit name without .service: the pod tmux session is relay_unit+"-pod" and tmux parses a dot as a pane separator
+commands = {
+    "supervisor": [VENV_PY, "-B", "-u", "-m", "cacheon.chain.standing_cpu_supervisor", "--config", str(stage / "standing-supervisor.json")],
+    "relay": [VENV_PY, "-B", "-u", "-m", "cacheon.chain.remote_worker_service", "cpu-serve",
+              "--registration", str(stage / "registration.json"), "--current-registration", str(spool/'state/current-registration.json'),
+              "--spool-root", str(spool), "--pod-root", str(pod_pair/'remote-worker'),
+              "--pod-service-path", service, "--poll-seconds", "5", "--max-heartbeat-age", "45"],
+}
+for mode, command in commands.items():
+    unit = relay_unit + ".service" if mode == "relay" else f"cacheon-eval-@SLUG@-pair-{TAG}.service"
+    rows = ["[Unit]", f"Description=Cacheon @MODEL_PROFILE_KEY@ {mode} pair {TAG}", "After=network-online.target", "[Service]", "Type=simple",
+            "Environment=PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1", f"Environment=PYTHONPATH={SOURCE}",
+            f"Environment=CACHEON_SPOOL_ARCHIVE_INTAKE_DB={dispatch['intake_db']}", f"WorkingDirectory={SOURCE}",
+            "ExecStart=" + shlex.join(command), "Restart=on-failure", "RestartSec=15", "KillMode=process", "TimeoutStopSec=infinity",
+            f"StandardOutput=append:{stage / 'logs' / (mode + '.log')}", "StandardError=inherit"]
+    if os.environ.get('SSH_AUTH_SOCK'):
+        rows.append('Environment=SSH_AUTH_SOCK='+os.environ['SSH_AUTH_SOCK'])
+    if mode == "supervisor":
+        control = [VENV_PY, "-B", str(runtime), str(stage / "standing-supervisor.json"), service,
+                   str(pod_pair/'remote-worker'), relay_unit]
+        rows += ["ExecStartPre=" + shlex.join([*control, "start"]), "ExecStopPost=" + shlex.join([*control, "stop"])]
+    rows += ["[Install]", "WantedBy=multi-user.target", ""]
+    (stage / unit).write_text("\n".join(rows))
+intake_unit = PLANE / "cacheon-@SLUG@-intake.service"
+if not intake_unit.exists():
+    intake = [PROD_PY, "-u", "-m", "cacheon.cli", "chain-validate", "--netuid", "14", "--network", CHAIN, "--intake-db", dispatch["intake_db"],
+              "--private-root", str(PLANE / "private"), "--publication-root", str(PLANE / "publications"),
+              "--audit-log", str(PLANE / "state/chain-audit.jsonl"), "--intake-only", "--eval-cost-tao-rao", FEE_RAO]
+    intake_unit.write_text("\n".join(["[Unit]", "Description=Cacheon @MODEL_PROFILE_KEY@ plane intake (intake only)", "After=network-online.target",
+        "[Service]", "Type=simple", "Environment=PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1", f"Environment=PYTHONPATH={SOURCE}",
+        "Environment=CACHEON_BUNDLE_DECRYPTION_KEY=/root/cacheon-ops/secrets/bundle-decryption.key", f"WorkingDirectory={SOURCE}",
+        "ExecStart=" + shlex.join(intake), "Restart=on-failure", "RestartSec=15",
+        f"StandardOutput=append:{PLANE / 'state' / 'intake.log'}", "StandardError=inherit", "[Install]", "WantedBy=multi-user.target", ""]))
+report = {"prepared": True, "installed": False, "pair": TAG, "lane": lane, "baseline": baseline, "source_revision": ready["source"]["revision"],
+          "registration_digest": reg["registration_digest"], "service_identity": reg["service_identity"], "worker_epoch": reg["worker_epoch"],
+          "intake_db": dispatch["intake_db"], "accept_legacy_bundles": False, "fee_rao": int(FEE_RAO), "units": sorted(p.name for p in stage.glob("*.service"))}
+save("prepared.json", report)
+print(json.dumps(report))
