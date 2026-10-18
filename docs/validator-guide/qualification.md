@@ -177,7 +177,8 @@ which remains valid for them and is never recorded on a new verdict.
 
 The audit-only role is distinct from both timed lanes. Trusted-host grading imports no
 PyTorch and returns `PASS`, `FAIL` (`slot_audit_failed`: compared calls show a wrong
-kernel), or `NO_DECISION` (`audit_not_covered`: the audit compared too little to grade
+kernel; `routed_expert_pruning`: the bundle prunes routed experts beyond stock's prune),
+or `NO_DECISION` (`audit_not_covered`: the audit compared too little to grade
 the kernel, which requeues the bundle instead of failing it). The rule is in
 [Audit outcomes](fidelity.md#audit-outcomes). Live floating-point facts are
 canonicalized into stable decimal strings before they enter the durable witness.
@@ -742,7 +743,7 @@ Both orientations must exist before a PASS; a futility FAIL keeps one.
 The last sealed window yields `PASS` or `FAIL`, never `NO_DECISION`. This normal-model guarantee
 depends on the sealed noise bounds and independent boot contrasts; it does not
 establish runtime resolution by itself. A fixed 1% gain floor is absent. Reward
-credit uses the point estimate, not a confidence-bound haircut; a later V17 PASS
+credit uses the point estimate, not a confidence-bound haircut; a later V17 or V18 PASS
 is paid only when that estimate beats the best earlier rewarded PASS against the
 same arena and incumbent stack by 1.5%. Regrading checks
 the exact stopping point, all engine identities, host timings, and controls.

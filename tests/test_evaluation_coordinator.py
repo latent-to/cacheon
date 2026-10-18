@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import cacheon.chain.evaluation_coordinator as coordinator_module
+import cacheon.chain.recoverable_qualification_dispatcher as dispatcher_module
+from cacheon.chain.recoverable_qualification_dispatcher import RecoverableQualificationDispatcher
 from cacheon.arena_service import (
     ArenaCandidateBinding,
     ArenaCapacityPolicy,
@@ -32,6 +36,7 @@ from cacheon.chain.intake import (
     IntakeScope,
 )
 from cacheon.chain.publication import publish_worker_bundle, reopen_worker_bundle
+from cacheon.chain.pruning_review import REVIEW_SCHEMA, PruningReviewError, admit
 from cacheon.copy_fingerprint import SubmittedDeltaFingerprint
 from cacheon.eval.evidence_store import publish_evidence
 from cacheon.eval.qualification import QualificationDecision
@@ -522,3 +527,103 @@ def test_admission_replays_a_prior_fail_onto_identical_bytes(tmp_path: Path) -> 
     assert (replayed.status, replayed.decision) == ("failed", "FAIL")
     assert replayed.reason == f"duplicate_of:{prior.reservation_id[:16]}:{prior.reason}"
     assert leases["n"] == 1  # only the prior's own qualification lease
+
+
+def _review(root: Path, row, verdict: str, content: str | None = None) -> None:
+    (root / f"{row.reservation_id}.json").write_text(json.dumps({
+        "schema": REVIEW_SCHEMA, "reservation_id": row.reservation_id,
+        "content_hash": content or row.arrival.content_hash, "verdict": verdict,
+    }))
+
+
+def test_admission_holds_the_claim_for_its_pruning_review(tmp_path: Path) -> None:
+    """A first claim waits for the operator's pruning review; a reviewed pruner fails before any lease."""
+
+    first, second = _published_rows(tmp_path, 2)
+    service = ArenaService(_manifest(), _Provider())
+    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
+    coordinator = _coordinator(tmp_path, service, cursor, qualification_max_members=1)
+    reviews = tmp_path / "reviews"
+    reviews.mkdir(mode=0o700)
+
+    with _store(tmp_path) as store:
+        assert admit(store, coordinator, reviews) is False
+        _review(reviews, first, "fail")
+        assert admit(store, coordinator, reviews) is False  # the next bundle waits for its own review
+        failed = store.get(first.reservation_id)
+        _review(reviews, second, "pass")
+        assert admit(store, coordinator, reviews) is True
+        assert store.preview_evaluation_claim(stage="qualification", max_members=1) == (
+            second.reservation_id,
+        )
+        leases = store._db.execute("SELECT COUNT(*) AS n FROM evaluation_leases").fetchone()["n"]
+        assert admit(store, coordinator, None) is True
+    assert (failed.status, failed.decision, failed.reason) == ("failed", "FAIL", "routed_expert_pruning")
+    assert leases == 0
+
+    _review(reviews, second, "pass", content=_h("other bytes"))
+    with _store(tmp_path) as store, pytest.raises(PruningReviewError):
+        admit(store, coordinator, reviews)
+
+
+def test_admission_previews_as_the_claimer_under_arena_capacity(tmp_path: Path) -> None:
+    """A second pair's active lease must not empty the admission preview.
+
+    Two pairs claim from one intake under an arena capacity of several active
+    qualifications. The preview used to run with the selector's default capacity of
+    one, so while the other pair held a lease it returned nothing, the review loop
+    admitted on that empty preview, and the claim bound an unreviewed head: reviewed
+    pruner 73263b71 reached the GPUs this way on the two-pair Verda node (2026-10-18).
+    """
+
+    first, second = _published_rows(tmp_path, 2)
+    service = ArenaService(_manifest(), _Provider())
+    cursor = _CursorAuthority((BLOCK, _block_hash(BLOCK)))
+    coordinator = _coordinator(tmp_path, service, cursor, qualification_max_members=1)
+    capacity = service.manifest.capacity.max_active_qualifications
+    reviews = tmp_path / "reviews"
+    reviews.mkdir(mode=0o700)
+
+    with _store(tmp_path) as store:
+        other = store.claim_evaluation_lease(
+            stage="qualification", owner="other-pair", current_block=BLOCK,
+            lease_blocks=1, max_members=1, max_active=capacity,
+        )
+        assert other is not None and other.reservation_ids == (first.reservation_id,)
+        assert store.preview_evaluation_claim(stage="qualification", max_members=1) == ()
+        assert store.preview_evaluation_claim(
+            stage="qualification", max_members=1, owner=coordinator.owner, max_active=capacity,
+        ) == (second.reservation_id,)
+        assert admit(store, coordinator, reviews) is False  # the head waits for its own review
+        _review(reviews, second, "fail")
+        assert admit(store, coordinator, reviews) is True
+        failed = store.get(second.reservation_id)
+    assert (failed.status, failed.decision, failed.reason) == ("failed", "FAIL", "routed_expert_pruning")
+
+
+def test_admission_follows_the_commissioned_binding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admission previews a bound queue; unbound, the first claim after a recommission passed a pruner."""
+
+    calls: list[str] = []
+
+    class _Store:
+        def pending_qualification_recovery(self, *, owner):
+            return None
+
+        def claim_recoverable_qualification(self, **_):
+            calls.append("claim")
+
+        def close(self):
+            pass
+
+    dispatcher = object.__new__(RecoverableQualificationDispatcher)
+    dispatcher.coordinator = SimpleNamespace(
+        owner="owner", lease_blocks=1, qualification_max_members=1,
+        service=SimpleNamespace(manifest=SimpleNamespace(capacity=SimpleNamespace(max_active_qualifications=1))),
+    )
+    dispatcher.pruning_review_root = Path("reviews")
+    monkeypatch.setattr(dispatcher, "_open_store", lambda: (_Store(), (BLOCK, _block_hash(BLOCK))))
+    monkeypatch.setattr(dispatcher, "_bind_commissioned_incumbent", lambda store: calls.append("bind"))
+    monkeypatch.setattr(dispatcher_module, "admit", lambda store, coordinator, root: not calls.append("admit"))
+    assert dispatcher._claim_or_reopen() is None
+    assert calls == ["bind", "admit", "claim"]

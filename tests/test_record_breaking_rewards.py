@@ -139,6 +139,22 @@ def test_another_baseline_does_not_compete_and_missing_margin_is_an_error(tmp_pa
             store.passed_reward_claims()
 
 
+def test_a_declared_recommission_continues_the_reward_record(tmp_path):
+    with _store(tmp_path) as store:
+        first = _qualified_settlement_candidate(store, speedups=("1.06", "1.06"))
+        lower = _qualified_settlement_candidate(store, index=1, marker="lower", arena_marker="re",
+                                                speedups=("1.05", "1.05"))
+        higher = _qualified_settlement_candidate(store, index=2, marker="higher", arena_marker="re",
+                                                 speedups=("1.1", "1.1"))
+        assert lower.hotkey in {c.hotkey for c in store.passed_reward_claims()}
+        groups = [f"{p['arena_digest']}:{p['incumbent_stack_digest']}" for p in (
+            json.loads(r[0])["primary"] for r in store._db.execute(
+                "SELECT candidate_json FROM settlement_candidates ORDER BY rowid"))]
+        store._db.execute("INSERT INTO metadata(key,value) VALUES('reward_group_continuations',?)",
+                          (json.dumps({groups[1]: groups[0]}),))
+        assert {c.hotkey for c in store.passed_reward_claims()} == {first.hotkey, higher.hotkey}
+
+
 def test_grandfathering_does_not_exempt_a_new_runtime(tmp_path, monkeypatch):
     from tests import test_chain_intake as intake
 
@@ -241,7 +257,8 @@ def test_scoring_compares_all_slots_without_advancing_unpaid_or_later_records(tm
         assert comparisons[candidates[0].reservation_digest]["score_speedup"] == Decimal("1.1")
 
 
-def test_statistical_records_pay_one_and_a_half_percent_over_the_previous_best(tmp_path):
+@pytest.mark.parametrize("version", [17, 18])
+def test_statistical_records_pay_one_and_a_half_percent_over_the_previous_best(tmp_path, version):
     from decimal import Decimal
     from cacheon.chain.evaluation_order import reward_comparisons
     from cacheon.eval.goodput_runtime import GoodputPolicy, GoodputReadSet
@@ -258,7 +275,7 @@ def test_statistical_records_pay_one_and_a_half_percent_over_the_previous_best(t
             reads = GoodputReadSet(tuple(baseline), tuple(candidate),
                                    tuple((root, *counts) for root, counts in WORK.items()), 4)
             payload = json.dumps({"speed_witness": {
-                "resident_policy": {"version": 17, "goodput": policy.to_dict()},
+                "resident_policy": {"version": version, "min_margin": 0.0, "goodput": policy.to_dict()},
                 "goodput": reads.to_dict(),
             }}).encode()
             candidates.append(_qualified_settlement_candidate(

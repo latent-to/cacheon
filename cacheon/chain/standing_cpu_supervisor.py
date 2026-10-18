@@ -48,6 +48,7 @@ _STANDING_CONFIG_FIELDS = frozenset(
         "enable_settlement",
         "enable_weights",
         "idle_poll_ms",
+        "pruning_review_root",
         "qualification_evidence_root",
         "qualification_incumbent_stack_path",
         "qualification_incumbent_tree_digest",
@@ -569,6 +570,7 @@ class StandingSupervisorConfig:
     qualification_evidence_root: Path
     qualification_incumbent_stack_path: Path
     qualification_incumbent_tree_digest: str
+    pruning_review_root: Path | None
     enable_weights: bool
     enable_settlement: bool
     enable_qualification: bool
@@ -624,6 +626,12 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
         )
     except (TypeError, ValueError) as exc:
         raise StandingCpuSupervisorError(str(exc)) from None
+    # The operator's pruning review writes its verdicts here (chain/pruning_review.py);
+    # an empty value claims bundles unreviewed.
+    review_root = None
+    if row["pruning_review_root"] != "":
+        review_root = _absolute_path(row["pruning_review_root"], "pruning_review_root")
+        _private_directory(review_root, "pruning_review_root")
 
     enable_weights = _exact_bool(row["enable_weights"], "enable_weights")
     enable_settlement = _exact_bool(row["enable_settlement"], "enable_settlement")
@@ -695,6 +703,7 @@ def load_standing_config(path: str | os.PathLike[str]) -> StandingSupervisorConf
         qualification_evidence_root=evidence_root,
         qualification_incumbent_stack_path=incumbent_path,
         qualification_incumbent_tree_digest=tree_digest,
+        pruning_review_root=review_root,
         enable_weights=enable_weights,
         enable_settlement=enable_settlement,
         enable_qualification=enable_qualification,
@@ -749,6 +758,7 @@ def build_standing_supervisor(
             qualification_incumbent_tree_digest=(
                 config.qualification_incumbent_tree_digest
             ),
+            pruning_review_root=config.pruning_review_root,
         )
         qualification_once = qualification_dispatcher.dispatch_once
 

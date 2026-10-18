@@ -111,7 +111,7 @@ products that a qualification attempt retains.
   and is eligible only for bounded retry.
 - `qualified` means one complete audited PASS is retained; settlement reopens that
   exact contribution and its evidence.
-- A qualified V17 PASS earns reward only when it beats the best earlier rewarded PASS
+- A qualified V17 or V18 PASS earns reward only when it beats the best earlier rewarded PASS
   against the same arena and incumbent stack by 1.5%; see
   [Settlement and weights](settlement-and-weights.md).
 

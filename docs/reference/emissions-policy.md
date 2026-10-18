@@ -48,6 +48,16 @@ New stores without this metadata apply the record rule to all generations.
 The list is included in projection evidence/identity and must be preserved by
 subsequent deployments. The dashboard uses the same filter as the weight producer.
 
+A validator-side recommission changes the arena and incumbent stack digests even
+when the stock engine, model, topology, and workload do not change. To keep it from
+restarting the reward record, record the intake `metadata` key
+`reward_group_continuations` as a JSON object that maps each later
+`arena_digest:incumbent_stack_digest` pair to the earlier pair it continues. Reward
+comparison, duplicate detection, and the stall clock then treat the later commission
+as the earlier one. Chains resolve to their first pair; a cycle is refused. Non-empty
+continuations are part of the projection's source identity. A new stock baseline is
+not a continuation and starts a new record.
+
 The rule applies to existing and future non-grandfathered PASSes; it does not
 rewrite qualification, settlement, or already published weights. A crown is
 not required for an eligible performance record.

@@ -196,7 +196,7 @@ class QualificationStageExit:
                 owner.SPEED_FAIL_REASONS | {"speed_regression"}
             ),
             ("speed", QualificationDecision.NO_DECISION): {"speed_noise"},
-            **{("audit", row): {reason} for row, reason in owner._AUDIT_REASONS.items()},
+            ("audit", self.decision): {getattr(self.audit_witness, "reason", None)},
         }.get((self.stage, self.decision), {None})
         if self.reason not in allowed_reasons:
             raise owner.QualificationRunnerError("qualification stage-exit reason differs")

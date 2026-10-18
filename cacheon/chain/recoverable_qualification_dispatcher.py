@@ -58,6 +58,7 @@ from cacheon.chain.remote_worker_request_plan import (
     QualificationRequestPlan,
 )
 from cacheon.chain.publication import reopen_worker_bundle
+from cacheon.chain.pruning_review import admit
 from cacheon.chain import remote_worker_checkpoints as checkpoints
 from cacheon.chain.qualification_wait import await_response, _PreResidentRefusalObserved
 from cacheon.stack_identity import require_sha256_hex
@@ -228,6 +229,7 @@ class RecoverableQualificationDispatcher:
         qualification_evidence_root: str | Path,
         qualification_incumbent_stack: EvaluationStackManifest,
         qualification_incumbent_tree_digest: str,
+        pruning_review_root: Path | None = None,
     ) -> None:
         if (
             type(coordinator) is not EvaluationCoordinator
@@ -288,6 +290,7 @@ class RecoverableQualificationDispatcher:
         self.qualification_evidence_root = root
         self.qualification_incumbent_stack = qualification_incumbent_stack
         self.qualification_incumbent_tree_digest = tree_digest
+        self.pruning_review_root = pruning_review_root
 
     def _validate_live_authority(self) -> None:
         self.coordinator.readiness.validate(self.coordinator.service)
@@ -346,18 +349,14 @@ class RecoverableQualificationDispatcher:
         store, point = self._open_store()
         try:
             recovery = store.pending_qualification_recovery(owner=self.coordinator.owner)
-            if recovery is None:
-                # Admission runs before the first claim: an exact copy of a
-                # loser inherits its FAIL and closed targets are released
-                # (duplicate_replay, arena_state).
-                store.prepare_qualification_queue(
-                    service_digest=self.coordinator.service.identity,
-                    closed_targets=self.coordinator.service.manifest.closed_targets,
-                )
             if recovery is None or recovery.phase is RecoveryPhase.CLAIMED:
                 boundary = self._bind_commissioned_incumbent(store)
                 if boundary is not None:
                     return boundary
+            # Admission (pruning_review.admit: an unreviewed head holds the claim) follows the binding, since an
+            # unbound queue previews no claim: a recommission's first claim passed reviewed pruner 747f8d71 (10-17).
+            if recovery is None and not admit(store, self.coordinator, self.pruning_review_root):
+                return None
             if recovery is None:
                 recovery = store.claim_recoverable_qualification(
                     owner=self.coordinator.owner,

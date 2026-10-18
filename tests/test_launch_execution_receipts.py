@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -497,3 +498,22 @@ def test_cpu_pins_put_each_scheduler_on_its_vcpu_and_fail_on_a_rank_mismatch():
         child.kill()
         child.wait()
     engine_worker._pin_engine_processes(None, schedulers=4)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="engine boot binding reads Linux sysfs")
+def test_engine_boot_runs_on_the_numa_node_of_its_sealed_schedulers():
+    allowed = os.sched_getaffinity(0)
+    first = min(allowed)
+    (node,) = Path(f"/sys/devices/system/cpu/cpu{first}").glob("node[0-9]*")
+    local = set()
+    for span in (node / "cpulist").read_text().strip().split(","):
+        low, _, high = span.partition("-")
+        local.update(range(int(low), int(high or low) + 1))
+    try:
+        engine_worker._bind_engine_boot(json.dumps({"schedulers": [first], "pool": []}))
+        assert os.sched_getaffinity(0) == local & allowed
+        os.sched_setaffinity(0, allowed)
+        engine_worker._bind_engine_boot(None)
+        assert os.sched_getaffinity(0) == allowed
+    finally:
+        os.sched_setaffinity(0, allowed)

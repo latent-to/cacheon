@@ -173,6 +173,25 @@ def test_stall_bonus_redistributes_only_inside_its_arena_even_with_mixed_terms(n
     assert before.get("validator", 0) == after.get("validator", 0) == 300_000-new_term//2
 
 
+def test_declared_recommission_continues_the_stall_clock():
+    a = _stack(_catalog(), ("slot.a",), arena="a")
+    again = _stack(_catalog(), ("slot.a",), arena="e")
+
+    def project(stall_groups):
+        claims = (_claim(a, "slot.a", "alice", 1_100_000, crowned_block=100, evidence="1"),
+                  _claim(again, "slot.a", "bob", 1_100_000, crowned_block=395, evidence="2"))
+        return project_global_rewards(
+            _policy(), _global_context(400),
+            (ArenaRewardAuthority(a, 1, claims[:1]), ArenaRewardAuthority(again, 1, claims[1:])),
+            claims, decay_start_blocks={c.digest: None for c in claims},
+            allocation_terms={c.digest: ("a", 600_000) for c in claims}, allocation_burn_hotkey="validator",
+            stall_groups=stall_groups).weights_by_hotkey
+
+    assert project(None) == {"alice": 300_000, "bob": 300_000, "validator": 400_000}
+    continued = project({again.arena_digest: a.arena_digest})
+    assert continued["bob"] > continued["alice"] and continued["alice"] + continued["bob"] == 600_000
+
+
 def test_unused_share_burns_and_old_zero_offer_does_not_dilute():
     schedule = _schedule((100, (200_000, 300_000, 0)))
     rows = [("a", "alice", 1_100_000, 100), ("b", "bob", 1_100_000, 100),
