@@ -159,7 +159,8 @@ def test_engine_config_binds_the_swa_ratio_and_a_draft_under_the_model_root() ->
     # Stack identities reject floats; the one float kwarg is spelled like mem_fraction_static.
     hybrid = _config(engine_kwargs={"swa_full_tokens_ratio": 0.1,
                                     "speculative_draft_model_path": "/cacheon/input/model/dflash2"},
-                     engine_env={"SGLANG_DFLASH_EAGER_DRAFT_SAMPLER": "1", "TVM_FFI_CUDA_ARCH_LIST": "10.3a"})
+                     engine_env={"SGLANG_DFLASH_EAGER_DRAFT_SAMPLER": "1", "TVM_FFI_CUDA_ARCH_LIST": "10.3a",
+                                 "SGLANG_OPT_UNIFIED_CACHE_FREE_OUT_OF_WINDOW_SLOTS": "1"})
     assert hybrid.engine_kwargs["swa_full_tokens_ratio"] == 0.1
     assert EngineSessionConfig.from_dict(hybrid.to_dict()) == hybrid
     assert hybrid.digest == EngineSessionConfig.from_dict(hybrid.to_dict()).digest

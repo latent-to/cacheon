@@ -25,13 +25,16 @@
 # Muse Spark arena inputs and the engine options its stock arm needs (hybrid-SWA ratio as the one float kwarg,
 # a draft sealed under the model root; the value checkers move out of the oversized protocol module):
 # +59 runtime, +7 docs, +2 examples, +37 tests, +3 notes.
+# Muse Spark seals SGLang's unified-cache out-of-window release switch (the Muse hook forces it off; measured hit rate
+# 0.34 and 15.7 tok/s per user at 24 sessions, 0.95 with it on, Verda 2026-10-18): +4 runtime, +1 docs, +6 examples,
+# +1 tests, +3 notes (the notes themselves are the +3 under scripts).
 (root) 1158
 .github 345
 bundles 2398
-cacheon 92328
+cacheon 92332
 cacheon_kernels 936
 dashboard 4281
-docs 12752
-examples 530
-scripts 2139
-tests 67276
+docs 12753
+examples 536
+scripts 2142
+tests 67277

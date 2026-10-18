@@ -12,6 +12,7 @@
  "enable_megamoe_for_layernorm_sp": true,
  "engine_env": {
   "SGLANG_DFLASH_EAGER_DRAFT_SAMPLER": "1",
+  "SGLANG_OPT_UNIFIED_CACHE_FREE_OUT_OF_WINDOW_SLOTS": "1",
   "TVM_FFI_CUDA_ARCH_LIST": "10.3a"
  },
  "ep_size": 4,

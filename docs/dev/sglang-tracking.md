@@ -21,8 +21,9 @@ These options are bound into its existing digest and forwarded to SGLang.
 `EngineSessionConfig.engine_env` sets process environment for the engine and
 its ranks the same way, bound into the same digest; only reviewed names cross
 the boundary, currently the DeepSeek-V4.1 Engram host-table switches and the
-Muse Spark DFlash2 draft-sampler and TVM FFI architecture switches, which
-SGLang reads from the environment rather than from its server arguments.
+Muse Spark DFlash2 draft-sampler, TVM FFI architecture and unified-cache
+out-of-window release switches, which SGLang reads from the environment rather
+than from its server arguments.
 A separate draft model (`speculative_draft_model_path`) is sealed as one
 directory under the model root, `/cacheon/input/model/<name>`, so the model
 manifest and content digest cover its bytes and the engine lifetime mounts

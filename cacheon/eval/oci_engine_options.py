@@ -43,12 +43,16 @@ ENGINE_KWARG_KINDS: Mapping[str, str] = {
 # SGLang reads the DeepSeek-V4.1 Engram host-table switches from the environment,
 # not ServerArgs; at TP2 the tables do not fit beside the weights in HBM. The
 # Muse Spark DFlash2 draft sampler and the TVM FFI JIT architecture list are
-# environment switches the same way.
+# environment switches the same way. SGLang's Muse hook forces the unified
+# cache's out-of-window sliding-window KV release off; with it off the SWA pool
+# holds about three sessions of cached context, the prefix hit rate at 24
+# sessions fell to 0.34 and per-user decode to 15.7 tok/s (Verda, 2026-10-18).
 ENGINE_ENV_KINDS: Mapping[str, str] = dict.fromkeys(
     ("SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE", "SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT",
      "SGLANG_OPT_DSV41_MEGA_MHC_PREFILL", "SGLANG_SPEC_TP_SYNC",
      "SGLANG_DEFAULT_THINKING", "SGLANG_DSV41_REASONING_EFFORT",
-     "SGLANG_DFLASH_EAGER_DRAFT_SAMPLER", "TVM_FFI_CUDA_ARCH_LIST"), "token")
+     "SGLANG_DFLASH_EAGER_DRAFT_SAMPLER", "TVM_FFI_CUDA_ARCH_LIST",
+     "SGLANG_OPT_UNIFIED_CACHE_FREE_OUT_OF_WINDOW_SLOTS"), "token")
 
 _TOKEN = re.compile(r"[A-Za-z0-9_.:+/@-]{1,256}\Z")
 _MODEL_SUBDIR = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}\Z")

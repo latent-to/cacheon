@@ -23,7 +23,12 @@ cookbook defaults, page size 64 and ratio 0.8, saturate the full-attention KV
 pool at 24 sessions), 48 running requests, 48-row decode graphs, 16K breakable
 prefill graphs, layernorm sequence parallel with MegaMoE prefill, and DFlash2
 speculation with eight draft tokens and block verification. `engine_env`
-carries `SGLANG_DFLASH_EAGER_DRAFT_SAMPLER=1` and `TVM_FFI_CUDA_ARCH_LIST=10.3a`.
+carries `SGLANG_DFLASH_EAGER_DRAFT_SAMPLER=1`, `TVM_FFI_CUDA_ARCH_LIST=10.3a`
+and `SGLANG_OPT_UNIFIED_CACHE_FREE_OUT_OF_WINDOW_SLOTS=1`: SGLang's Muse hook
+forces that last switch off, and with it off the sliding-window KV of cached
+prefixes fills the SWA pool, the prefix hit rate at 24 sessions fell to 0.34 and
+per-user decode to 15.7 tok/s; on it restores a 0.95 hit rate (measured on the
+Verda 8xB300 node, 2026-10-18).
 The hierarchical cache stays off; the first measured pool report decides
 whether the arena seals it. `deterministic` is false, as on DeepSeek-V4.1-Flash.
 
