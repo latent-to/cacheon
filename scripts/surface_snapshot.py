@@ -9,7 +9,9 @@ them with the committed baseline under ``scripts/surface_baseline/``:
 - ``seams``: the adapter rows and target modules;
 - ``capability_modules``: the declared private-caller manifest;
 - ``sqlite_ddl``: the verbatim DDL of a fresh intake and recoverable store;
-- ``catalog``: the target-catalog digest and every target's spec digests;
+- ``catalog``: the target-catalog digest, every target's spec digests, and the
+  node seam's audit literals beside whether they match the forward-pass
+  contract;
 - ``content_hashes``: ``content_hash`` of every committed example bundle and
   stack fixture;
 - ``modules``: ``__all__`` (or the public top-level names) and the exception
@@ -53,6 +55,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from decimal import Decimal
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -150,6 +153,22 @@ def catalog_surface() -> dict[str, object]:
             "spec_digest": catalog.target_spec_digest(target),
             "contract_digest": catalog.contract_digest(target),
         }
+    # The sealed forward-pass contract and the row audit the node seam runs are two literals: a retained PASS
+    # binds the first while the pod graded by the second. Read from source; the seam imports torch.
+    source = ast.parse((ROOT / "cacheon" / "integrations" / "sglang_nodes.py").read_text())
+    node = {stmt.targets[0].id: ast.literal_eval(stmt.value) for stmt in source.body
+            if isinstance(stmt, ast.Assign) and isinstance(stmt.targets[0], ast.Name)
+            and stmt.targets[0].id in ("_MODE", "_ROW_BAR", "_FLOOR")}
+    forward = catalog.require("forward_pass").contract_ref
+    correctness = forward.correctness.snapshot()
+    out["forward_pass_node_audit"] = {
+        "node": {name: str(value) for name, value in sorted(node.items())},
+        "matches_contract": (
+            correctness["mode"] == node["_MODE"]
+            and Decimal(correctness["min_ratio"]) == Decimal(str(node["_ROW_BAR"]))
+            and [Decimal(row.snapshot()["rtol"]) for row in forward.tolerances] == [Decimal(str(node["_FLOOR"]))]
+        ),
+    }
     return out
 
 
