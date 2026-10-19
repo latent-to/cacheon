@@ -62,13 +62,15 @@
 # +20 scripts (the golden), +1 baseline, -1 assert floor, +2 notes.
 # Tranche-2 wave 9: a second-target end-to-end module (both targets crowned across baseline rotations) and the pod play
 # moved out of e2e.py replace the stack-plan test file (owner 2026-10-19): +392/-415 tests, +2 notes.
+# Tranche-2 wave 10: target-admission and component-parser refusals become rows of the hostile-intake table, each asserting
+# the durable intake reason; the target-catalog and engine-tree test files go: +108/-1,766 tests, -1 docs, -3/+2 notes.
 (root) 1156
 .github 345
 bundles 2398
 cacheon 92337
 cacheon_kernels 936
 dashboard 4281
-docs 12958
+docs 12957
 examples 582
-scripts 4350
-tests 35141
+scripts 4349
+tests 33483

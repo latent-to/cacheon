@@ -8,10 +8,13 @@ step that refuses it:
 - finalized intake (``validator_loop.run_validator``) refuses malformed reveal
   payloads, archives whose transport, encryption, members or content hash are
   wrong, manifests the component parser rejects (path escape, foreign ABI, a
-  node claimed twice or outside the model, dynamic imports and rebound DSL
-  compile receivers), and demotes copies of an earlier miner's bundle or of
-  the validator's own library. A ``failed`` row is terminal: the claim query
-  selects only ``published`` and ``reproduction_pending`` rows;
+  node claimed twice or outside the model, malformed competition tables,
+  unregistered targets and modes, retired features, dynamic, unresolved and
+  partially local imports, native name collisions and CUDA include and
+  builder closures) beside a native bundle it admits, and demotes copies of
+  an earlier miner's bundle or of the validator's own library. A ``failed``
+  row is terminal: the claim query selects only ``published`` and
+  ``reproduction_pending`` rows;
 - the static scanner runs in ``cacheon scan`` and ``verify`` and in the pod's
   seam load, never at intake, so its refusals are proven through the CLI;
 - a paid arena admits only a reveal whose ``chain-submit --pay`` transfer
@@ -90,8 +93,11 @@ def test_hostile_reveals_archives_and_manifests_fail_at_intake(tmp_path, monkeyp
         path.write_bytes(data)
         reveals[hotkey], refused[hotkey] = (e2e.reveal(hotkey, content_hash, path, origin),), reason
 
-    def submit(hotkey, forward, edit=None, recipient=key):
+    def submit(hotkey, forward, edit=None, recipient=key, files=None):
         bundle = e2e.miner_bundle(root, hotkey, forward)
+        for relative, text in (files or {}).items():
+            (bundle / relative).parent.mkdir(parents=True, exist_ok=True)
+            (bundle / relative).write_text(text)
         if edit is not None:
             (bundle / "manifest.toml").write_text(edit((bundle / "manifest.toml").read_text()))
         content_hash, archive = e2e.package(bundle, recipient)
@@ -99,8 +105,9 @@ def test_hostile_reveals_archives_and_manifests_fail_at_intake(tmp_path, monkeyp
         return content_hash, archive
 
     ok_hash, ok = submit("miner-ok", _identity("ok"))
-    submit("dsl-compile", "import cutlass.cute as cute\n\n\ndef forward(module, *args, **kwargs):\n"
-                          "    cute.compile(module.forward)\n    return module.forward(*args, **kwargs)\n")
+    dsl = ("import cutlass.cute as cute\n\n\ndef forward(module, *args, **kwargs):\n"
+           "    cute.compile(module.forward)\n    return module.forward(*args, **kwargs)\n")
+    submit("dsl-compile", dsl)
     example = e2e.REPO / "examples" / "miner_node_identity"
     base = [("manifest.toml", tarfile.REGTYPE, (example / "manifest.toml").read_bytes()),
             ("kernels/forward.py", tarfile.REGTYPE, (example / "kernels" / "forward.py").read_bytes())]
@@ -125,24 +132,108 @@ def test_hostile_reveals_archives_and_manifests_fail_at_intake(tmp_path, monkeyp
     stage("tampered", tampered.read_bytes()[:-1] + bytes([tampered.read_bytes()[-1] ^ 1]), tampered_hash,
           "fetch:encrypted bundle authentication failed")
     component = "manifest:submission is not a registered component: "
-    for hotkey, forward, edit, reason in (
+    cu, header, helper = "kernels/native_sm103.cu", "#define HELPER 1\n", {"kernels/helper.py": "value = 1\n"}
+    native = {cu: "#include <torch/extension.h>\nPYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {}\n",
+              "rebuild.json": '{"steps":[{"type":"repo_python","path":"build_cuda_ext.py"}]}\n'}
+    declare = lambda *extra: lambda m: m + f"cuda_sources = {json.dumps([cu, *extra])}\n"  # noqa: E731
+    include = lambda line: {**native, cu: line + "\n" + native[cu]}  # noqa: E731
+    lead = lambda line: line + "\n" + _identity("closure")  # noqa: E731
+    compete = lambda table: lambda m: m[:m.index("[competition]")] + table + "\n\n" + m[m.index("[[ops]]"):]  # noqa: E731
+    node, cuda = '\n[[ops]]\nslot = "{}"\nsource = "kernels/forward.py"\nentry = "forward"\n', f"CUDA source '{cu}' "
+    for hotkey, forward, edit, files, reason in (
         ("manifest-escape", _identity("escape"), lambda m: m.replace('"kernels/forward.py"', '"../forward.py"'),
-         "source path escapes bundle root"),
+         None, "source path escapes bundle root"),
         ("foreign-abi", _identity("abi"), lambda m: m.replace("cacheon-op-abi-v0", "foreign-abi-v9"),
-         "unsupported abi_version"),
+         None, "unsupported abi_version"),
         ("node-twice", _identity("twice"), lambda m: m + '\n[[ops]]\nslot = "model.layers.*.mlp"\n'
-         'source = "kernels/forward.py"\nentry = "forward"\nvariant = "again"\n', "duplicate slot"),
+         'source = "kernels/forward.py"\nentry = "forward"\nvariant = "again"\n', None, "duplicate slot"),
         ("outside-roots", _identity("roots"), lambda m: m.replace('"model.layers.*.mlp"', '"lm_head"'),
-         "node addresses must sit under"),
+         None, "node addresses must sit under"),
         ("dynamic-import", "import importlib\n\n\ndef forward(module, *args, **kwargs):\n"
          "    importlib.import_module('kernels.helper')\n    return module.forward(*args, **kwargs)\n", None,
-         "dynamic import is unsupported"),
+         None, "dynamic import is unsupported"),
         ("dsl-rebound", "import cutlass.cute as cute\n\n\ndef forward(module, *args, **kwargs):\n"
          "    cute = module\n    cute.compile(module.forward)\n    return module.forward(*args, **kwargs)\n", None,
+         None, "dynamic import is unsupported"),
+        # Competition tables, targets and modes the catalog does not register.
+        ("table-array", None, compete("competition = []"), None, "top-level 'competition' must be a {target, mode} table"),
+        ("table-keys", None, compete('[competition]\ntarget = "forward_pass"\nmode = "slot"\nmembers = ["m"]'), None,
+         "competition has unknown keys"),
+        ("table-no-target", None, compete('[competition]\nmode = "slot"'), None, "competition 'target' must be a string"),
+        ("table-int-target", None, compete('[competition]\ntarget = 7\nmode = "slot"'), None,
+         "competition 'target' must be a string"),
+        ("table-bad-id", None, compete('[competition]\ntarget = "bad id"\nmode = "slot"'), None,
+         "competition 'target' must be a simple identifier"),
+        ("table-no-mode", None, compete('[competition]\ntarget = "forward_pass"'), None,
+         "competition 'mode' must be a string"),
+        ("table-int-mode", None, compete('[competition]\ntarget = "forward_pass"\nmode = 7'), None,
+         "competition 'mode' must be a string"),
+        ("table-mode", None, lambda m: m.replace('"slot"', '"per_slot"'), None,
+         "competition 'mode' must be 'slot', 'atomic'"),
+        ("unknown-target", None, lambda m: m.replace('"forward_pass"', '"unknown.target"'), None,
+         "unknown contribution target 'unknown.target'"),
+        ("atomic-mode", None, lambda m: m.replace('"slot"', '"atomic"'), None, "unknown competition mode 'atomic'"),
+        ("cache-node", None, lambda m: m.replace('"model.layers.*.mlp"', '"tree_cache"'), None,
+         "node addresses must sit under ('logits_processor', 'model'); manifest declares 'tree_cache'"),
+        ("system-request", None, lambda m: m.replace('"forward_pass"', '"sglang.inference.bundle.v1"')
+         .replace('"slot"', '"system"'), None, "legacy competition mode 'system' is unregistered"),
+        ("node-and-cache", None, lambda m: compete("")(m) + node.format("tree_cache"), None,
+         "proposal 'node-identity-control' has no registered exact target"),
+        ("variant-overlap", None, lambda m: m.replace('entry = "forward"', 'entry = "forward"\nvariant = "a"')
+         + node.format("model.layers.*.mlp") + 'variant = "b"\n', None, "overlapping capability domains"),
+        # Retired and unregistered op features.
+        ("override-point", None, lambda m: m + 'base_kernel = "nvfp4_moe"\noverride_point = "epilogue"\n', None,
+         "model.layers.*.mlp: override points are retired"),
+        ("setup", None, lambda m: m + 'setup = "forward"\n', None,
+         "target 'forward_pass' rejects observed features ('setup',)"),
+        ("op-extension", None, lambda m: m + 'future_knob = "future"\n', None,
+         "target 'forward_pass' rejects observed features ('op_extra:future_knob',)"),
+        # Python imports outside the selected closure.
+        ("relative-missing", lead("from .missing import value"), None, helper, "unresolved relative import"),
+        ("relative-star", lead("from . import *"), None, helper, "unresolved relative import"),
+        ("partial-names", lead("from kernels import helper, missing"), None, helper, "partially local import"),
+        ("partial-module", lead("import kernels.missing"), None, helper, "partially local import"),
+        ("partial-from", lead("from kernels.missing import value"), None, helper, "partially local import"),
+        ("partial-native", lead("import native_sm103.missing"), declare(), native, "partially local import"),
+        ("vendored-dsl", dsl, None, {"cutlass/__init__.py": "VALUE = 1\n", "cutlass/cute.py": "VALUE = 2\n"},
          "dynamic import is unsupported"),
+        ("bare-namespace", lead("import kernels"), None, None, "bare local namespace import"),
+        ("module-path", None, lambda m: m.replace("kernels/forward.py", "kernels-v2/forward.py"),
+         {"kernels-v2/forward.py": _identity("path")}, "python module path has a non-identifier component"),
+        # Native names and the CUDA include and builder closures.
+        ("native-collision", lead("import native_sm103"), declare(), {**native, "native_sm103.py": "x = 1\n"},
+         "import 'native_sm103' is both local Python and declared native"),
+        ("native-stems", None, declare("other/native_sm103.cu"), {**native, "other/native_sm103.cu": native[cu]},
+         "ambiguous native module stem 'native_sm103'"),
+        ("undeclared-header", None, declare(), {**include('#include "helper.cuh"'), "kernels/helper.cuh": header},
+         cuda + "includes undeclared local input 'kernels/helper.cuh'"),
+        ("dynamic-include", None, declare(), include('#define HEADER "unbound.cuh"\n#include HEADER'),
+         cuda + "contains a dynamic include directive"),
+        ("system-include", None, declare(), include("#include </tmp/unbound.cuh>"),
+         cuda + "has an unsafe system include"),
+        ("parent-include", None, declare(), include("#include <../../unbound.cuh>"),
+         cuda + "has an unsafe system include"),
+        ("escaping-include", None, declare(), include('#include "../unbound.cuh"'),
+         cuda + "has an unsafe dependency include"),
+        ("include-next", None, declare(), include('#include_next "/tmp/unbound.cuh"'),
+         cuda + "contains an unsupported include directive"),
+        ("digraph-include", None, declare(), include('%:include "/tmp/unbound.cuh"'),
+         cuda + "contains an unsupported include directive"),
+        ("spliced-include", None, declare(), include('#inc\\\nlude "/tmp/unbound.cuh"'),
+         f"CUDA include in '{cu}' is not a safe relative path"),
+        ("unbuilt-cuda", None, declare(), {cu: native[cu]},
+         "complete feature evidence has CUDA sources without rebuild:build_cuda_ext"),
+        ("builder-only", None, None, {"rebuild.json": native["rebuild.json"]},
+         "complete feature evidence selects rebuild:build_cuda_ext without declared CUDA sources"),
+        ("header-only", None, lambda m: m + 'cuda_sources = ["kernels/only.cuh"]\n',
+         {"kernels/only.cuh": header, "rebuild.json": native["rebuild.json"]},
+         "rebuild:build_cuda_ext requires a declared .cu compilation unit"),
     ):
-        submit(hotkey, forward, edit)
+        submit(hotkey, forward, edit, files=files)
         refused[hotkey] = component + reason
+    # The native shape intake admits: a declared header, and a comment after its literal include.
+    submit("native-ok", lead("import native_sm103"), declare("kernels/helper.cuh"),
+           files={**include('#include "helper.cuh" /* declared */'), "kernels/helper.cuh": header})
     library = (e2e.REPO / "cacheon_kernels" / "codec" / "nvfp4.py").read_text() + "\n\n" + _identity("library")
     submit("library-copy", library)
     refused["library-copy"] = "copy_of:validator_reference:library-codec-nvfp4.py"
@@ -154,10 +245,11 @@ def test_hostile_reveals_archives_and_manifests_fail_at_intake(tmp_path, monkeyp
     reveals["reformatted"] = (e2e.reveal("reformatted", *later, origin, block=e2e.REVEAL_BLOCK + 1),)
 
     state = e2e.chain(root, reveals, tuple(reveals))
-    assert _drain(root, state, origin, monkeypatch) == 3  # one cohort of eight per pass
+    assert _drain(root, state, origin, monkeypatch) == 8  # sixty fetched, one cohort of eight per pass
     rows = _rows(root)
     refused["reformatted"] = f"copy_of:{rows['miner-ok'].reservation_id}"
-    assert {hotkey for hotkey, row in rows.items() if row.status == "published"} == {"miner-ok", "dsl-compile"}
+    assert {hotkey for hotkey, row in rows.items() if row.status == "published"} == {
+        "miner-ok", "dsl-compile", "native-ok"}
     for hotkey, reason in refused.items():
         assert (rows[hotkey].status, rows[hotkey].reason[:len(reason)]) == ("failed", reason), hotkey
     assert e2e.intake(root, state, origin, monkeypatch) == []  # terminal rows are never fetched again
