@@ -1,4 +1,4 @@
-"""Device and identity fixtures shared by the deployment suite and the end-to-end harness.
+"""Device and identity fixtures for the end-to-end harness.
 
 Anything a caller varies per test stays an argument; a second device model is a
 named profile here rather than a mode flag on one builder.
@@ -12,11 +12,6 @@ import hashlib
 from cacheon.eval.device_state import GPUConfiguration
 
 
-# What a node arena registers: the model's nodes, and optionally the prefix cache.
-NODE_TARGET_IDS = ("forward_pass",)
-NODE_AND_CACHE_TARGET_IDS = ("forward_pass", "prefix_cache")
-
-
 def sha(label: str) -> str:
     """A deterministic stand-in digest, named by what it stands for."""
 
@@ -28,8 +23,7 @@ def gpu(index: int = 0, model: str = "b300") -> GPUConfiguration:
 
     A generic evaluator that resolves identity from sealed inputs has to be
     exercised on more than one device profile, or "generic" is untested. The
-    end-to-end harness and the deployment suite run the H100 profile for
-    exactly that reason.
+    end-to-end harness runs the H100 profile for exactly that reason.
     """
 
     if model == "h100":

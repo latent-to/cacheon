@@ -16,7 +16,8 @@ make-registration``; ``python -m cacheon.chain.standing_cpu_supervisor
 recovery schema 2, which it migrates, then stopped with SIGTERM); the
 first intake pass, ``chain-validate --intake-only --once`` entered through
 ``cacheon.cli.main`` in its own process. The contributor commands ``scan`` and
-``verify`` run over ``examples/`` in their own test.
+``verify`` run over ``examples/`` in their own test, and so do the commission's
+refusals of drifted READY, device, prompt and registration inputs.
 
 Production calls made in-process because the CPU host has no seam (owner
 decision 2026-10-19): intake's HTTPS transfer leg is the repository's hermetic
@@ -67,6 +68,7 @@ import subprocess
 import sys
 import time
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -76,7 +78,9 @@ from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.ssh_worker_transport import _dispatcher_heartbeat
 from cacheon.eval import b300_deployment as deployment
 from cacheon.eval.qualification import QualificationDecision
+from cacheon.stack_identity import sha256_hex
 from tests.support import e2e
+from tests.support.b300 import gpu
 from tests.support.pod import pod_answer
 
 supervisors = pytest.fixture(e2e.supervisor_processes, name="supervisors")
@@ -102,6 +106,21 @@ SCHEMA_2 = (f"DROP INDEX {SINGLETONS[0]}; DROP INDEX {SINGLETONS[1]};"
             f"CREATE UNIQUE INDEX {SINGLETONS[0]} ON evaluation_leases(stage) WHERE state='active' AND stage='qualification';"
             f"CREATE UNIQUE INDEX {SINGLETONS[1]} ON evaluation_recoveries(resolution) WHERE resolution='';"
             f"UPDATE metadata SET value='2' WHERE key IN {STAMPS}")
+LANE_PAIR = "provisioned GPU set differs from the commissioned lane pair"
+COMMISSION_REFUSALS = (  # (label, READY edits as (*keys, value), provisioned devices, reason) on the 8-device B300 host
+    ("single-tp4-pair", (), lambda gpus, selected: gpus[:4], LANE_PAIR),
+    ("device-id-drift", (), lambda gpus, selected: gpus[:7] + (gpu(9),), LANE_PAIR),
+    ("device-model-drift", (), lambda gpus, selected: gpus[:7] + (replace(gpus[7], name="NVIDIA H100 SXM5"),),
+     "provisioned GPU configuration differs from READY inventory"),
+    ("lane-outside-inventory", (("lane", "devices", [8, 9, 10, 11]),), None,
+     "READY requires equal disjoint lanes within its inventory"),
+    ("baseline-outside-inventory", (("lane", "baseline_devices", [8, 9, 10, 11]),), None,
+     "READY requires equal disjoint lanes within its inventory"),
+    ("ready-count", (("gpu", "count", 7),), None, "READY GPU count differs from its inventory"),
+    ("ready-duplicate-index", (("gpu", "inventory", 7, "index", 6),), None, "ordered unique GPU indices"),
+    ("ready-unordered-indices", (("gpu", "inventory", 0, "index", 1), ("gpu", "inventory", 1, "index", 0)), None,
+     "ordered unique GPU indices"),
+)
 
 
 def _imported(stderr: str) -> set[str]:
@@ -222,6 +241,51 @@ def test_finalized_submissions_qualify_settle_and_project_weights(tmp_path, monk
     _store_schema(root, "UPDATE metadata SET value='999' WHERE key='evaluation_lease_schema'")
     assert "evaluation lease schema is unsupported" in e2e.run(*sign, env=e2e.chain_env(), code=1)
     assert time.monotonic() - started < 60
+
+
+def test_commission_refuses_each_drift_from_its_sealed_inputs(tmp_path, monkeypatch):
+    """The pod commission (``materialize_b300_identities``, then the registration replay) refuses each drift by name."""
+
+    profile = e2e.PROFILES["b300-tp4"]
+    root, _ = e2e.deployment_root(tmp_path, "commission", monkeypatch)
+    e2e.chain(root, {}, ())  # the registration's scope
+    materialized, ready_path, ready = e2e.commission(root, profile)
+    pod, deployed = root / "pod", lambda result: json.loads(Path(result["deployment"]).read_text())
+    pair = deployed(materialized)["declared_qualification"]["lane_pair"]
+    assert (pair["lane_a"]["physical_gpu_ids"], pair["lane_b"]["physical_gpu_ids"]) == ([0, 1, 2, 3], [4, 5, 6, 7])
+    for label, edits, devices, reason in COMMISSION_REFUSALS:
+        drifted = json.loads(json.dumps({key: value for key, value in ready.items() if key != "receipt_digest"}))
+        for *keys, last, value in edits:
+            node = drifted
+            for key in keys:
+                node = node[key]
+            node[last] = value
+        path = e2e._seal_ready(pod / f"ready-{label}.json", drifted) if edits else ready_path
+        with pytest.raises(deployment.B300DeploymentError, match=reason):
+            e2e._materialize(root, profile, path, pod / f"commissioned-{label}", devices)
+
+    # A registration naming another service identity does not replay.
+    sealed = e2e.seal_authority(root, materialized, ready_path, ready)
+    with pytest.raises(deployment.B300DeploymentError, match="registration differs"):
+        deployment.replay_commissioned_composition({**sealed.registration, "service_identity": materialized[
+            "service_digest"]}, ready, commissioned_root=Path(materialized["deployment"]).parent)
+    # Calibration names the arena manifest, never the service identity: a new package keeps the service digest.
+    package = e2e.reseal(pod / "calibration-package.json", pod / "calibration-package.json", generation=2)
+    for config in (pod / "authority-config.json", pod / "measurement-config.json"):
+        calibration = json.loads(config.read_text())["calibration"]
+        e2e.reseal(config, config, calibration={**calibration, "package_sha256": sha256_hex(package.read_bytes())})
+    recalibrated = e2e._materialize(root, profile, ready_path, pod / "commissioned-recalibrated")
+    assert recalibrated["service_digest"] == materialized["service_digest"]
+    assert deployed(recalibrated)["authorities"]["calibration_package"]["sha256"] != deployed(materialized)[
+        "authorities"]["calibration_package"]["sha256"]
+    # A sealed prompt changed after its digest was taken, and a prompt naming a target the catalog lacks.
+    (pod / "prompt-authority.json").chmod(0o600)
+    with (pod / "prompt-authority.json").open("a") as prompt:
+        prompt.write(" ")
+    with pytest.raises(deployment.B300DeploymentError, match="explicit sealed authority paths or SHA-256"):
+        e2e._materialize(root, profile, ready_path, pod / "commissioned-prompt")
+    with pytest.raises(deployment.B300DeploymentError, match="not registered"):
+        e2e.commission(e2e.deployment_root(tmp_path, "unregistered", monkeypatch)[0], profile, ("made.up_target",))
 
 
 def test_contributor_scan_and_verify_give_the_documented_verdicts(tmp_path):

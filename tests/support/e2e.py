@@ -271,7 +271,9 @@ def _seal_ready(path: Path, ready: dict) -> Path:
     return path
 
 
-def _materialize(root: Path, profile, ready_path: Path, output: Path) -> dict:
+def _materialize(root: Path, profile, ready_path: Path, output: Path, devices=None) -> dict:
+    """``materialize_b300_identities`` over the root's pod inputs; ``devices(gpus, selected)`` plays a drifted provisioner."""
+
     pod = root / "pod"
     gpus = tuple(gpu(index, profile.gpu) for index in range(profile.host))
     return deployment.materialize_b300_identities(
@@ -279,7 +281,8 @@ def _materialize(root: Path, profile, ready_path: Path, output: Path) -> dict:
         measurement_config=pod / "measurement-config.json", calibration_package=pod / "calibration-package.json",
         calibration_projection_receipt=pod / "calibration-projection-receipt.json",
         prompt_authority=pod / "prompt-authority.json", output_root=private(output),
-        gpu_provisioner=lambda selected, *, deadline: tuple(gpus[index] for index in selected),
+        gpu_provisioner=lambda selected, *, deadline: (devices or (lambda gpus, chosen: tuple(gpus[i] for i in chosen)))(
+            gpus, selected),
     )
 
 
