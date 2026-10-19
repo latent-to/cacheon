@@ -24,7 +24,6 @@
 "tests/test_dashboard_winners.py": 33,
 "tests/test_device_state.py": 83,
 "tests/test_economics.py": 61,
-"tests/test_engine_launch.py": 6,
 "tests/test_engine_tree.py": 115,
 "tests/test_evaluation_lease_schema.py": 5,
 "tests/test_evaluation_recovery_store.py": 45,

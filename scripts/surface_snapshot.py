@@ -19,7 +19,8 @@ them with the committed baseline under ``scripts/surface_baseline/``:
   continuation codecs, whose keys are ``module.qualname`` and therefore move
   with any file split;
 - ``digest_goldens``: empty-store settlement, burn-projection and standalone
-  claim digests.
+  claim digests, and the native-build payload every retained launch digest
+  binds.
 
 Every section is a flat mapping written one key per line, so a baseline diff
 names the exact help text, table, module or wire type that moved.
@@ -258,6 +259,12 @@ def digest_golden_surface() -> dict[str, object]:
         MetagraphMember,
         StandingRewardClaim,
     )
+    from cacheon.eval.engine_launch import (
+        NativeBuildSpec,
+        native_compiler_policy_digest,
+        native_patcher_digest,
+        native_toolchain_digest,
+    )
     from cacheon.eval.oci_session_protocol import SlotAuditControl
 
     scope = IntakeScope("0x" + "0" * 64, 307)
@@ -297,6 +304,19 @@ def digest_golden_surface() -> dict[str, object]:
     out["slot_audit_control"] = SlotAuditControl(
         sample_rate_ppm=1000, minimum_calls=10,
         expected_slots=("norm.rmsnorm",), expected_member_count=1,
+    ).digest
+    # Every launch digest a retained PASS carries binds a native-build digest; this freezes its schema-1 payload.
+    image, platform, distribution, dependency_policy = "1" * 64, "2" * 64, "3" * 64, "4" * 64
+    out["native_build"] = NativeBuildSpec(
+        tree_digest="5" * 64, image_digest=image, platform_digest=platform,
+        worker_distribution_digest=distribution,
+        toolchain_digest=native_toolchain_digest(image_digest=image, platform_digest=platform),
+        patcher_digest=native_patcher_digest(worker_distribution_digest=distribution),
+        compiler_flags_digest=native_compiler_policy_digest(
+            image_digest=image, worker_distribution_digest=distribution,
+            dependency_policy_digest=dependency_policy, target_architecture="sm120",
+        ),
+        target_architecture="sm120", dependency_policy_digest=dependency_policy,
     ).digest
     return out
 
