@@ -4,7 +4,7 @@
 cacheon/chain/__init__.py 1254
 cacheon/chain/archive.py 1349
 cacheon/chain/evaluation_recovery_store.py 1216
-cacheon/chain/intake.py 3188
+cacheon/chain/intake.py 3182
 cacheon/chain/recoverable_qualification_dispatcher.py 914
 cacheon/chain/remote_worker_pod_service.py 1106
 cacheon/chain/remote_worker_request_plan.py 937
@@ -26,7 +26,7 @@ cacheon/eval/qualification.py 974
 cacheon/eval/qualification_runner.py 2457
 cacheon/eval/runtime_preflight.py 1083
 cacheon/patchers/build_cuda_ext.py 1205
-cacheon/settlement.py 1064
+cacheon/settlement.py 1062
 dashboard/app.py 932
 tests/test_chain_intake.py 1599
 tests/test_recoverable_qualification_dispatcher.py 1063

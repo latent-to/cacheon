@@ -3,24 +3,23 @@
 The arena registers ``forward_pass`` and ``prefix_cache`` with radix caching on, as the tracked
 arena prompts do. ``tests/support/e2e.py`` builds the deployment root, the standing CPU
 supervisor process (``python -m cacheon.chain.standing_cpu_supervisor``) qualifies and settles,
-and ``tests/support/pod.py`` plays the pod. After each crown the operator moves the baseline to
-the durable crowned stack (``e2e.rotate``): the pod re-declares it through the commission's own
-``_commissioned_stock_authority`` over the crowned entries, and the CPU is re-pointed at it, so
-each candidate is measured against the current stack identity. Then:
+and ``tests/support/pod.py`` plays the pod. After the first crown the operator moves the baseline
+to the durable crowned stack (``e2e.rotate``: the pod re-declares it through the commission's own
+``_commissioned_stock_authority`` over the crowned entries, and the CPU is re-pointed at it). Then:
 
-- a cache bundle crowns beside the model crown, and the stack holds both entries;
-- a two-node forward-pass bundle (``model.layers.*.mlp`` and ``model.norm``) replaces the model
-  crown while the cache crown stays, and the next baseline reopens both contributions in one
-  engine tree under separate namespaces;
+- a cache bundle measured on that baseline crowns beside the model crown, and the stack holds
+  both entries;
+- a two-node forward-pass bundle (``model.layers.*.mlp`` and ``model.norm``) measured on the
+  same, now stale, baseline replaces the model crown while the cache crown stays: settlement
+  composes the winner onto the current stack and assembles the composed tree from the
+  validator's retained publications, and the pod's next rotation reproduces that tree identity
+  (the race that dropped the cache crown before 2026-10-20);
 - each settlement journals CROWN, ADOPTION and STACK_TRANSITION, the replacement also
   RETIREMENT, and none NEUTRALIZATION;
-- ``set-weights --dry-run`` projects all three standing claims, each paid the log of its own
-  speedup with the stall bonus counted from the previous crown's reveal.
-
-Known defect, left unasserted (local ledger 11.22): when two PASSes on different targets are
-measured on the same baseline and the forward-pass one settles second, its transition adopts a
-manifest without the prefix-cache entry and journals NEUTRALIZATION "displaced", dropping the
-earlier crown. Each crown here has its own rotation window for that reason.
+- the rotated baseline reopens both contributions in one engine tree under separate namespaces;
+- ``set-weights --dry-run`` projects all three standing claims, each paid the log of its speedup
+  over the best earlier rewarded PASS on the same measured baseline (the two-node bundle over the
+  cache PASS), with the stall bonus counted from the previous crown's reveal.
 """
 
 from __future__ import annotations
@@ -81,7 +80,7 @@ def test_a_prefix_cache_crown_stands_beside_the_forward_pass_crown_and_outlives_
 
     stacks, baselines = [], []
     for hotkey, (_, head, speedup) in RECORDS.items():
-        if stacks:  # the operator moves the baseline to the crown before the next reveal finalizes
+        if len(stacks) == 1:  # the operator moves the baseline to the first crown; the third PASS is measured on it too
             sealed = e2e.rotate(root, sealed)
         advance(state, head)
         assert len(e2e.intake(root, state, origin, monkeypatch)) == 1
@@ -108,11 +107,21 @@ def test_a_prefix_cache_crown_stands_beside_the_forward_pass_crown_and_outlives_
         ("CROWN", "miner-nodes", "forward_pass", "qualified_win"),
         ("RETIREMENT", "miner-nodes", "forward_pass", "superseded"),
         *((kind, "miner-nodes", "forward_pass", why) for kind, why in CROWNED)]
-    # Each crown replaced the stack it was measured on: its incumbent is the current identity.
-    assert [event["from_stack_digest"] for _, event in events if event["event_type"] == "CROWN"] == baselines
+    # Each crown advances from the current stack, while the PASS it crowns was measured on its own baseline:
+    # the third on the stale {model} baseline while the stack already held the cache crown.
+    transitions = [event["to_stack_digest"] for _, event in events if event["event_type"] == "STACK_TRANSITION"]
+    assert [event["from_stack_digest"] for _, event in events if event["event_type"] == "CROWN"] == [baselines[0], *transitions[:2]]
+    measured = {hotkeys[row["reservation_id"]]: json.loads(row["qualification_json"])["incumbent_stack_digest"]
+                for row in e2e.store_rows(root, "SELECT reservation_id, qualification_json FROM settlement_qualifications")}
+    assert [measured[hotkey] for hotkey in RECORDS] == baselines and baselines[1] == baselines[2] != baselines[0]
 
-    # The next baseline reopens both contributions in one tree, each under its own namespace.
-    ops = load_manifest(e2e.rotate(root, sealed).incumbent_tree.root).ops
+    # The pod's rotation reproduces the stack and tree identities the validator composed at settlement (the
+    # dispatcher's pin), and the rotated baseline reopens both contributions in one tree under two namespaces.
+    rotated = e2e.rotate(root, sealed)
+    with FinalizedIntakeStore(root / "validator" / "intake.sqlite3", scope=sealed.scope) as store:
+        durable = store.evaluation_stack(sealed.incumbent.arena_digest)
+    assert (rotated.incumbent.digest, rotated.incumbent_tree.tree_digest) == (durable.manifest.digest, durable.tree_digest)
+    ops = load_manifest(rotated.incumbent_tree.root).ops
     assert {op.slot for op in ops} == {"model.layers.*.mlp", "model.norm", "tree_cache"}
     assert len({op.source.split("/")[1] for op in ops}) == 2
 
@@ -120,4 +129,4 @@ def test_a_prefix_cache_crown_stands_beside_the_forward_pass_crown_and_outlives_
     assert sign("--dry-run") == [] and sign.shares() == roles.reward_shares(
         miner_model=roles.reward_credit(("1.06", 90), None, 120, None),
         miner_cache=roles.reward_credit(("1.04", 105), ("1", 90), 120, None),
-        miner_nodes=roles.reward_credit(("1.1", 115), ("1", 105), 120, None))
+        miner_nodes=roles.reward_credit(("1.1", 115), ("1.04", 105), 120, None))

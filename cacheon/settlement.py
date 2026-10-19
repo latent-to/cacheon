@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import Enum
-from typing import Iterable, Mapping
+from typing import Callable, Iterable, Mapping
 
 from cacheon.eval.oci_session_protocol import SlotAuditPolicy
 from cacheon.stack_identity import canonical_digest
@@ -949,13 +949,19 @@ def plan_settlement(
     initial_event_sequence: int = 0,
     previous_event_digest: str = "",
     lineage_tips: Mapping[str, TargetLineage] | None = None,
+    tree_digest_of: Callable[[EvaluationStackManifest], str] | None = None,
 ) -> SettlementPlan:
     """Select one registered winner over one incumbent and emit a hash-chained plan.
 
     Admission owns the submission cutoff. An accepted candidate keeps its
     measured baseline when the crown advances. An ancestor-baseline candidate
     must beat the product of the winning speedups from that ancestor to the
-    current tip; settlement does not recheck when the submission arrived.
+    current tip; settlement does not recheck when the submission arrived. The
+    winner joins the current stack, every other target keeping its current entry
+    (a forward-pass crown measured before a prefix-cache crown once displaced it,
+    2026-10-20); a composed stack no pod assembled takes its tree identity from
+    ``tree_digest_of``. NEUTRALIZATION is reserved for an explicit catalog overlap
+    policy, which the current catalog does not declare.
     """
 
     if type(current_manifest) is not EvaluationStackManifest:
@@ -996,16 +1002,11 @@ def plan_settlement(
         registered,
         key=lambda row: (-Decimal(row.speedup), row.finalized_order),
     )
-    after = winner.challenger
     for row in sorted(
         (item for item in registered if item is not winner),
         key=lambda item: item.finalized_order,
     ):
-        reason = (
-            "conflict_lost"
-            if members_overlap(row.members, winner.members)
-            else "incumbent_advanced"
-        )
+        reason = "conflict_lost" if members_overlap(row.members, winner.members) else "incumbent_advanced"
         journal.add(
             SettlementEventType.HOLD, row, subject_digest=row.selected_delta_digest,
             target_id=row.target_id, before=before, after=before, reason=reason,
@@ -1013,20 +1014,23 @@ def plan_settlement(
 
     assert winner.candidate_manifest is not None
     replacement = winner.candidate_manifest.entries[winner.target_id]
+    adopted = current_manifest.with_contribution(replacement)
+    if adopted.digest == before.stack_digest:
+        raise SettlementError("composed stack does not change the incumbent stack identity")
+    if adopted.digest == winner.candidate_stack_digest:  # measured as adopted: the pod's exact identities
+        adopted, after = winner.candidate_manifest, winner.challenger
+    elif tree_digest_of is None:
+        raise SettlementError("composed stack requires a tree digest resolver")
+    else:
+        after = StackArmIdentity(adopted.digest, tree_digest_of(adopted))
     lineage = tips.get(winner.target_id)
     incumbent = winner.incumbent_manifest.entries.get(winner.target_id)
     incumbent_artifact = "" if incumbent is None else incumbent.artifact_digest
-    ancestor_win = (
-        lineage is not None and incumbent_artifact != lineage.artifact_digest
-    )
+    ancestor_win = lineage is not None and incumbent_artifact != lineage.artifact_digest
     journal.add(
         SettlementEventType.CROWN, winner, subject_digest=replacement.digest,
         target_id=winner.target_id, before=before, after=before,
-        reason=(
-            "qualified_ancestor_win"
-            if ancestor_win
-            else "qualified_win"
-        ),
+        reason="qualified_ancestor_win" if ancestor_win else "qualified_win",
     )
     prior = current_manifest.entries.get(winner.target_id)
     if prior is not None:
@@ -1034,21 +1038,15 @@ def plan_settlement(
             SettlementEventType.RETIREMENT, winner, subject_digest=prior.digest,
             target_id=prior.target_id, before=before, after=before, reason="superseded",
         )
-    for target_id, ref in sorted(current_manifest.entries.items()):
-        if target_id != winner.target_id and target_id not in winner.candidate_manifest.entries:
-            journal.add(
-                SettlementEventType.NEUTRALIZATION, winner, subject_digest=ref.digest,
-                target_id=target_id, before=before, after=before, reason="displaced",
-            )
     journal.add(
         SettlementEventType.ADOPTION, winner, subject_digest=replacement.digest,
         target_id=winner.target_id, before=before, after=after, reason="adopted",
     )
     journal.add(
-        SettlementEventType.STACK_TRANSITION, winner, subject_digest=winner.candidate_stack_digest,
+        SettlementEventType.STACK_TRANSITION, winner, subject_digest=adopted.digest,
         target_id=winner.target_id, before=before, after=after, reason="incumbent_updated",
     )
-    transition = StackTransitionOutput(winner.digest, before, after, winner.candidate_manifest)
+    transition = StackTransitionOutput(winner.digest, before, after, adopted)
     return SettlementPlan(
         before, after, winner.digest, tuple(journal.events), transition
     )

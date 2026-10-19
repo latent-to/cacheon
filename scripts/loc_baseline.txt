@@ -75,13 +75,16 @@
 # the lease-schema, rename-compat and retained-rewards test files: +52/-338 tests (9 fixture), -3 assert floors, +1 golden, +2 notes.
 # Tranche-2 wave 14: commission refusals (READY, device, prompt, registration and calibration drift) through the production
 # materializer and replay replace the B300 deployment test file and two support names: +72/-643 tests, -1 assert floor, +2 notes.
+# Settlement composes the winner onto the current stack (a forward-pass crown measured before a prefix-cache crown
+# displaced it; owner order 2026-10-20): +50 runtime (the composed-tree module, settlement and intake shrink), +3 docs,
+# +12 tests, +3 notes. NEUTRALIZATION's displacement loop is the deletion.
 (root) 1155
 .github 338
 bundles 2398
-cacheon 92337
+cacheon 92387
 cacheon_kernels 936
 dashboard 4281
-docs 12957
+docs 12960
 examples 582
 scripts 4336
-tests 13802
+tests 13814

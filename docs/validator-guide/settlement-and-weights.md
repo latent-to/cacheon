@@ -109,7 +109,7 @@ The hash-chained event journal can contain:
 | `HOLD` | Candidate cannot advance against this incumbent or lost a conflict |
 | `CROWN` | Passing marginal contribution is recognized |
 | `RETIREMENT` | Previous contribution at the target is superseded |
-| `NEUTRALIZATION` | An overlapping target is displaced by explicit catalog policy; the current catalog declares no overlap |
+| `NEUTRALIZATION` | Reserved for an explicit catalog overlap policy; the current catalog declares none, so no transition emits it |
 | `ADOPTION` | New contribution is inserted into the evaluation stack |
 | `STACK_TRANSITION` | Incumbent stack/tree advances atomically |
 | `DISCOVERY_BOUNTY` | Qualified discovery receives bounded bounty treatment only |
@@ -124,10 +124,13 @@ The event journal is append-only and digest chained. Event types have distinct j
 - `CROWN` recognizes the winning measured contribution and creates the active standing
   claim for its registered target.
 - `RETIREMENT` deactivates the previous claim for the same target.
-- `NEUTRALIZATION` deactivates explicitly overlapping target families according to the
-  catalog, not manifest order.
+- `NEUTRALIZATION` is reserved for explicitly overlapping target families declared by the
+  catalog, never manifest order; the current catalog declares none.
 - `ADOPTION` and `STACK_TRANSITION` record the exact new evaluation manifest/tree and
-  advance its generation together.
+  advance its generation together. The winner joins the current stack: every other target
+  keeps its current entry whatever the winner's measurement-time manifest held, and a
+  composed stack no pod assembled takes its tree identity from the validator's own
+  materialization of the retained publications, which the next recommission reproduces.
 - `HOLD` records stale rows and every current registered non-winner without mutating the
   stack: insufficient ancestor results use `lost_potential`, incomparable baselines
   use `stale_incumbent`, overlapping losers use
