@@ -1,7 +1,7 @@
 """Observed containment behavior of the runtime flag vocabulary on a real daemon.
 
-``tests/test_oci_backend.py`` proves the argv the backend constructs; no test
-there observes a running container. These tests take the same flag vocabulary
+The commissioned pod launches its engines with the argv the backend constructs;
+this file observes that vocabulary in a running container. It takes the flag vocabulary
 that ``cacheon.eval.oci_backend.build_runtime_argv`` emits (network, IPC,
 capability, seccomp, user, and bind-mount settings), the packaged seccomp
 profile, and the backend's bind-mount builder, and assert what a real container

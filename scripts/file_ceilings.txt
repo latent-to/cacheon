@@ -29,9 +29,5 @@ cacheon/patchers/build_cuda_ext.py 1205
 cacheon/settlement.py 1064
 dashboard/app.py 932
 tests/test_chain_intake.py 1599
-tests/test_device_state.py 942
-tests/test_oci_backend.py 1138
-tests/test_qualification_continuation.py 915
-tests/test_qualification_runner.py 1843
 tests/test_recoverable_qualification_dispatcher.py 1063
 tests/test_settlement.py 901

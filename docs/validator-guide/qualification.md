@@ -622,7 +622,7 @@ Next: [Settlement and weights](settlement-and-weights.md).
 - [Torch-free audit gate](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py)
 - [Finalized-intake projection](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_intake.py)
 - [Pristine reference session](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_reference_session.py)
-- [Qualification tests](https://github.com/latent-to/cacheon/blob/main/tests/test_qualification_runner.py)
+- [Qualification fault tests](https://github.com/latent-to/cacheon/blob/main/tests/test_validator_qualification_faults.py)
 
 The isolated worker and controller share one request-addressed pipe exchange.
 Ordinary generation requests may overlap and finish out of order; eager audits

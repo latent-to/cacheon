@@ -1,20 +1,14 @@
-"""Runtime preflight builders shared across the OCI and B300 suites.
+"""The runtime preflight receipt builder shared by the deployment suite and the end-to-end harness.
 
-Five suites each carried a verbatim ~35-line ``RuntimePreflightReceipt``
-builder and three more carried the matching ``RuntimePreflightFacts``
-builder. Every divergence between the copies is fixture data — registry
-name, worker byte counts, uid source, a digest label — so each stays a
-keyword argument here; nothing below is a behavior mode. Suites whose
-builders carry genuinely different data (the char-repeat digests in
-``test_oci_session_worker_order`` and the manifest-sourced fields in
-``test_oci_reference_session``) keep their own definitions on purpose.
+Every divergence between callers is fixture data — registry name, worker
+byte counts, uid source, a digest label — so each stays a keyword argument
+here; nothing below is a behavior mode.
 """
 
 from __future__ import annotations
 
 import os
 
-from cacheon.eval.oci_session_protocol import RuntimePreflightFacts
 from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
 
 from tests.support.b300 import sha
@@ -64,27 +58,3 @@ def preflight_receipt(
         nvidia_visible_devices="void",
         security_argv_sha256=sha(argv_label),
     )
-
-
-def preflight_facts(
-    *, launch_digest: str, engine_config_digest: str, **changes: object
-) -> RuntimePreflightFacts:
-    values: dict[str, object] = {
-        "launch_digest": launch_digest,
-        "runtime_digest": sha("runtime"),
-        "stack_digest": sha("stack"),
-        "tree_digest": sha("tree"),
-        "engine_config_digest": engine_config_digest,
-        "worker_distribution_digest": sha("worker"),
-        "model_revision_digest": sha("revision"),
-        "model_manifest_digest": sha("manifest"),
-        "model_content_digest": sha("content"),
-        "sglang_version": "0.0.0.dev1+g56e290315",
-        "gpu_architectures": ("sm120",),
-        "topology_digest": sha("topology"),
-        "loopback_only": True,
-        "read_only_inputs": True,
-        "private_writable_cache": True,
-    }
-    values.update(changes)
-    return RuntimePreflightFacts(**values)  # type: ignore[arg-type]

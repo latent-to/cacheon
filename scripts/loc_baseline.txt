@@ -66,13 +66,16 @@
 # the durable intake reason; the target-catalog and engine-tree test files go: +108/-1,766 tests, -1 docs, -3/+2 notes.
 # The catalog surface carries the node seam's audit literals and their agreement with the sealed forward-pass contract
 # (the deleted drift test's one claim a retained PASS depends on): +19 scripts, +1 baseline, +2 notes.
-(root) 1156
-.github 345
+# Tranche-2 wave 11: 27 pod-side unit test files, the replay and pipes support modules and the node_multi fixture go; the
+# commissioned node's off-chain twin proves what they modelled (owner 2026-10-19): +20/-16,811 tests, -7 .github, -1 root,
+# -30 scripts (26 assert floors, four file ceilings), +3 notes.
+(root) 1155
+.github 338
 bundles 2398
 cacheon 92337
 cacheon_kernels 936
 dashboard 4281
 docs 12957
 examples 582
-scripts 4370
-tests 33483
+scripts 4343
+tests 16692

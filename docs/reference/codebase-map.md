@@ -181,8 +181,8 @@ roots, and the remaining focused tests mirror authority boundaries:
   component parser's import and CUDA closures included), pod faults, crowns,
   weights, a second target, the weight service, arenas and the operator commands,
   including private digest-bound recovery;
-- qualification, OCI, audit, and reference-protocol tests cover the paired
-  replay, registered eager audit A, and pristine T; and
+- the off-chain twin proves the paired replay, registered eager audit A and
+  pristine T on the commissioned node; and
 - chain-intake, settlement, economics, and weight-publication tests cover
   durable economic transitions.
 
