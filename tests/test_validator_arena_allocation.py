@@ -11,7 +11,7 @@ built with ``tests/support/e2e.py`` and the roles run from ``tests/support/weigh
 primary arena on the H100 TP1 profile and an arena added later on B300 TP4, on one chain and one
 validator key, each listener admitting every reveal.
 
-Test-supplied: the chain head, the miners' archives, the GPU pods (``e2e.pod_answer``), the
+Test-supplied: the chain head, the miners' archives, the GPU pods (``pod_answer``), the
 operator's edits to the allocation file, an intake pass holding a store (opened in-process) and a
 store's volume going missing. Assertions read the gateway's stored offer, the allocation report
 the producer retained under ``weight-allocation-evidence``, the dashboard's reading of both, and
@@ -34,6 +34,7 @@ from dashboard.winners import live_offer_shares
 from tests.support import e2e
 from tests.support import weight_roles as roles
 from tests.support.chain import advance, amend
+from tests.support.pod import pod_answer
 
 supervisors = pytest.fixture(e2e.supervisor_processes, name="supervisors")
 gateways = pytest.fixture(roles.gateway_processes, name="gateways")
@@ -48,7 +49,7 @@ def _qualify(supervisors, root: Path, sealed, speedup: str) -> None:
     with e2e.relay(root, sealed):
         supervisor = supervisors(root)
         supervisor.until(e2e.waiting)
-        e2e.pod_answer(root, sealed, e2e.carriers(root)[-1], QualificationDecision.PASS, speedup=speedup)
+        pod_answer(root, sealed, e2e.carriers(root)[-1], QualificationDecision.PASS, speedup=speedup)
         supervisor.until(lambda status: status["phase"] == "idle")
         assert supervisor.stop(signal.SIGTERM) == 0
 
@@ -111,7 +112,7 @@ def test_one_offer_pays_each_arena_by_the_terms_frozen_at_arrival(tmp_path, monk
     with e2e.relay(primary, sealed_a):
         supervisor = supervisors(primary)
         supervisor.until(e2e.waiting)
-        e2e.pod_answer(primary, sealed_a, e2e.carriers(primary)[0], QualificationDecision.PASS, speedup=A[0])
+        pod_answer(primary, sealed_a, e2e.carriers(primary)[0], QualificationDecision.PASS, speedup=A[0])
         supervisor.until(lambda status: e2e.waiting(status) and len(e2e.carriers(primary)) == 2)
         assert supervisor.stop(signal.SIGKILL) == -signal.SIGKILL  # miner-a2's evaluation outlives this process
 

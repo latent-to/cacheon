@@ -17,7 +17,7 @@ Simulated, beyond the boundaries ``tests/test_validator_end_to_end.py`` states: 
 the snapshot commands. ``tests/support/simulated_s3`` is a boto3/botocore package backed by a
 directory and placed on the ``PYTHONPATH`` of the snapshot children only, so the real CLI and the
 production ``S3CompatibleObjectStore`` run unchanged; nothing in ``cacheon/`` changes. The candidate
-failure and the runtime stream are pod outputs: ``e2e.pod_answer(raised=...)`` publishes the pod's
+failure and the runtime stream are pod outputs: ``pod_answer(raised=...)`` publishes the pod's
 candidate-failure product with its own producer, and the stream is linked into the request's
 worker log with ``record_oci_artifact`` and the production ``OCIStderrArtifactReceipt``, as the pod's
 OCI process manager does.
@@ -42,6 +42,7 @@ from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.remote_run_forensics import bind_request, record_oci_artifact
 from tests.support import e2e
 from tests.support.chain import advance, amend
+from tests.support.pod import pod_answer
 
 supervisors = pytest.fixture(e2e.supervisor_processes, name="supervisors")
 PROFILE = e2e.PROFILES["h100-tp1"]
@@ -152,9 +153,9 @@ def test_an_operator_answers_miners_from_the_live_stores_and_restores_them_elsew
         raised = supervisor.until(e2e.waiting)["request_id"]
         (carrier,) = e2e.carriers(root)
         _runtime_stream(root, carrier, hashes["miner-raised"])
-        e2e.pod_answer(root, sealed, carrier, FAIL, raised=RAISED)
+        pod_answer(root, sealed, carrier, FAIL, raised=RAISED)
         supervisor.until(lambda status: e2e.waiting(status) and status["request_id"] != raised)
-        e2e.pod_answer(root, sealed, e2e.carriers(root)[1], PASS)
+        pod_answer(root, sealed, e2e.carriers(root)[1], PASS)
         supervisor.until(lambda status: status["last_stage"] == "settlement"
                          and status["last_disposition"] == "committed")
         supervisor.until(lambda status: e2e.waiting(status) and len(e2e.carriers(root)) == 3)
@@ -270,7 +271,7 @@ def test_work_left_to_expire_while_the_worker_was_down_is_requeued_from_sealed_a
         supervisor.until(e2e.waiting)
         (carrier,) = e2e.carriers(root)
         assert spool.load_json(carrier / "request.json")["lease"]["members"][0]["reservation_id"] == ids["miner-late"]
-        e2e.pod_answer(root, sealed, carrier, PASS)
+        pod_answer(root, sealed, carrier, PASS)
         supervisor.until(lambda status: (status["last_stage"], status["last_disposition"]) == (
             "qualification", "completed"))
         supervisor.until(lambda status: status["phase"] == "idle")

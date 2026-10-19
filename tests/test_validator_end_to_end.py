@@ -74,6 +74,7 @@ from cacheon.chain.ssh_worker_transport import _dispatcher_heartbeat
 from cacheon.eval import b300_deployment as deployment
 from cacheon.eval.qualification import QualificationDecision
 from tests.support import e2e
+from tests.support.pod import pod_answer
 
 supervisors = pytest.fixture(e2e.supervisor_processes, name="supervisors")
 MINERS = ("miner-copy", "miner-fail", "miner-pass")
@@ -156,11 +157,11 @@ def test_finalized_submissions_qualify_settle_and_project_weights(tmp_path, monk
         supervisor = supervisors(root)
         assert supervisor.until(e2e.waiting)["request_id"] == first["request_id"]
         assert len(e2e.carriers(root)) == 1
-        failed = e2e.pod_answer(root, sealed, e2e.carriers(root)[0], QualificationDecision.FAIL)
+        failed = pod_answer(root, sealed, e2e.carriers(root)[0], QualificationDecision.FAIL)
         second = supervisor.until(lambda status: e2e.waiting(status) and status["request_id"] != first["request_id"])
         carriers = e2e.carriers(root)
         assert [path.name.split("-", 1)[1] for path in carriers] == [first["request_id"], second["request_id"]]
-        passed = e2e.pod_answer(root, sealed, carriers[-1], QualificationDecision.PASS)
+        passed = pod_answer(root, sealed, carriers[-1], QualificationDecision.PASS)
         supervisor.until(lambda status: status["last_stage"] == "settlement"
                          and status["last_disposition"] == "committed")
         supervisor.until(lambda status: status["phase"] == "idle")

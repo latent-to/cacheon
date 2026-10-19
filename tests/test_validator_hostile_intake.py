@@ -42,6 +42,7 @@ from cacheon.chain.ssh_worker_transport import _dispatcher_heartbeat
 from cacheon.eval.qualification import QualificationDecision
 from tests.support import e2e
 from tests.support.chain import advance
+from tests.support.pod import pod_answer
 
 supervisors = pytest.fixture(e2e.supervisor_processes, name="supervisors")
 
@@ -235,15 +236,7 @@ def test_claim_parks_a_closed_target_and_replays_a_duplicate_fail(tmp_path, monk
     root, key = e2e.deployment_root(tmp_path, "hostile-claim", monkeypatch)
     origin = {}
     fail_hash, fail = e2e.package(e2e.miner_bundle(root, "miner-fail", _identity("fail")), key)
-    cache = e2e.miner_bundle(root, "miner-cache")
-    (cache / "kernels" / "forward.py").unlink()
-    e2e.private(cache / "cache")
-    (cache / "cache" / "policy.py").write_text("def build(cache):\n    return type(cache)\n")
-    (cache / "manifest.toml").write_text(
-        'bundle_id = "cache-identity"\nabi_version = "cacheon-op-abi-v0"\n\n[competition]\n'
-        f'target = "prefix_cache"\nmode = "slot"\narena = "{root.name}"\n\n'
-        '[[ops]]\nslot = "tree_cache"\nsource = "cache/policy.py"\nentry = "build"\n')
-    cache_hash, cache_archive = e2e.package(cache, key)
+    cache_hash, cache_archive = e2e.package(e2e.cache_bundle(root, "miner-cache"), key)
     state = e2e.chain(root, {
         "miner-fail": (e2e.reveal("miner-fail", fail_hash, fail, origin),
                        e2e.reveal("miner-fail", fail_hash, fail, origin, block=e2e.REVEAL_BLOCK + 1)),
@@ -260,7 +253,7 @@ def test_claim_parks_a_closed_target_and_replays_a_duplicate_fail(tmp_path, monk
         supervisor = supervisors(root)
         supervisor.until(e2e.waiting)
         (carrier,) = e2e.carriers(root)
-        first = e2e.pod_answer(root, sealed, carrier, QualificationDecision.FAIL)
+        first = pod_answer(root, sealed, carrier, QualificationDecision.FAIL)
         supervisor.until(lambda status: status["phase"] == "idle")
         assert supervisor.stop(signal.SIGTERM) == 0
     assert e2e.carriers(root) == [carrier]  # the resubmission never reached the pod

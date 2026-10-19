@@ -10,8 +10,8 @@ own owner and spool. Pairs only qualify (``enable_settlement`` false) and one ec
 and a named arena on the B300 TP4 profile sharing its chain, validator key and intake store. A
 recommissioned arena keeps its name on new worker bytes, under a new root over the same store.
 
-Test-supplied: the chain, the miners' archives and the GPU pods, played with ``e2e.pod_answer``
-and ``e2e.pod_hold``. Assertions read what production retained: the carriers in each spool, the
+Test-supplied: the chain, the miners' archives and the GPU pods, played with ``pod_answer``
+and ``pod_hold``. Assertions read what production retained: the carriers in each spool, the
 reservations, settlement candidates and events in the shared store, and the vector the V1 signer
 (``cacheon set-weights --dry-run``) would publish.
 """
@@ -31,6 +31,7 @@ from cacheon.eval.qualification import QualificationDecision
 from tests.support import e2e
 from tests.support import weight_roles as roles
 from tests.support.chain import amend
+from tests.support.pod import pod_answer, pod_hold
 
 supervisors = pytest.fixture(e2e.supervisor_processes, name="supervisors")
 H100, B300 = e2e.PROFILES["h100-tp1"], e2e.PROFILES["b300-tp4"]
@@ -86,7 +87,7 @@ def _answer(root: Path, sealed, pair, decision: QualificationDecision, spool_nam
     """The pod seals the pair's open request; the pair imports it and moves on."""
 
     request = pair.until(e2e.waiting)["request_id"]
-    e2e.pod_answer(root, sealed, e2e.carriers(root, spool_name)[-1], decision, speedup=speedup)
+    pod_answer(root, sealed, e2e.carriers(root, spool_name)[-1], decision, speedup=speedup)
     pair.until(lambda status: status["request_id"] != request or status["phase"] == "idle")
 
 
@@ -132,7 +133,7 @@ def test_pairs_and_arenas_qualify_at_once_and_settle_each_arrival_prefix(tmp_pat
         # a-third's worker HOLD parks it without a verdict and frees its pair; then the validator pauses.
         name = holder["a-second"]
         pairs[name].until(e2e.waiting)
-        e2e.pod_hold(root_a, sealed["arena-a"], e2e.carriers(root_a, name)[-1])
+        pod_hold(root_a, sealed["arena-a"], e2e.carriers(root_a, name)[-1])
         pairs[name].until(lambda status: status["phase"] == "idle", allow={"hold"})
         _answer(root_b, sealed["arena-b"], named, FAIL)
         for supervisor in (*pairs.values(), named, settle):
@@ -206,7 +207,7 @@ def test_a_recommissioned_arena_claims_the_work_its_retired_commission_held(tmp_
     with e2e.relay(retired, sealed["arena-a"]):
         supervisor = supervisors(retired)
         supervisor.until(e2e.waiting)
-        e2e.pod_hold(retired, sealed["arena-a"], e2e.carriers(retired)[0])
+        pod_hold(retired, sealed["arena-a"], e2e.carriers(retired)[0])
         supervisor.until(lambda status: status["phase"] == "hold", allow={"hold"})
         assert supervisor.stop(signal.SIGTERM) == 0
     (held,) = e2e.store_rows(store, "SELECT * FROM reservations")
@@ -223,11 +224,11 @@ def test_a_recommissioned_arena_claims_the_work_its_retired_commission_held(tmp_
         "cacheon.cli", "chain-release-hold", "--netuid", str(e2e.NETUID), "--network", str(state),
         "--intake-db", str(store / "validator" / "intake.sqlite3"), "--reservation-id", held["reservation_id"],
         "--reason", "operator redeployed the worker", env=e2e.chain_env())
-    # The live commission claims it and measures it against its own incumbent (``e2e.pod_request`` checks).
+    # The live commission claims it and measures it against its own incumbent (``pod_request`` checks).
     with e2e.relay(live, commissioned):
         supervisor = supervisors(live)
         supervisor.until(e2e.waiting)
-        e2e.pod_answer(live, commissioned, e2e.carriers(live)[0], FAIL)
+        pod_answer(live, commissioned, e2e.carriers(live)[0], FAIL)
         supervisor.until(lambda status: status["phase"] == "idle")
         assert supervisor.stop(signal.SIGTERM) == 0
     (row,) = e2e.store_rows(store, "SELECT * FROM reservations")

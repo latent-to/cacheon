@@ -60,6 +60,8 @@
 # code; three launch/qualification/stack test files shrink to one golden (owner 2026-10-19): +57/-1,034 tests, -2 scripts, +2 notes.
 # That golden becomes the surface snapshot's native_build digest golden and the last launch test file goes: -99 tests,
 # +20 scripts (the golden), +1 baseline, -1 assert floor, +2 notes.
+# Tranche-2 wave 9: a second-target end-to-end module (both targets crowned across baseline rotations) and the pod play
+# moved out of e2e.py replace the stack-plan test file (owner 2026-10-19): +392/-415 tests, +2 notes.
 (root) 1156
 .github 345
 bundles 2398
@@ -68,5 +70,5 @@ cacheon_kernels 936
 dashboard 4281
 docs 12958
 examples 582
-scripts 4348
-tests 35164
+scripts 4350
+tests 35141

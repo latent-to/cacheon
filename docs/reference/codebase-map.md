@@ -178,10 +178,10 @@ roots, and the remaining focused tests mirror authority boundaries:
 
 - `test_validator_end_to_end.py` drives intake through weight projection, and the
   other `test_validator_*.py` modules hostile input, pod faults, crowns, weights,
-  the weight service, arenas and the operator commands, including private
-  digest-bound recovery; `test_target_catalog.py` drives target admission;
-- stack-planning tests and `test_engine_tree.py` cover canonical composition and
-  integration materialization;
+  a second target, the weight service, arenas and the operator commands, including
+  private digest-bound recovery; `test_target_catalog.py` drives target admission;
+- `test_engine_tree.py` covers canonical composition and integration
+  materialization;
 - qualification, OCI, audit, and reference-protocol tests cover the paired
   replay, registered eager audit A, and pristine T; and
 - chain-intake, settlement, economics, and weight-publication tests cover

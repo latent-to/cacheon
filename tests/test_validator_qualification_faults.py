@@ -5,11 +5,11 @@ becomes a candidate FAIL. Each test builds one private deployment root with
 ``tests/support/e2e.py`` and drives the standing CPU supervisor process
 (``python -m cacheon.chain.standing_cpu_supervisor``) through its sealed configs.
 
-The GPU pod is played with the pod's own producers, after ``e2e.pod_request`` has verified
+The GPU pod is played with the pod's own producers, after ``pod_request`` has verified
 the authenticated request: the worker HOLD the pod adapter returns for a worker error
-(``e2e.pod_hold``), the pod service's infrastructure result
+(``pod_hold``), the pod service's infrastructure result
 (``infrastructure_result``, which signs a pre-resident refusal and leaves any other failure
-unauthenticated), and the sealed verdict (``e2e.pod_answer``). A hostile pod or shuttle is
+unauthenticated), and the sealed verdict (``pod_answer``). A hostile pod or shuttle is
 played by rewriting the finalized result before RESULT_READY, and a corrupted retained
 attempt by truncating it in the validator's evidence store. A worker replacement is the
 operator's: a fresh READY epoch, ``make-registration``, the dispatcher config re-pointed
@@ -36,6 +36,7 @@ from cacheon.eval.remote_run_forensics import append_event, journal_path
 from cacheon.stack_identity import sha256_hex
 from tests.support import e2e
 from tests.support.chain import advance
+from tests.support.pod import pod_answer, pod_hold, pod_request
 
 supervisors = pytest.fixture(e2e.supervisor_processes, name="supervisors")
 PROFILE = e2e.PROFILES["h100-tp1"]
@@ -67,7 +68,7 @@ def _rows(root: Path, sealed) -> dict[str, tuple[str, str, int, str]]:
 
 
 def _infrastructure(root: Path, sealed, carrier: Path, failure_code: str) -> None:
-    pod = e2e.pod_request(root, sealed, carrier)
+    pod = pod_request(root, sealed, carrier)
     request_id = pod.request["request_id"]
     result = e2e.private(carrier.parent.parent / "results" / request_id)
     append_event(journal_path(result), request_id, "adapter.terminal", "no_decision")
@@ -106,14 +107,14 @@ def test_refusals_and_holds_keep_the_queue_moving_and_a_stop_drains_before_settl
         fresh = supervisor.until(e2e.waiting)["request_id"]
         assert fresh != refused
         assert [_reservation(carrier) for carrier in e2e.carriers(root)] == [_reservation(e2e.carriers(root)[0])] * 2
-        e2e.pod_answer(root, sealed, e2e.carriers(root)[1], FAIL)
+        pod_answer(root, sealed, e2e.carriers(root)[1], FAIL)
 
         # A stop while the PASS runs keeps waiting for it, then exits before settling or claiming.
         supervisor.until(lambda status: e2e.waiting(status) and status["request_id"] != fresh)
         stopped = int(time.time())
         supervisor.process.send_signal(signal.SIGTERM)
         supervisor.until(lambda status: e2e.waiting(status) and status["time_unix"] > stopped)
-        e2e.pod_answer(root, sealed, e2e.carriers(root)[2], PASS)
+        pod_answer(root, sealed, e2e.carriers(root)[2], PASS)
         assert supervisor.process.wait(timeout=60) == 0
         assert len(e2e.carriers(root)) == 3 and _settlement(root, sealed) == (True, True)
 
@@ -139,10 +140,10 @@ def test_refusals_and_holds_keep_the_queue_moving_and_a_stop_drains_before_settl
         supervisor = supervisors(root)
         assert supervisor.until(lambda status: status["last_stage"] != "idle")["last_stage"] == "settlement"
         supervisor.until(e2e.waiting)
-        e2e.pod_hold(root, sealed, e2e.carriers(root)[3])
+        pod_hold(root, sealed, e2e.carriers(root)[3])
         assert supervisor.until(_held, allow={"hold"})["hold_reason"] == hold
         supervisor.until(lambda status: e2e.waiting(status) and len(e2e.carriers(root)) == 5)
-        e2e.pod_hold(root, sealed, e2e.carriers(root)[4])
+        pod_hold(root, sealed, e2e.carriers(root)[4])
         supervisor.until(lambda status: status["phase"] == "idle", allow={"hold"})
         assert supervisor.stop(signal.SIGTERM) == 0
     assert _settlement(root, sealed) == (False, False)
@@ -194,7 +195,7 @@ def test_an_unverifiable_verdict_holds_its_exact_request_across_restart(tmp_path
     with e2e.relay(root, sealed):
         supervisor = supervisors(root)
         request_id = supervisor.until(e2e.waiting)["request_id"]
-        e2e.pod_answer(root, sealed, e2e.carriers(root)[0], FAIL, **options)
+        pod_answer(root, sealed, e2e.carriers(root)[0], FAIL, **options)
         held = supervisor.until(_held, allow={"hold"})
         assert (held["hold_reason"], held["request_id"]) == (reason, request_id)
         assert supervisor.stop(signal.SIGTERM) == 0
@@ -225,7 +226,7 @@ def test_lost_workers_never_rerun_or_fail_the_request_they_held(tmp_path, monkey
         fresh = supervisor.until(e2e.waiting)["request_id"]
         assert [path.name.split("-", 1)[1] for path in (root / "spool" / "retired").iterdir()] == [crashed]
         assert [path.name.split("-", 1)[1] for path in e2e.carriers(root)] == [fresh]
-        e2e.pod_answer(root, sealed, e2e.carriers(root)[0], FAIL)
+        pod_answer(root, sealed, e2e.carriers(root)[0], FAIL)
         late = supervisor.until(lambda status: e2e.waiting(status) and status["request_id"] != fresh)["request_id"]
 
     # A stale relay heartbeat fails the stage closed; the restart resumes the same request.
@@ -251,13 +252,13 @@ def test_lost_workers_never_rerun_or_fail_the_request_they_held(tmp_path, monkey
 
     # The pod finishes while the validator is down and the worker is replaced again:
     # the completed work commits under the authority that produced it, never rerun.
-    e2e.pod_answer(root, sealed, e2e.carriers(root)[1], FAIL)
+    pod_answer(root, sealed, e2e.carriers(root)[1], FAIL)
     sealed.registration = e2e.replace_worker(root, PROFILE, sealed.ready, "replacement-2")
     with e2e.relay(root, sealed):
         supervisor = supervisors(root)
         following = supervisor.until(e2e.waiting)["request_id"]
         assert [path.name.split("-", 1)[1] for path in e2e.carriers(root)] == [fresh, late, following]
-        e2e.pod_answer(root, sealed, e2e.carriers(root)[2], FAIL)
+        pod_answer(root, sealed, e2e.carriers(root)[2], FAIL)
         supervisor.until(lambda status: status["phase"] == "idle")
         assert supervisor.stop(signal.SIGTERM) == 0
     assert {name: row[:3] for name, row in _rows(root, sealed).items()} == {
@@ -300,8 +301,8 @@ def test_a_first_claim_waits_for_its_pruning_review_while_another_pair_holds_a_l
         pair_one.until(e2e.waiting)
         (claimed,) = e2e.carriers(root)
         assert _reservation(claimed) == rows["miner-third"].reservation_id
-        e2e.pod_answer(root, sealed, leased, FAIL)
-        e2e.pod_answer(root, sealed, claimed, FAIL)
+        pod_answer(root, sealed, leased, FAIL)
+        pod_answer(root, sealed, claimed, FAIL)
         for supervisor in (pair_two, pair_one):
             supervisor.until(lambda status: status["phase"] == "idle")
             assert supervisor.stop(signal.SIGTERM) == 0

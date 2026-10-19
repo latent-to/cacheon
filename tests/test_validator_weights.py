@@ -2,7 +2,7 @@
 
 Each test builds one private deployment root with ``tests/support/e2e.py``. Crowns come
 from the standing CPU supervisor process (``python -m cacheon.chain.standing_cpu_supervisor``)
-settling PASSes the GPU pod sealed with ``e2e.pod_answer``; weights come from the legacy V1
+settling PASSes the GPU pod sealed with ``pod_answer``; weights come from the legacy V1
 signer, ``python -m cacheon.cli set-weights``, run as a subprocess against the simulated
 chain. That chain plays commit-reveal: a signed vector is timelocked for ``reveal_delay``
 blocks, then becomes the validator's sparse row with ``last_update`` at its reveal block.
@@ -30,6 +30,7 @@ from cacheon.eval.qualification import QualificationDecision
 from tests.support import e2e
 from tests.support import weight_roles as roles
 from tests.support.chain import advance, amend, write_state
+from tests.support.pod import pod_answer
 
 supervisors = pytest.fixture(e2e.supervisor_processes, name="supervisors")
 PROFILE = e2e.PROFILES["h100-tp1"]
@@ -73,7 +74,7 @@ def _credit(hotkey: str, earlier: str | None, block: int, decay_start: int | Non
 def _pass(supervisor, root: Path, sealed, index: int) -> None:
     supervisor.until(lambda status: e2e.waiting(status) and len(e2e.carriers(root)) == index + 1)
     speedup = list(RECORDS.values())[index][0]
-    e2e.pod_answer(root, sealed, e2e.carriers(root)[index], QualificationDecision.PASS, speedup=speedup)
+    pod_answer(root, sealed, e2e.carriers(root)[index], QualificationDecision.PASS, speedup=speedup)
 
 
 def test_crowns_and_rewards_follow_the_finalized_record(tmp_path, monkeypatch, supervisors):

@@ -39,6 +39,7 @@ from cacheon.chain.weight_share import (
 from cacheon.eval.qualification import QualificationDecision
 from tests.support import e2e
 from tests.support import weight_roles as roles
+from tests.support.pod import pod_answer
 from tests.support.chain import advance, amend
 
 supervisors = pytest.fixture(e2e.supervisor_processes, name="supervisors")
@@ -73,7 +74,7 @@ def _forge(gateway: roles.Gateway, hotkey: str) -> None:
 
 def _answer(supervisor, root: Path, sealed, index: int, speedup: str) -> None:
     supervisor.until(lambda status: e2e.waiting(status) and len(e2e.carriers(root)) == index + 1)
-    e2e.pod_answer(root, sealed, e2e.carriers(root)[index], QualificationDecision.PASS, speedup=speedup)
+    pod_answer(root, sealed, e2e.carriers(root)[index], QualificationDecision.PASS, speedup=speedup)
 
 
 def test_crowns_reach_the_chain_only_through_the_follower(tmp_path, monkeypatch, supervisors, gateways):
