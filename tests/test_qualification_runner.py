@@ -1190,9 +1190,9 @@ def test_reopen_rejects_self_consistent_speed_witness_arm_relabel(
     """A witness relabeled to another delta — with every nested digest kept
     wire-consistent — must still die on the EXTERNAL authority comparison.
     The report-level cohort identity is left untouched, so nothing before the
-    per-report speed check can catch the substitution; the companion test in
-    test_qualification.py proves the real witness's internal digest admits an
-    equally self-consistent forgery at construction."""
+    per-report speed check can catch the substitution: a forger who recomputes
+    the witness's projection digest builds an equally self-consistent witness
+    at construction."""
 
     # Reopen's resident branch demands an exactly-typed ResidentCrossoverPlan
     # before it will even read the witness, so the harness's namespace plan is

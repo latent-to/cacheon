@@ -12,15 +12,25 @@ Production processes, run as subprocesses:
 ``python -m cacheon.cli chain-package``, ``model-provision`` and
 ``set-weights --dry-run``; ``python -m cacheon.chain.remote_worker_service
 make-registration``; ``python -m cacheon.chain.standing_cpu_supervisor
---config`` (killed mid-wait and restarted, then stopped with SIGTERM). The
-contributor commands ``scan`` and ``verify`` run over ``examples/`` in their own test.
+--config`` (killed mid-wait and restarted, then stopped with SIGTERM); the
+first intake pass, ``chain-validate --intake-only --once`` entered through
+``cacheon.cli.main`` in its own process. The contributor commands ``scan`` and
+``verify`` run over ``examples/`` in their own test.
 
 Production calls made in-process because the CPU host has no seam (owner
-decision 2026-10-19): intake runs ``validator_loop.run_validator`` with its
-HTTPS transfer leg replaced by the repository's hermetic
-``fetch_bundle_from_local_file_for_testing``; the commission calls
-``materialize_b300_identities`` through its own ``gpu_provisioner`` parameter,
-because the CLI reads the fixed ``/usr/bin/nvidia-smi``.
+decision 2026-10-19): intake's HTTPS transfer leg is the repository's hermetic
+``fetch_bundle_from_local_file_for_testing`` (swapped inside the intake process),
+and the restart pass runs ``validator_loop.run_validator`` here; the commission
+calls ``materialize_b300_identities`` through its own ``gpu_provisioner``
+parameter, because the CLI reads the fixed ``/usr/bin/nvidia-smi``.
+
+The trusted controller never runs candidate code: the intake process and the
+supervisor run with ``-X importtime`` and with the passing bundle armed in
+their environment (``CACHEON_BUNDLE_PATH``, ``CACHEON_ACTIVE``). Both load the
+launch, qualification and stack identity modules, and neither imports torch,
+SGLang, Triton or FlashInfer. The passing bundle's top-level ``import torch``
+is the witness: however a controller loaded that bundle, the import would be
+logged.
 
 Simulated boundaries: the chain (``tests/support/chain.py``, reached by
 subprocesses through ``tests/support/simulated_chain``); the GPU pod and its SSH
@@ -43,7 +53,7 @@ writes no ``chain-audit.jsonl`` record. ``run_pass`` reports that copy as
 ``"validator_reference:<name>"``, ``pass_audit_record`` rejects the non-digest
 value ("chain audit copies digest is malformed"), and ``run_validator`` logs the
 append failure and continues. Reproduce by asserting one record after the
-first ``e2e.intake`` below.
+first intake pass below.
 """
 
 from __future__ import annotations
@@ -74,6 +84,20 @@ BODIES = {  # Not copies of each other or of the public example: each must reach
                   "    with torch.inference_mode():\n        staged = module.forward(*args, **kwargs)\n"
                   "    return staged\n",
 }
+LOADED = {"cacheon.eval.engine_launch", "cacheon.eval.qualification", "cacheon.stack_manifest"}
+# importtime logs import statements, not importlib loads: a candidate run in the controller shows as miner-pass's torch.
+GPU_STACKS = {"torch", "sglang", "triton", "flashinfer"}
+INTAKE = ("import json, sys\nfrom cacheon.chain import fetch, validator_loop\nfrom cacheon.cli import main\n"
+          "origin = json.loads(sys.argv[1])\nvalidator_loop.fetch_bundle = lambda url, expected, root: "
+          "fetch.fetch_bundle_from_local_file_for_testing(origin[url], expected, root)\nsys.exit(main(sys.argv[2:]))\n")
+
+
+def _imported(stderr: str) -> set[str]:
+    """The modules a ``-X importtime`` controller process imported, after checking it loaded no GPU stack."""
+
+    names = {line.rsplit("|", 1)[1].strip() for line in stderr.splitlines() if line.startswith("import time:")}
+    assert sorted(name for name in names if name.split(".")[0] in GPU_STACKS) == []
+    return names
 
 
 def _submit(root: Path, validator_key) -> tuple[Path, dict[str, Path]]:
@@ -91,10 +115,18 @@ def test_finalized_submissions_qualify_settle_and_project_weights(tmp_path, monk
     started = time.monotonic()
     root, validator_key = e2e.deployment_root(tmp_path, f"e2e-{profile}", monkeypatch)
 
-    # Intake: finalized order, private fetch, immutable publication, copy demotion.
+    # Intake: finalized order, private fetch, immutable publication, copy demotion, in the CLI's own process.
     state, origin = _submit(root, validator_key)
-    fetched = e2e.intake(root, state, origin, monkeypatch)
-    assert len(fetched) == 3
+    armed = {"CACHEON_BUNDLE_PATH": str(root / "miners" / "miner-pass"), "CACHEON_ACTIVE": "1"}
+    validator = root / "validator"
+    intake = subprocess.run(
+        [sys.executable, "-X", "importtime", "-c", INTAKE, json.dumps({u: p.as_uri() for u, p in origin.items()}),
+         "chain-validate", "--intake-only", "--once", "--netuid", str(e2e.NETUID), "--network", str(state),
+         "--intake-db", str(validator / "intake.sqlite3"), "--private-root", str(validator / "private"),
+         "--publication-root", str(validator / "worker"), "--audit-log", str(validator / "chain-audit.jsonl")],
+        cwd=e2e.REPO, env={**e2e.chain_env(), **armed}, capture_output=True, text=True, timeout=300)
+    assert intake.returncode == 0 and "seen=3 reserved=3 published=2 copies=1 rejected=0" in intake.stdout, intake
+    assert LOADED <= _imported(intake.stderr)
     scope = e2e.scope(root)
     with FinalizedIntakeStore(root / "validator" / "intake.sqlite3", scope=scope) as store:
         rows = {row.arrival.hotkey: row for row in store.all()}
@@ -114,6 +146,8 @@ def test_finalized_submissions_qualify_settle_and_project_weights(tmp_path, monk
     # Qualification: FIFO head claimed, one carrier; a crash mid-wait reopens the same request.
     # The shuttle's own liveness writer stands in for the SSH relay process.
     heartbeat = e2e.private(root / "spool" / "state") / "heartbeat.json"
+    for name, value in {**armed, "PYTHONPROFILEIMPORTTIME": "1"}.items():
+        monkeypatch.setenv(name, value)
     with _dispatcher_heartbeat(sealed.registration, heartbeat, lambda: None):
         supervisor = supervisors(root)
         first = supervisor.until(e2e.waiting)
@@ -131,6 +165,7 @@ def test_finalized_submissions_qualify_settle_and_project_weights(tmp_path, monk
                          and status["last_disposition"] == "committed")
         supervisor.until(lambda status: status["phase"] == "idle")
         assert supervisor.stop(signal.SIGTERM) == 0
+    assert LOADED <= _imported((root / "supervisor.stderr").read_text())
 
     with RecoverableFinalizedIntakeStore(
         root / "validator" / "intake.sqlite3", sealed.policy, scope=scope,
