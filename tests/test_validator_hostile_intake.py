@@ -12,7 +12,7 @@ step that refuses it:
   node claimed twice or outside the model, malformed competition tables,
   unregistered targets and modes, retired features, dynamic, unresolved and
   partially local imports, native name collisions and CUDA include and
-  builder closures) beside a native bundle it admits, and demotes copies of
+  builder closures) beside the native and pre-cutover-ABI bundles it admits, and demotes copies of
   an earlier miner's bundle or of the validator's own library. A ``failed``
   row is terminal: the claim query selects only ``published`` and
   ``reproduction_pending`` rows;
@@ -33,6 +33,7 @@ import signal
 import subprocess
 import sys
 import tarfile
+from pathlib import Path
 
 import pytest
 from nacl.public import PrivateKey
@@ -113,6 +114,8 @@ def test_hostile_reveals_archives_and_manifests_fail_at_intake(tmp_path, monkeyp
     dsl = ("import cutlass.cute as cute\n\n\ndef forward(module, *args, **kwargs):\n"
            "    cute.compile(module.forward)\n    return module.forward(*args, **kwargs)\n")
     submit("dsl-compile", dsl)
+    # The pre-cutover ABI spelling is admitted and published unnormalized (its golden: tests/fixtures/pre_cutover_abi).
+    submit("pre-cutover", _identity("pre-cutover"), lambda text: text.replace("cacheon-op-abi-v0", "optima-op-abi-v0"))
     example = e2e.REPO / "examples" / "miner_node_identity"
     base = [("manifest.toml", tarfile.REGTYPE, (example / "manifest.toml").read_bytes()),
             ("kernels/forward.py", tarfile.REGTYPE, (example / "kernels" / "forward.py").read_bytes())]
@@ -266,11 +269,12 @@ def test_hostile_reveals_archives_and_manifests_fail_at_intake(tmp_path, monkeyp
     reveals["reformatted"] = (e2e.reveal("reformatted", *later, origin, block=e2e.REVEAL_BLOCK + 1),)
 
     state = e2e.chain(root, reveals, tuple(reveals))
-    assert _drain(root, state, origin, monkeypatch) == 9  # sixty-eight fetched, one cohort of eight per pass
+    assert _drain(root, state, origin, monkeypatch) == 9  # sixty-nine fetched, one cohort of eight per pass
     rows = _rows(root)
     refused["reformatted"] = f"copy_of:{rows['miner-ok'].reservation_id}"
     assert {hotkey for hotkey, row in rows.items() if row.status == "published"} == {
-        "miner-ok", "dsl-compile", "native-ok"}
+        "miner-ok", "dsl-compile", "pre-cutover", "native-ok"}
+    assert 'abi_version = "optima-op-abi-v0"' in (Path(rows["pre-cutover"].publication_root) / "manifest.toml").read_text()
     for hotkey, reason in refused.items():
         assert (rows[hotkey].status, rows[hotkey].reason[:len(reason)]) == ("failed", reason), hotkey
     assert e2e.intake(root, state, origin, monkeypatch) == []  # terminal rows are never fetched again

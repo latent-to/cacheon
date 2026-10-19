@@ -71,6 +71,8 @@
 # -30 scripts (26 assert floors, four file ceilings), +3 notes.
 # Tranche-2 wave 12: the real dashboard app served over HTTP on what intake, supervisor and weight service wrote, and fetch
 # refusals as hostile-intake rows, replace 12 dashboard, monitor, capacity and fetch test files: +397/-2,430 tests, -9 scripts, +2 notes.
+# Tranche-2 wave 13: a pre-cutover ABI row and content-hash golden, and a schema-2 store the restarted supervisor migrates, replace
+# the lease-schema, rename-compat and retained-rewards test files: +52/-338 tests (9 fixture), -3 assert floors, +1 golden, +2 notes.
 (root) 1155
 .github 338
 bundles 2398
@@ -79,5 +81,5 @@ cacheon_kernels 936
 dashboard 4281
 docs 12957
 examples 582
-scripts 4336
-tests 14659
+scripts 4335
+tests 14373

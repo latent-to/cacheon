@@ -12,7 +12,8 @@ Production processes, run as subprocesses:
 ``python -m cacheon.cli chain-package``, ``model-provision`` and
 ``set-weights --dry-run``; ``python -m cacheon.chain.remote_worker_service
 make-registration``; ``python -m cacheon.chain.standing_cpu_supervisor
---config`` (killed mid-wait and restarted, then stopped with SIGTERM); the
+--config`` (killed mid-wait, restarted on the store downgraded to lease and
+recovery schema 2, which it migrates, then stopped with SIGTERM); the
 first intake pass, ``chain-validate --intake-only --once`` entered through
 ``cacheon.cli.main`` in its own process. The contributor commands ``scan`` and
 ``verify`` run over ``examples/`` in their own test.
@@ -61,9 +62,11 @@ from __future__ import annotations
 import json
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -91,6 +94,14 @@ GPU_STACKS = {"torch", "sglang", "triton", "flashinfer"}
 INTAKE = ("import json, sys\nfrom cacheon.chain import fetch, validator_loop\nfrom cacheon.cli import main\n"
           "origin = json.loads(sys.argv[1])\nvalidator_loop.fetch_bundle = lambda url, expected, root: "
           "fetch.fetch_bundle_from_local_file_for_testing(origin[url], expected, root)\nsys.exit(main(sys.argv[2:]))\n")
+STAMPS = ("evaluation_lease_schema", "evaluation_recovery_schema")
+SINGLETONS = ("evaluation_leases_one_active_qualification", "evaluation_recoveries_one_unresolved")
+# The store a pre-worker-scope controller (lease and recovery schema 2) left: one arena-wide active lease and one
+# unresolved recovery, where version 3 keys them per worker and per lease.
+SCHEMA_2 = (f"DROP INDEX {SINGLETONS[0]}; DROP INDEX {SINGLETONS[1]};"
+            f"CREATE UNIQUE INDEX {SINGLETONS[0]} ON evaluation_leases(stage) WHERE state='active' AND stage='qualification';"
+            f"CREATE UNIQUE INDEX {SINGLETONS[1]} ON evaluation_recoveries(resolution) WHERE resolution='';"
+            f"UPDATE metadata SET value='2' WHERE key IN {STAMPS}")
 
 
 def _imported(stderr: str) -> set[str]:
@@ -109,6 +120,16 @@ def _submit(root: Path, validator_key) -> tuple[Path, dict[str, Path]]:
         content_hash, archive = e2e.package(e2e.miner_bundle(root, hotkey, BODIES.get(hotkey)), validator_key)
         reveals[hotkey] = (e2e.reveal(hotkey, content_hash, archive, origin),)
     return e2e.chain(root, reveals, MINERS), origin
+
+
+def _store_schema(root: Path, script: str = "") -> tuple[str, ...]:
+    """Run ``script`` on the root's intake store in place; return its lease and recovery stamps and singleton indexes."""
+
+    with closing(sqlite3.connect(root / "validator" / "intake.sqlite3")) as db:
+        db.executescript(script)
+        stamps = db.execute("SELECT value FROM metadata WHERE key IN (?, ?) ORDER BY key", STAMPS).fetchall()
+        indexes = db.execute("SELECT sql FROM sqlite_master WHERE name IN (?, ?) ORDER BY name", SINGLETONS).fetchall()
+        return (*(row[0] for row in stamps), *(" ".join(row[0].split()).split(" ON ")[1] for row in indexes))
 
 
 @pytest.mark.parametrize("profile", sorted(e2e.PROFILES))
@@ -154,8 +175,13 @@ def test_finalized_submissions_qualify_settle_and_project_weights(tmp_path, monk
         first = supervisor.until(e2e.waiting)
         assert len(e2e.carriers(root)) == 1
         assert supervisor.stop(signal.SIGKILL) == -signal.SIGKILL
+        # The restart reopens a schema-2 store in place, migrates it to version 3 and resumes the same request.
+        assert _store_schema(root, SCHEMA_2) == ("2", "2", "evaluation_leases(stage) WHERE state='active' AND "
+                                                 "stage='qualification'", "evaluation_recoveries(resolution) WHERE resolution=''")
         supervisor = supervisors(root)
         assert supervisor.until(e2e.waiting)["request_id"] == first["request_id"]
+        assert _store_schema(root) == ("3", "3", "evaluation_leases(competition_arena,owner) WHERE state='active' AND "
+                                       "stage='qualification'", "evaluation_recoveries(lease_id) WHERE resolution=''")
         assert len(e2e.carriers(root)) == 1
         failed = pod_answer(root, sealed, e2e.carriers(root)[0], QualificationDecision.FAIL)
         second = supervisor.until(lambda status: e2e.waiting(status) and status["request_id"] != first["request_id"])
@@ -182,15 +208,19 @@ def test_finalized_submissions_qualify_settle_and_project_weights(tmp_path, monk
         assert store.pending_qualification_recovery() is None
 
     # Weights: the signer projects the crowned hotkey over the same durable store.
-    out = e2e.run("cacheon.cli", "set-weights", "--dry-run", "--intake-db", str(root / "validator" / "intake.sqlite3"),
-                  "--netuid", str(e2e.NETUID), "--network", str(state), "--wallet-path", str(state),
-                  "--half-life-blocks", "100", "--discovery-lifetime-blocks", "20",
-                  "--discovery-pool-ppm", "100000", "--refresh-blocks", "10", env=e2e.chain_env())
+    sign = ("cacheon.cli", "set-weights", "--dry-run", "--intake-db", str(root / "validator" / "intake.sqlite3"),
+            "--netuid", str(e2e.NETUID), "--network", str(state), "--wallet-path", str(state),
+            "--half-life-blocks", "100", "--discovery-lifetime-blocks", "20",
+            "--discovery-pool-ppm", "100000", "--refresh-blocks", "10")
+    out = e2e.run(*sign, env=e2e.chain_env())
     uid = ("validator", *MINERS).index("miner-pass")
     assert f"rows=[{{'uid': {uid}, 'weight': 1.0, 'hotkey': 'miner-pass'}}]" in out, out
     assert "status=dry_run" in out and "submitted=False" in out, out
     with FinalizedIntakeStore(root / "validator" / "intake.sqlite3", scope=scope) as store:
         assert store._db.execute("SELECT COUNT(*) FROM weight_publications").fetchone()[0] == 0
+    # A stamp no controller wrote refuses the same reader, with its reason.
+    _store_schema(root, "UPDATE metadata SET value='999' WHERE key='evaluation_lease_schema'")
+    assert "evaluation lease schema is unsupported" in e2e.run(*sign, env=e2e.chain_env(), code=1)
     assert time.monotonic() - started < 60
 
 
