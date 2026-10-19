@@ -69,6 +69,8 @@
 # Tranche-2 wave 11: 27 pod-side unit test files, the replay and pipes support modules and the node_multi fixture go; the
 # commissioned node's off-chain twin proves what they modelled (owner 2026-10-19): +20/-16,811 tests, -7 .github, -1 root,
 # -30 scripts (26 assert floors, four file ceilings), +3 notes.
+# Tranche-2 wave 12: the real dashboard app served over HTTP on what intake, supervisor and weight service wrote, and fetch
+# refusals as hostile-intake rows, replace 12 dashboard, monitor, capacity and fetch test files: +397/-2,430 tests, -9 scripts, +2 notes.
 (root) 1155
 .github 338
 bundles 2398
@@ -77,5 +79,5 @@ cacheon_kernels 936
 dashboard 4281
 docs 12957
 examples 582
-scripts 4343
-tests 16692
+scripts 4336
+tests 14659

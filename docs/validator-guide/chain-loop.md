@@ -681,5 +681,5 @@ Continue with [Arena service](arena-service.md) and
 - [Evaluation-lease operator adapter](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/evaluation_lease_operator.py)
 - [Redacted chain journal](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/audit_log.py)
 - [Private validator archive](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/archive.py)
-- [Archive-bound tests](https://github.com/latent-to/cacheon/blob/main/tests/test_chain_fetch.py)
+- [Archive-bound tests](https://github.com/latent-to/cacheon/blob/main/tests/test_validator_hostile_intake.py)
 - [Snapshot and restore tests](https://github.com/latent-to/cacheon/blob/main/tests/test_validator_operator.py)

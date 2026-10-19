@@ -6,8 +6,9 @@ and assert the durable disposition of every hostile shape at the production
 step that refuses it:
 
 - finalized intake (``validator_loop.run_validator``) refuses malformed reveal
-  payloads, archives whose transport, encryption, members or content hash are
-  wrong, manifests the component parser rejects (path escape, foreign ABI, a
+  payloads, archives whose transport, encryption, members, extension headers,
+  inspectable-source budgets or content hash are wrong, manifests the
+  component parser rejects (path escape, foreign ABI, a
   node claimed twice or outside the model, malformed competition tables,
   unregistered targets and modes, retired features, dynamic, unresolved and
   partially local imports, native name collisions and CUDA include and
@@ -38,7 +39,9 @@ from nacl.public import PrivateKey
 
 from cacheon.chain.bundle_privacy import encrypt_archive
 from cacheon.chain.eval_cost import EvalCostPolicy
-from cacheon.chain.fetch import MAX_ARCHIVE_BYTES
+from cacheon.chain.fetch import (
+    MAX_ARCHIVE_BYTES, MAX_EXTENSION_HEADER_BYTES, MAX_INSPECTABLE_BYTES, MAX_INSPECTABLE_FILE_BYTES,
+)
 from cacheon.chain.intake import FinalizedIntakeStore
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.ssh_worker_transport import _dispatcher_heartbeat
@@ -56,10 +59,12 @@ def _identity(tag: str) -> str:
 
 
 def _tar(members) -> bytes:
+    """A gzip tar of (name, kind, data[, pax headers]) members, in order."""
     raw = io.BytesIO()
     with tarfile.open(fileobj=raw, mode="w:gz") as archive:
-        for name, kind, data in members:
+        for name, kind, data, *pax in members:
             info = tarfile.TarInfo(name)
+            info.pax_headers = pax[0] if pax else {}
             if kind == tarfile.REGTYPE:
                 info.size = len(data)
                 archive.addfile(info, io.BytesIO(data))
@@ -112,16 +117,30 @@ def test_hostile_reveals_archives_and_manifests_fail_at_intake(tmp_path, monkeyp
     base = [("manifest.toml", tarfile.REGTYPE, (example / "manifest.toml").read_bytes()),
             ("kernels/forward.py", tarfile.REGTYPE, (example / "kernels" / "forward.py").read_bytes())]
     unknown = "ab" * 32
+    source = MAX_INSPECTABLE_FILE_BYTES - 1  # one inspectable file just under its own budget
     for hotkey, extra, reason in (
-        ("escape", ("../evil.py", tarfile.REGTYPE, b"x"), "fetch:archive member escapes destination"),
-        ("symlink", ("kernels/link.py", tarfile.SYMTYPE, "/etc/passwd"), "fetch:archive member is not a regular file"),
-        ("hardlink", ("kernels/hard.py", tarfile.LNKTYPE, "manifest.toml"), "fetch:archive member is not a regular file"),
-        ("duplicate", base[0], "fetch:archive contains duplicate member path"),
-        ("excluded", ("kernels/__pycache__/forward.cpython-312.pyc", tarfile.REGTYPE, b"x"),
+        ("escape", [("../evil.py", tarfile.REGTYPE, b"x")], "fetch:archive member escapes destination"),
+        ("absolute", [("/abs.py", tarfile.REGTYPE, b"x")], "fetch:archive member escapes destination"),
+        ("symlink", [("kernels/link.py", tarfile.SYMTYPE, "/etc/passwd")], "fetch:archive member is not a regular file"),
+        ("hardlink", [("kernels/hard.py", tarfile.LNKTYPE, "manifest.toml")], "fetch:archive member is not a regular file"),
+        ("duplicate", [base[0]], "fetch:archive contains duplicate member path"),
+        ("excluded", [("kernels/__pycache__/forward.cpython-312.pyc", tarfile.REGTYPE, b"x")],
          "fetch:archive member is excluded from bundle identity"),
+        ("empty-directory", [("unused/", tarfile.DIRTYPE, "")],
+         "fetch:archive contains identity-excluded empty directories"),
+        ("file-parent", [("manifest.toml/x.py", tarfile.REGTYPE, b"x")], "fetch:archive path conflicts with earlier file"),
+        ("pax-header", [("notes.txt", tarfile.REGTYPE, b"x", {"comment": "A" * (MAX_EXTENSION_HEADER_BYTES + 1)})],
+         "fetch:archive extension header exceeds its per-header budget"),
+        ("inspectable-file", [("kernels/big.py", tarfile.REGTYPE, b"x" * (MAX_INSPECTABLE_FILE_BYTES + 1))],
+         "fetch:inspectable archive member exceeds its per-file budget"),
+        ("inspectable-total", [(f"kernels/part{index}.py", tarfile.REGTYPE, b"x" * source)
+                               for index in range(MAX_INSPECTABLE_BYTES // source + 1)],
+         "fetch:inspectable archive members exceed their aggregate budget"),
     ):
-        stage(hotkey, sealed(_tar([*base, extra])), unknown, reason)
+        stage(hotkey, sealed(_tar([*base, *extra])), unknown, reason)
     stage("not-gzip", sealed(b"plain bytes"), unknown, "fetch:bundle archive must be gzip-compressed tar")
+    stage("corrupt-deflate", sealed(bytes.fromhex("1f8b08000000000002ff06000000000000000000")), unknown,
+          "fetch:corrupt archive")  # gzip framing around an invalid DEFLATE block
     stage("oversize", b"", unknown, "fetch:archive exceeds")
     with (root / "archives" / "oversize.sealed").open("r+b") as handle:
         handle.truncate(MAX_ARCHIVE_BYTES + 1)
@@ -221,6 +240,8 @@ def test_hostile_reveals_archives_and_manifests_fail_at_intake(tmp_path, monkeyp
          cuda + "contains an unsupported include directive"),
         ("spliced-include", None, declare(), include('#inc\\\nlude "/tmp/unbound.cuh"'),
          f"CUDA include in '{cu}' is not a safe relative path"),
+        ("cu-includes-cu", None, declare("kernels/other.cu"), {**include('#include "other.cu"'), "kernels/other.cu":
+         native[cu]}, cuda + "includes a compilation unit 'kernels/other.cu'"),
         ("unbuilt-cuda", None, declare(), {cu: native[cu]},
          "complete feature evidence has CUDA sources without rebuild:build_cuda_ext"),
         ("builder-only", None, None, {"rebuild.json": native["rebuild.json"]},
@@ -245,7 +266,7 @@ def test_hostile_reveals_archives_and_manifests_fail_at_intake(tmp_path, monkeyp
     reveals["reformatted"] = (e2e.reveal("reformatted", *later, origin, block=e2e.REVEAL_BLOCK + 1),)
 
     state = e2e.chain(root, reveals, tuple(reveals))
-    assert _drain(root, state, origin, monkeypatch) == 8  # sixty fetched, one cohort of eight per pass
+    assert _drain(root, state, origin, monkeypatch) == 9  # sixty-eight fetched, one cohort of eight per pass
     rows = _rows(root)
     refused["reformatted"] = f"copy_of:{rows['miner-ok'].reservation_id}"
     assert {hotkey for hotkey, row in rows.items() if row.status == "published"} == {

@@ -61,10 +61,12 @@ def pod_request(root: Path, sealed, carrier: Path):
 
 
 def pod_answer(root: Path, sealed, carrier: Path, decision: QualificationDecision, *, speedup: str = "1.06",
-               incumbent_tree_digest: str | None = None, tamper=None, raised: str = "") -> str:
+               incumbent_tree_digest: str | None = None, tamper=None, raised: str = "",
+               witness: dict | None = None) -> str:
     """Play the GPU pod: verify the authenticated request, then seal its verdict.
 
-    ``speedup`` is the PASS's measured speedup over the commissioned baseline;
+    ``speedup`` is the PASS's measured speedup over the commissioned baseline; ``witness`` is the
+    attempt's paired-replay speed witness (by default only its policy version);
     ``incumbent_tree_digest`` plays a pod that measured against another incumbent tree;
     ``tamper`` rewrites the finalized result before RESULT_READY, as a hostile pod or shuttle would;
     ``raised`` makes the FAIL the pod's candidate-failure product carrying that rank failure.
@@ -90,7 +92,7 @@ def pod_answer(root: Path, sealed, carrier: Path, decision: QualificationDecisio
     else:
         attempt = publish_evidence(evidence, canonical_json_bytes({
             "decision": decision.value, "request_id": request["request_id"],
-            "speed_witness": {"resident_policy": {"version": 17}}}),  # the live paired-replay policy
+            "speed_witness": witness or {"resident_policy": {"version": 17}}}),  # the live paired-replay policy
             domain="qualification.cohort-attempt", media_type="application/json",
             schema="cacheon.qualification.cohort-attempt.v1")
     settlement = None
