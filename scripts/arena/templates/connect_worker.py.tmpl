@@ -66,12 +66,21 @@ if not (stage/'prepared.json').exists():
 if args.start:
     # The C++20 rotation changed the patcher hash embedded in queued identities.
     # Run the evaluator's static identity comparison before starting its worker.
-    preflight='''import json,sqlite3,sys
+    preflight='''import json,sqlite3,sys,time
+from pathlib import Path
 sys.path.insert(0,sys.argv[1])
 from cacheon.engine_tree import inspect_contribution
 from cacheon.target_catalog import default_target_catalog
 config=json.load(open(sys.argv[2]));catalog=default_target_catalog()
-db=sqlite3.connect('file:'+config['intake_db']+'?mode=ro',uri=True)
+deadline=time.monotonic()+120
+while True:
+ if Path(config['intake_db']).is_file():
+  db=sqlite3.connect('file:'+config['intake_db']+'?mode=ro',uri=True)
+  if db.execute("SELECT 1 FROM sqlite_master WHERE name='metadata'").fetchone():
+   if db.execute("SELECT value FROM metadata WHERE key='finalized_cursor'").fetchone():break
+  db.close()
+ if time.monotonic()>=deadline:raise RuntimeError('intake has not initialized its finalized cursor; inspect the intake service log')
+ time.sleep(1)
 arena=config['arena_service_manifest']['runtime']['arena_id']
 rows=db.execute("SELECT reservation_id,publication_root,delta_fingerprint_json FROM reservations WHERE competition_arena=? AND status='published'",(arena,)).fetchall()
 for key,root,raw in rows:
@@ -80,14 +89,11 @@ for key,root,raw in rows:
   raise RuntimeError('queued publication '+key+' has a different validator build identity; retain its original fingerprint and reconcile the source rotation before GPU dispatch')
 print('QUEUED_IDENTITIES_VERIFIED',len(rows))
 '''
-    subprocess.run(['/root/cacheon-ops/venv/bin/python','-B','-c',preflight,
-                    str(source),str(stage/'mainnet-screen-dispatcher.json')],check=True,timeout=120)
     prepared=json.loads((stage/'prepared.json').read_bytes())
     for name in prepared['units']:
         unit=stage/name
         shutil.copyfile(unit,Path('/etc/systemd/system')/unit.name)
-    intake=Path(subprocess.check_output(['systemctl','show','cacheon-@SLUG@-intake.service',
-                                        '--value','-p','FragmentPath'],text=True).strip())
+    intake=Path('/etc/systemd/system/cacheon-@SLUG@-intake.service')
     previous=intake.read_text()
     lines=[('Environment=PYTHONPATH='+str(source)) if line.startswith('Environment=PYTHONPATH=')
            else ('WorkingDirectory='+str(source)) if line.startswith('WorkingDirectory=') else line
@@ -97,7 +103,9 @@ print('QUEUED_IDENTITIES_VERIFIED',len(rows))
         backup=stage/'intake-unit-before.service';backup.write_text(previous)
         intake.write_text(updated)
     subprocess.run(['systemctl','daemon-reload'],check=True)
-    if updated!=previous:subprocess.run(['systemctl','restart','cacheon-@SLUG@-intake.service'],check=True)
+    subprocess.run(['systemctl','restart' if updated!=previous else 'start','cacheon-@SLUG@-intake.service'],check=True)
+    subprocess.run(['/root/cacheon-ops/venv/bin/python','-B','-c',preflight,
+                    str(source),str(stage/'mainnet-screen-dispatcher.json')],check=True,timeout=150)
     subprocess.run(['systemctl','start','cacheon-eval-@SLUG@-pair-'+args.tag+'.service'],check=True,timeout=180)
     # The dashboard follows the durable spool registration across spot hosts.
     logs = state/'logs'; logs.mkdir(mode=0o700, exist_ok=True)

@@ -149,6 +149,7 @@ if not intake_unit.exists():
         "Environment=CACHEON_BUNDLE_DECRYPTION_KEY=/root/cacheon-ops/secrets/bundle-decryption.key", f"WorkingDirectory={SOURCE}",
         "ExecStart=" + shlex.join(intake), "Restart=on-failure", "RestartSec=15",
         f"StandardOutput=append:{PLANE / 'state' / 'intake.log'}", "StandardError=inherit", "[Install]", "WantedBy=multi-user.target", ""]))
+shutil.copyfile(intake_unit, stage / intake_unit.name)
 report = {"prepared": True, "installed": False, "pair": TAG, "lane": lane, "baseline": baseline, "source_revision": ready["source"]["revision"],
           "registration_digest": reg["registration_digest"], "service_identity": reg["service_identity"], "worker_epoch": reg["worker_epoch"],
           "intake_db": dispatch["intake_db"], "accept_legacy_bundles": False, "fee_rao": int(FEE_RAO), "units": sorted(p.name for p in stage.glob("*.service"))}

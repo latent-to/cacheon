@@ -195,3 +195,7 @@ pair's stage on the validator VM together with the arena's plane: its own
 intake unit, intake database and fee, created by the arena's first pair and
 found by later ones. Nothing is installed or started until `--start`, which
 `await_commission.py` passes once the commission completes.
+The start step installs and starts the intake unit first, waits up to 120 seconds
+for its first finalized cursor, and checks queued identities before starting
+the worker. A missing cursor stops the start with the intake log as the recovery
+point; an existing plane keeps its database and cursor.

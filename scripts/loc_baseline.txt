@@ -81,13 +81,14 @@
 # Muse launch closure: ordinary library JIT keeps declared CUDA beside Python; settlement uses its measured
 # contribution's own publication. Runtime net 0; +25 docs for JIT/recovery, +10 tests in existing end-to-end modules.
 # Scripts include these three notes, the preceding change's three uncounted notes, and +1 for NUMA-safe GPU pin indexing.
+# First-arena start: +9 scripts/+4 docs replace manual intake installation and first-sync ordering; +1 accounting note.
 (root) 1155
 .github 338
 bundles 2398
 cacheon 92387
 cacheon_kernels 936
 dashboard 4281
-docs 12985
+docs 12989
 examples 582
-scripts 4343
+scripts 4353
 tests 13821
