@@ -78,13 +78,16 @@
 # Settlement composes the winner onto the current stack (a forward-pass crown measured before a prefix-cache crown
 # displaced it; owner order 2026-10-20): +50 runtime (the composed-tree module, settlement and intake shrink), +3 docs,
 # +12 tests, +3 notes. NEUTRALIZATION's displacement loop is the deletion.
+# Muse launch closure: ordinary library JIT keeps declared CUDA beside Python; settlement uses its measured
+# contribution's own publication. Runtime net 0; +25 docs for JIT/recovery, +10 tests in existing end-to-end modules.
+# Scripts include these three notes, the preceding change's three uncounted notes, and +1 for NUMA-safe GPU pin indexing.
 (root) 1155
 .github 338
 bundles 2398
 cacheon 92387
 cacheon_kernels 936
 dashboard 4281
-docs 12960
+docs 12985
 examples 582
-scripts 4336
-tests 13814
+scripts 4343
+tests 13821

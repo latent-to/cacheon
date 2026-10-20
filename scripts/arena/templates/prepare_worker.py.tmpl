@@ -112,9 +112,10 @@ for node, group in sorted(groups.items()):
     assert len(local) >= 2 * len(group) + 24, 'too few local cores for the pin table and the client sets'
     # Measured on this VM 2026-10-18: scheduler vCPUs chosen from the fast positions (single-thread sweep).
     STARTS = @SCHEDULER_STARTS@
-    assert len(group) == len(STARTS), 'this table is for the @NODE_NAME@ box'
+    assert set(gpu_nodes) == set(range(len(STARTS))), 'this table is for the @NODE_NAME@ box'
     by_cpu = {cpu: cpus for cpus in local for cpu in cpus}
-    for gpu, first in zip(sorted(group), STARTS):
+    for gpu in sorted(group):
+        first = STARTS[gpu]
         a, b = by_cpu[first], by_cpu[first + 1]
         assert a != b
         pins[str(gpu)] = [a[0], b[0], *b[1:]]

@@ -1045,17 +1045,15 @@ def _contribution_files(
     }
     native_paths: dict[str, str] = {}
     native_names: dict[str, str] = {}
+    prebuild = bool(inspection.rebuild_plan and inspection.rebuild_plan.steps)
+    native_root = PurePosixPath("cuda") / prefix if prebuild else PurePosixPath(prefix)
     for relative in inspection.cuda_files:
         source_path = PurePosixPath(relative)
         suffix = source_path.suffix
-        output_name = (
-            _generated_name(prefix, relative, suffix=suffix)
-            if suffix == ".cu"
-            else source_path.name
-        )
-        output = (PurePosixPath("cuda") / prefix / source_path.parent / output_name).as_posix()
+        output_name = _generated_name(prefix, relative, suffix=suffix) if prebuild and suffix == ".cu" else source_path.name
+        output = (native_root / source_path.parent / output_name).as_posix()
         native_paths[relative] = output
-        if suffix == ".cu":
+        if prebuild and suffix == ".cu":
             original = PurePosixPath(relative).stem
             generated = PurePosixPath(output_name).stem
             previous = native_names.setdefault(original, generated)

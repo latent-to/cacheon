@@ -32,9 +32,11 @@ lower score. A retained complete primary PASS left by an older controller is
 accepted transactionally on restart after its evidence reopens; no GPU work is
 repeated and no authority is relabeled.
 
-Settlement planning is pure: it receives typed candidates plus the exact current
-`EvaluationStackManifest` and tree digest. It reads no database, chain, wallet, or mutable
-host state.
+Settlement planning receives typed candidates plus the exact current
+`EvaluationStackManifest` and tree digest. When another target has crowned since
+measurement, its tree resolver reads retained publication records and materializes
+the combined stack under the validator's private root. Planning never reads a
+wallet or submits a chain transaction.
 
 ## From one complete PASS to one atomic commit
 
@@ -46,7 +48,7 @@ flowchart LR
     Blockers -- no --> Pending
     Blockers -- yes --> Lease["leased<br/>authority + generation + expiry"]
     Lease --> Reopen["Reopen accepted evidence<br/>and current stack"]
-    Reopen --> Plan["Pure deterministic plan"]
+    Reopen --> Plan["Plan with retained composition"]
     Plan --> Commit{"Transaction re-plans and<br/>rechecks lease, head, blockers"}
     Commit --> Events["Hash-chained events + claims"]
     Events --> Stack["Optional stack generation +1"]
@@ -130,7 +132,10 @@ The event journal is append-only and digest chained. Event types have distinct j
   advance its generation together. The winner joins the current stack: every other target
   keeps its current entry whatever the winner's measurement-time manifest held, and a
   composed stack no pod assembled takes its tree identity from the validator's own
-  materialization of the retained publications, which the next recommission reproduces.
+  materialization of the exact measured contributions' retained publications.
+  This identity is not GPU qualification of that combination. The worker keeps its
+  commissioned baseline until the operator explicitly recommissions and validates
+  the combined stack; the dispatcher checks results against that commission.
 - `HOLD` records stale rows and every current registered non-winner without mutating the
   stack: insufficient ancestor results use `lost_potential`, incomparable baselines
   use `stale_incumbent`, overlapping losers use
@@ -140,6 +145,21 @@ The event journal is append-only and digest chained. Event types have distinct j
 
 Do not infer event meaning from a miner bundle name or the final row status. Reopen the
 event, candidate pair, evidence receipt, and resulting stack state as one authority.
+
+### Composition recovery
+
+A missing publication, an incomplete composed tree, or a catalog/materializer
+mismatch stops settlement with its original error; it does not fail the miner.
+Settlement runs before qualification, so the same error also prevents new work.
+Stop the affected supervisor before recovery and retain its error and leased
+candidate identities. Restore missing bytes at the publication path recorded for
+that exact contribution, then verify its content hash. For an incomplete
+`engine-trees/composed-<stack digest>` directory, move it to an incident directory
+on the same filesystem and let the next plan rebuild from those publications.
+Preserve the original directory as evidence. Use the matching source/catalog for
+a version mismatch; do not relabel an old tree or change the durable stack.
+Restart the supervisor after repair: the existing lease recovery and commit
+re-plan reopen the retained evidence without repeating evaluator work.
 
 ## Legacy V1 CROWN rewards
 

@@ -136,7 +136,12 @@ def _submit(root: Path, validator_key) -> tuple[Path, dict[str, Path]]:
 
     reveals, origin = {}, {}
     for hotkey in MINERS:
-        content_hash, archive = e2e.package(e2e.miner_bundle(root, hotkey, BODIES.get(hotkey)), validator_key)
+        bundle = e2e.miner_bundle(root, hotkey, BODIES.get(hotkey))
+        if hotkey == "miner-pass":
+            (bundle / "kernels/kernel.cuh").write_text("#define JIT_VALUE 1\n")
+            manifest = bundle / "manifest.toml"
+            manifest.write_text(manifest.read_text() + 'cuda_sources = ["kernels/kernel.cuh"]\n')
+        content_hash, archive = e2e.package(bundle, validator_key)
         reveals[hotkey] = (e2e.reveal(hotkey, content_hash, archive, origin),)
     return e2e.chain(root, reveals, MINERS), origin
 
@@ -225,6 +230,10 @@ def test_finalized_submissions_qualify_settle_and_project_weights(tmp_path, monk
         assert stack.manifest.digest != sealed.incumbent.digest
         assert stack.manifest.entries["forward_pass"].artifact_digest == rows["miner-pass"].arrival.content_hash
         assert store.pending_qualification_recovery() is None
+
+    # A library JIT finds its declared header relative to the materialized Python module's __file__.
+    (header,) = (root / "pod" / "trees" / stack.manifest.digest).glob("cacheon_c_*/kernels/kernel.cuh")
+    assert header.read_text() == "#define JIT_VALUE 1\n" and header.with_name("forward.py").is_file()
 
     # Weights: the signer projects the crowned hotkey over the same durable store.
     sign = ("cacheon.cli", "set-weights", "--dry-run", "--intake-db", str(root / "validator" / "intake.sqlite3"),

@@ -115,8 +115,8 @@ def test_a_prefix_cache_crown_stands_beside_the_forward_pass_crown_and_outlives_
                 for row in e2e.store_rows(root, "SELECT reservation_id, qualification_json FROM settlement_qualifications")}
     assert [measured[hotkey] for hotkey in RECORDS] == baselines and baselines[1] == baselines[2] != baselines[0]
 
-    # The pod's rotation reproduces the stack and tree identities the validator composed at settlement (the
-    # dispatcher's pin), and the rotated baseline reopens both contributions in one tree under two namespaces.
+    # The pod's rotation reproduces the validator's composition identity. This CPU proof does not execute
+    # the combined stack; the rotated baseline reopens both contributions under two namespaces.
     rotated = e2e.rotate(root, sealed)
     with FinalizedIntakeStore(root / "validator" / "intake.sqlite3", scope=sealed.scope) as store:
         durable = store.evaluation_stack(sealed.incumbent.arena_digest)

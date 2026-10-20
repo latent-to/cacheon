@@ -1864,12 +1864,12 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         """The tree identity of a stack settlement composes, assembled from this store's retained publications."""
 
         from cacheon.chain.composed_stack import composed_tree_digest
-
         digests = tuple(ref.artifact_digest for ref in manifest.entries.values())
         rows = self._db.execute(
-            f"SELECT content_hash, publication_root FROM reservations WHERE content_hash IN ({','.join('?' * len(digests))})",
-            digests).fetchall()
-        return composed_tree_digest(self.path.parent, manifest, {row[0]: Path(row[1]) for row in rows if row[1]})
+            "SELECT c.*, r.publication_root FROM settlement_candidates AS c JOIN reservations AS r USING(reservation_id) "
+            f"WHERE r.content_hash IN ({','.join('?' * len(digests))})", digests)
+        return composed_tree_digest(self.path.parent, manifest, (
+            (self._settlement_candidate(row), Path(row["publication_root"])) for row in rows if row["publication_root"]))
 
     def commit_settlement(
         self,

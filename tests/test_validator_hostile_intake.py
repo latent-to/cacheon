@@ -245,8 +245,6 @@ def test_hostile_reveals_archives_and_manifests_fail_at_intake(tmp_path, monkeyp
          f"CUDA include in '{cu}' is not a safe relative path"),
         ("cu-includes-cu", None, declare("kernels/other.cu"), {**include('#include "other.cu"'), "kernels/other.cu":
          native[cu]}, cuda + "includes a compilation unit 'kernels/other.cu'"),
-        ("unbuilt-cuda", None, declare(), {cu: native[cu]},
-         "complete feature evidence has CUDA sources without rebuild:build_cuda_ext"),
         ("builder-only", None, None, {"rebuild.json": native["rebuild.json"]},
          "complete feature evidence selects rebuild:build_cuda_ext without declared CUDA sources"),
         ("header-only", None, lambda m: m + 'cuda_sources = ["kernels/only.cuh"]\n',
@@ -258,6 +256,9 @@ def test_hostile_reveals_archives_and_manifests_fail_at_intake(tmp_path, monkeyp
     # The native shape intake admits: a declared header, and a comment after its literal include.
     submit("native-ok", lead("import native_sm103"), declare("kernels/helper.cuh"),
            files={**include('#include "helper.cuh" /* declared */'), "kernels/helper.cuh": header})
+    # Installed libraries may JIT declared CUDA inside the worker without a separate prebuild.
+    submit("jit-header", _identity("jit-header"), lambda m: m + 'cuda_sources = ["kernels/only.cuh"]\n',
+           files={"kernels/only.cuh": header})
     library = (e2e.REPO / "cacheon_kernels" / "codec" / "nvfp4.py").read_text() + "\n\n" + _identity("library")
     submit("library-copy", library)
     refused["library-copy"] = "copy_of:validator_reference:library-codec-nvfp4.py"
@@ -273,7 +274,7 @@ def test_hostile_reveals_archives_and_manifests_fail_at_intake(tmp_path, monkeyp
     rows = _rows(root)
     refused["reformatted"] = f"copy_of:{rows['miner-ok'].reservation_id}"
     assert {hotkey for hotkey, row in rows.items() if row.status == "published"} == {
-        "miner-ok", "dsl-compile", "pre-cutover", "native-ok"}
+        "miner-ok", "dsl-compile", "pre-cutover", "native-ok", "jit-header"}
     assert 'abi_version = "optima-op-abi-v0"' in (Path(rows["pre-cutover"].publication_root) / "manifest.toml").read_text()
     for hotkey, reason in refused.items():
         assert (rows[hotkey].status, rows[hotkey].reason[:len(reason)]) == ("failed", reason), hotkey
