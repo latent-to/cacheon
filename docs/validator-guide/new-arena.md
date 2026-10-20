@@ -162,8 +162,8 @@ python3 -B scripts/arena/launch_node.py --operator /path/to/operator-musespark \
   --runtime-seed /path/to/runtime-seed
 ```
 
-The launcher checks the image proof, the source archive and the render receipt,
-then runs the rendered stage detached with its output in the task directory.
+The launcher independently checks the retained image, exported controller source
+and render receipt, then runs the stage detached with its output in the task directory.
 The stage ships the archives to the pod, bootstraps the worker (environments,
 model receipt re-hash, image pull by digest), binds the recipe to the pod's
 paths, and runs the commission steps: READY receipt, deployment profile,

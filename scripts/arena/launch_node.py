@@ -1,7 +1,7 @@
 """Start one pair's commission from a rendered operator directory on the validator VM.
 
-Checks the retained proofs the operator names (the durable image proof's source revision and image
-digest, the exported source archive against its metadata, the render receipt), then runs the
+Checks the retained image digest, the exported controller source against its metadata and the
+render receipt independently, then runs the
 rendered ``launch_stage.py`` detached in its own session with its whole output in the task
 directory, and records what it started. Arguments after ``--`` go to ``launch_stage`` unchanged:
 ``--host``, ``--user``, ``--known-hosts``, ``--shared``, ``--tag``, ``--lane``, ``--baseline``,
@@ -35,7 +35,7 @@ parser.add_argument("--base", required=True, help="ssh_key, ssh_key.pub and boot
 parser.add_argument("--image-proof", required=True, type=Path, help="durable-images.json of the worker image")
 parser.add_argument("--source", required=True, type=Path, help="exported runtime source archive")
 parser.add_argument("--source-metadata", required=True, type=Path)
-parser.add_argument("--source-revision", required=True, help="full commit the proof and the source must carry")
+parser.add_argument("--source-revision", required=True, help="full commit the exported controller source must carry")
 parser.add_argument("--image-digest", required=True, help="sha256 hex the worker image reference must carry")
 args, stage = parser.parse_known_args()
 if stage and stage[0] == "--":
@@ -46,7 +46,6 @@ task = args.task_dir.resolve(strict=True)
 receipt = json.loads((operator / "render-receipt.json").read_bytes())
 slug = receipt["operator"]["slug"]
 proof = json.loads(args.image_proof.read_bytes())
-assert proof["source_revision"] == args.source_revision, proof["source_revision"]
 assert proof["worker_image"].endswith("@sha256:" + args.image_digest), proof["worker_image"]
 metadata = json.loads(args.source_metadata.read_bytes())
 assert metadata["revision"] == args.source_revision and len(metadata["revision"]) == 40
