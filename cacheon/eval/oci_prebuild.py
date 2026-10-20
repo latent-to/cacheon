@@ -1,7 +1,7 @@
 """Host-hermetic native prebuild for one resolved engine launch.
 
-The trusted controller supplies only a digest-pinned image, an already materialized
-engine tree, a validator-owned seccomp profile, and one lease-scoped quota-backed
+The trusted controller supplies its commissioned worker, a digest-pinned image,
+materialized engine tree, validator-owned seccomp profile, and lease-scoped quota-backed
 output mount.  The disposable container has no network, GPU, model, home, wallet,
 Docker socket, or ambient host mount.  It parses candidate files as data and invokes
 only validator-registered rebuild patchers in ``build`` phase.  The host never imports
@@ -476,6 +476,7 @@ def build_prebuild_argv(
         "--log-driver=none",
         f"--mount=type=bind,src={resolved.materialized_tree_root},dst={CONTAINER_TREE},readonly,bind-propagation=rprivate",
         f"--mount=type=bind,src={stage_path},dst={CONTAINER_STAGE},bind-propagation=rprivate",
+        f"--mount=type=bind,src={Path(__file__).resolve()},dst=/cacheon/prebuild.py,readonly,bind-propagation=rprivate",
     ]
     argv.extend(f"--env={key}={env[key]}" for key in sorted(env))
     argv.extend(
@@ -483,8 +484,7 @@ def build_prebuild_argv(
             f"--entrypoint={policy.container_python}",
             preflight.local_image_id,
             "-I",
-            "-m",
-            "cacheon.eval.oci_prebuild",
+            "/cacheon/prebuild.py",
             "--container-build",
         )
     )
@@ -727,7 +727,7 @@ def _container_value(name: str, *, pattern: re.Pattern[str] | None = None) -> st
 
 
 def container_build() -> Path:
-    """Fixed in-image worker entry; imports no candidate module and dlopens nothing."""
+    """Commissioned container worker; imports no candidate module and dlopens nothing."""
     build_digest = _container_value("CACHEON_NATIVE_BUILD_SPEC_DIGEST", pattern=re.compile(r"[0-9a-f]{64}"))
     tree_digest = _container_value("CACHEON_ENGINE_TREE_DIGEST", pattern=re.compile(r"[0-9a-f]{64}"))
     architecture = _container_value("CACHEON_TARGET_GPU_ARCH", pattern=_ARCH)
@@ -779,7 +779,7 @@ def container_build() -> Path:
     os.environ.update(preserved)
     from cacheon.engine_tree import reopen_materialized_engine_tree
 
-    reopened = reopen_materialized_engine_tree(
+    reopen_materialized_engine_tree(
         CONTAINER_TREE, expected_tree_digest=tree_digest
     )
     stage = Path(CONTAINER_STAGE)
@@ -788,19 +788,10 @@ def container_build() -> Path:
     if any(stage.iterdir()):
         raise OCIPrebuildError("container native stage is not empty")
 
-    from cacheon.manifest import all_declared_cuda_sources, load_manifest
     from cacheon.rebuild import apply_rebuild_plan
 
-    manifest = None
-    requires_rebuild = False
-    if reopened.runtime_manifest is not None:
-        manifest = load_manifest(CONTAINER_TREE)
-        requires_rebuild = bool(
-            all_declared_cuda_sources(CONTAINER_TREE, manifest)
-        )
+    # Declared CUDA may be library-JIT input; only an explicit plan selects prebuild.
     rebuilt = apply_rebuild_plan(CONTAINER_TREE, phase="build")
-    if requires_rebuild and not rebuilt:
-        raise OCIPrebuildError("declared native inputs lack a reviewed rebuild plan")
     entries = sorted(child.name for child in stage.iterdir())
     if any(name not in _ALLOWED_STAGE_TOP_LEVEL - {PREBUILD_RECEIPT} for name in entries):
         raise OCIPrebuildError("reviewed patcher emitted an unexpected stage entry")

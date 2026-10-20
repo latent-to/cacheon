@@ -257,8 +257,8 @@ CUDA-source features and resolves them against the target catalog.
 Installed libraries may compile declared sources through their ordinary JIT inside
 the disposable worker. A separate `rebuild.json` is required only when selecting
 the native prebuild; `build_cuda_ext` requires a declared `.cu` compilation unit.
-Without a prebuild, materialization preserves CUDA paths beside the namespaced
-Python source, so a JIT loader can resolve them relative to its own `__file__`.
+The prebuild worker comes from the commissioned controller source, mounted read-only.
+JIT inputs stay beside namespaced Python, preserving paths relative to `__file__`.
 
 The approved native-extension builder compiles with C++20, as required by current
 PyTorch headers. Compiler flags are part of the recorded native build identity;

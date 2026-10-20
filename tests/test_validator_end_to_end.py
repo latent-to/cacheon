@@ -234,6 +234,23 @@ def test_finalized_submissions_qualify_settle_and_project_weights(tmp_path, monk
     # A library JIT finds its declared header relative to the materialized Python module's __file__.
     (header,) = (root / "pod" / "trees" / stack.manifest.digest).glob("cacheon_c_*/kernels/kernel.cuh")
     assert header.read_text() == "#define JIT_VALUE 1\n" and header.with_name("forward.py").is_file()
+    # Muse k10 (2026-10-21): declared JIT headers must pass prebuild without a separate rebuild plan.
+    tree, native = header.parent.parent.parent, e2e.private(root / "jit-prebuild")
+    program = ("import json,os,sys; from cacheon.eval import oci_prebuild as p; "
+               "from cacheon.engine_tree import reopen_materialized_engine_tree; "
+               "p.CONTAINER_TREE,p.CONTAINER_STAGE=sys.argv[1:]; "
+               "os.environ['CACHEON_ENGINE_TREE_DIGEST']=reopen_materialized_engine_tree(p.CONTAINER_TREE).tree_digest; "
+               "print(p.container_build().read_text())")
+    checked = subprocess.run([sys.executable, "-B", "-c", program, str(tree), str(native)],
+        capture_output=True, text=True, timeout=30, env={**e2e.chain_env(),
+            "CACHEON_NATIVE_BUILD_SPEC_DIGEST": stack.manifest.digest,
+            "CACHEON_TARGET_GPU_ARCH": e2e.PROFILES[profile].arch,
+            "CACHEON_NATIVE_ARTIFACT_STAGE": str(native), "CACHEON_PINNED_BUILD_ROOTS": "/usr",
+            "CACHEON_BUILD_PATH": "/usr/bin", "CACHEON_BUILD_TMPDIR": "/tmp",
+            "CACHEON_NATIVE_COMPILE_TIMEOUT_S": "10", "CACHEON_REBUILD_CONTAINER": "1"})
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    built = json.loads(checked.stdout)
+    assert built["rebuild_applied"] is False and built["stage_entries"] == ["prebuild.json"]
 
     # Weights: the signer projects the crowned hotkey over the same durable store.
     sign = ("cacheon.cli", "set-weights", "--dry-run", "--intake-db", str(root / "validator" / "intake.sqlite3"),
