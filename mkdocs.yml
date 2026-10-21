@@ -127,6 +127,7 @@ nav:
       - Overview: validator-guide/overview.md
       - Deployment readiness: validator-guide/first-hour.md
       - Arena service: validator-guide/arena-service.md
+      - Commissioning a new arena: validator-guide/new-arena.md
       - Finalized intake: validator-guide/chain-loop.md
       - Qualification: validator-guide/qualification.md
       - Scoring: validator-guide/scoring.md

@@ -1,5 +1,6 @@
 {
  "examples/miner_node_identity": "cd8e8c59db85104f260e7fdcbe908f712f6fd74ebadda891310ef9b3a01e92dd",
  "examples/miner_node_wrong": "16c05c40c67a4d16eca862397d28db13a7fe0cc7ea037cd81d66ef5e164a8cbd",
- "tests/fixtures/node_singleton": "73db4237e1de9fcc645e115a4a36be7ebb0a72bc0de47805bf0bb960f172d699"
+ "tests/fixtures/node_singleton": "73db4237e1de9fcc645e115a4a36be7ebb0a72bc0de47805bf0bb960f172d699",
+ "tests/fixtures/pre_cutover_abi": "704d530dbf1771b4f8cbd75f20d9b5fe04d78dc01fe43d4f4eedacbed58ac1d3"
 }

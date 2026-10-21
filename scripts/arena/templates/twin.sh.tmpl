@@ -1,0 +1,38 @@
+#!/bin/sh
+# Off-chain twin for one commissioned @MODEL_PROFILE_KEY@ pair: the production pod service launched the way
+# worker_runtime.py launches it (taskset on the lane's client cores, clear of the sealed engine pins) plus the
+# production request driver, over a scratch intake. Nothing here reads an intake database or touches a mainnet unit.
+# usage: twin_@SLUG@.sh SHARED TAG serve               start pod-serve in tmux (refuses a second one for this pair)
+#        twin_@SLUG@.sh SHARED TAG submit BUNDLE NAME  copy BUNDLE (a control dir) to a 0700 copy and inject one request
+#        twin_@SLUG@.sh SHARED TAG status              pod-serve pid, spool counts, service log tail
+set -eu
+SHARED=$1; TAG=$2; CMD=$3
+W=$SHARED/workers/$TAG; STAGE=$W/node/pair-$TAG; R=$STAGE/remote-worker; SRC=$W/build/src
+PY=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["controller_python"])' "$SHARED/bootstrap-complete.json")
+SERVICE=$STAGE/worker-bootstrap/bin/remote_worker_service.py; REQ=$W/operator/req_@SLUG@.py; SESSION=cacheon-@SLUG@-pair-$TAG
+CLIENT=$(python3 -c "import json,sys; sets=@CLIENT_SETS@; lane=','.join(map(str, json.load(open(sys.argv[1]))['lane']['devices'])); print(','.join(map(str, sets[lane])))" "$STAGE/ready-receipt.json")
+# The service's own command line, not the tmux server or shell that carries it: those hold the same words and sit on every core.
+SERVICE_CMD="^$PY -B -u $SERVICE pod-serve"
+test -f "$STAGE/registration.json" && test -f "$R/registration.json" && test -f "$REQ" && test -x "$PY"
+case $CMD in
+serve)
+  if pgrep -f "$SERVICE_CMD" > /dev/null; then echo "pod-serve already running for pair-$TAG"; exit 1; fi
+  mkdir -p -m 700 "$R/logs"
+  tmux new-session -d -s "$SESSION" "PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$SRC /usr/bin/taskset -c $CLIENT $PY -B -u $SERVICE pod-serve --poll-seconds 5 >> $R/logs/service.log 2>&1"
+  sleep 8; PID=$(pgrep -f "$SERVICE_CMD" | head -1 || true)
+  echo "POD_SERVE_PID=${PID:-none}"; [ -n "$PID" ] && echo "AFFINITY=$(taskset -cp "$PID" | sed 's/.*: //')"; tail -n 3 "$R/logs/service.log" | cut -c1-200 ;;
+submit)
+  BUNDLE=$4; NAME=$5; T=$STAGE/twin/$NAME
+  test -d "$BUNDLE"; test ! -e "$T"
+  mkdir -p -m 700 "$STAGE/twin" "$T" "$T/bundle-copy" "$T/work"
+  cp -R "$BUNDLE/." "$T/bundle-copy/"; chmod -R go-rwx "$T/bundle-copy"; find "$T/bundle-copy" -name '._*' -delete
+  cd "$STAGE/controller-cwd"
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$SRC $PY -B "$REQ" "$STAGE" "$SRC" "$T/bundle-copy" "$T/work" > "$T/req.log" 2>&1 || { tail -n 20 "$T/req.log" | cut -c1-200; exit 1; }
+  tail -n 1 "$T/req.log"; date -u +%FT%TZ > "$T/submitted-at" ;;
+status)
+  echo "pod-serve pid: $(pgrep -f "$SERVICE_CMD" | tr '\n' ' ')"
+  for d in incoming processing results outgoing publications continuations completed; do [ -d "$R/$d" ] && echo "$d: $(/bin/ls "$R/$d" | wc -l) entries"; done
+  echo "gpus: $(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits | awk '{printf "%s:%s ", $1, $2}')"
+  tail -n 4 "$R/logs/service.log" 2>/dev/null | cut -c1-220 ;;
+*) echo "unknown command $CMD"; exit 2 ;;
+esac

@@ -113,7 +113,7 @@ Each `[[ops]]` row describes one implementation:
 | `prepare` | optional `prepare(module)` called once per bound node; not allowed on `tree_cache` |
 | `setup` | engine-wide setup hook; currently forbidden by every registered target |
 | `base_kernel`, `override_point` | retired override composition fields; target resolution refuses a row that sets either |
-| `cuda_sources` | declared inspectable `.cu`/`.cuh` inputs to an approved build step |
+| `cuda_sources` | declared inspectable `.cu`/`.cuh` inputs for a native prebuild or installed-library JIT |
 
 `bundle_id` must be a simple non-empty identifier, and newly authored bundles
 must use the component ABI `cacheon-op-abi-v0`. Validators retain a reader-only
@@ -254,6 +254,11 @@ cuda_sources = ["kernels/mlp_sm103.cu"]
 
 Declarations do not bypass policy. Intake independently observes rebuild and
 CUDA-source features and resolves them against the target catalog.
+Installed libraries may compile declared sources through their ordinary JIT inside
+the disposable worker. A separate `rebuild.json` is required only when selecting
+the native prebuild; `build_cuda_ext` requires a declared `.cu` compilation unit.
+The prebuild worker comes from the commissioned controller source, mounted read-only.
+JIT inputs stay beside namespaced Python, preserving paths relative to `__file__`.
 
 The approved native-extension builder compiles with C++20, as required by current
 PyTorch headers. Compiler flags are part of the recorded native build identity;

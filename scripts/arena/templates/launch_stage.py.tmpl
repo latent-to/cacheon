@@ -1,0 +1,140 @@
+"""Run the retained worker bootstrap, commissioner and real CPU handoff in order (r22: pod SSH port;
+r23: optional --runtime-seed, a warm cache harvested from one stock boot on the pod; r24: unchanged, ships operator r24).
+
+Run on the CPU after its SSH key and the worker's host-key pin are installed.
+All model, image and source inputs come from the retained task artifacts.
+"""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+
+parser = argparse.ArgumentParser(description=__doc__)
+for name in ('base','state-root','host','user','known-hosts','image-proof','shared','tag',
+             'lane','baseline','model-input','bootstrap-inputs','source','source-metadata','operator-archive'):
+    parser.add_argument('--'+name,required=True)
+parser.add_argument('--model-token',type=Path,required=True)
+# The CPU VM's ssh config carries the same port for its own ssh/scp to the pod.
+parser.add_argument('--pod-port',default='22')
+parser.add_argument('--runtime-seed',default='')
+args = parser.parse_args()
+model_token = args.model_token.resolve(strict=True)
+base, state = Path(args.base), Path(args.state_root)
+helper = Path(__file__).resolve().parent
+os.umask(0o077)
+state.mkdir(mode=0o700,parents=True,exist_ok=True)
+if not os.environ.get('SSH_AUTH_SOCK'):
+    socket = '/run/cacheon-ssh-'+args.tag+'.sock'
+    output = subprocess.check_output(['ssh-agent','-a',socket,'-s'],text=True)
+    os.environ['SSH_AUTH_SOCK'] = socket
+    subprocess.run(['ssh-add',str(base/'ssh_key')],check=True,
+                   stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+    (state/(args.tag+'-ssh-agent.json')).write_text(json.dumps({
+        'pid':int(re.search(r'SSH_AGENT_PID=(\d+)',output).group(1)),
+        'socket':socket,'key_path':str(base/'ssh_key')})+'\n')
+subprocess.run(['ssh-add','-T',str(base/'ssh_key.pub')],check=True)
+opts = ['-i',str(base/'ssh_key'),'-o','BatchMode=yes','-o','StrictHostKeyChecking=yes',
+        '-o','UserKnownHostsFile='+args.known_hosts,'-o','ConnectTimeout=12',
+        '-o','ServerAliveInterval=10','-o','ServerAliveCountMax=2']
+endpoint = args.user+'@'+args.host
+ssh = ['ssh',*opts,endpoint]
+probe = subprocess.check_output(ssh+['cat /proc/sys/kernel/random/boot_id'],text=True,timeout=30).strip()
+print('WORKER_BOOT',probe,flush=True)
+image=json.loads(Path(args.image_proof).read_bytes())['worker_image'].split('/',1)[1]
+registry_probe='''import hashlib,sys,urllib.error,urllib.request
+repo,digest=sys.argv[1].split('@',1)
+request=urllib.request.Request('http://127.0.0.1:5097/v2/'+repo+'/manifests/'+digest,
+ headers={'Accept':'application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json'})
+try:
+ raw=urllib.request.urlopen(request,timeout=5).read()
+except urllib.error.URLError as error:
+ if isinstance(error.reason,ConnectionRefusedError):sys.exit(3)
+ raise
+assert 'sha256:'+hashlib.sha256(raw).hexdigest()==digest
+'''
+registry=subprocess.run(ssh+[shlex.join(['python3','-c',registry_probe,image])],timeout=15)
+if registry.returncode==3:
+    subprocess.run(['ssh',*opts,'-fNT','-o','ExitOnForwardFailure=yes',
+                   '-R','127.0.0.1:5097:127.0.0.1:5098',endpoint],check=True,timeout=30)
+else:
+    registry.check_returncode()
+transfer = '/tmp/cacheon-bootstrap-'+args.tag
+subprocess.run(ssh+[shlex.join(['mkdir','-m','700',transfer])],check=True,timeout=30)
+files = [Path(args.operator_archive),Path(args.bootstrap_inputs),
+         helper/'replay-inputs-@SLUG@.tar',Path(args.source),
+         Path(args.source_metadata),Path(args.model_input),
+         Path(args.image_proof),Path(args.known_hosts),base/'bootstrap-tools/uv',model_token]
+subprocess.run(['scp','-q',*opts,*map(str,files),endpoint+':'+transfer+'/'],check=True,timeout=180)
+root = args.shared+'/workers/'+args.tag
+payload = {'shared':args.shared,'root':root,'transfer':transfer,'host':args.host,
+           'user':args.user,'tag':args.tag,'lane':args.lane,'baseline':args.baseline,
+           'model_input':Path(args.model_input).name,'bootstrap_inputs':Path(args.bootstrap_inputs).name,
+           'known_hosts':Path(args.known_hosts).name,'image_proof':Path(args.image_proof).name,
+           'source':Path(args.source).name,'source_metadata':Path(args.source_metadata).name,
+           'operator_archive':Path(args.operator_archive).name,
+           'model_token':model_token.name,'pod_port':args.pod_port,
+           'runtime_seed':args.runtime_seed,'boot':probe}
+remote = '''import hashlib,json,os,subprocess,sys,tarfile,time
+from pathlib import Path
+row=json.load(sys.stdin)
+assert os.getuid()==0
+shared,root,transfer=[Path(row[k]) for k in ('shared','root','transfer')]
+assert Path('/proc/sys/kernel/random/boot_id').read_text().strip()==row['boot']
+root.mkdir(mode=0o755,parents=True);(root/'logs').mkdir(mode=0o700)
+# This credential comes from the CPU, never from the previous worker.
+credentials=root/'credentials';credentials.mkdir(mode=0o700)
+with os.fdopen(os.open(credentials/'model-token',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600),'wb') as output:
+ output.write((transfer/row['model_token']).read_bytes());output.flush();os.fsync(output.fileno())
+(transfer/row['model_token']).unlink()
+(shared/'bin').mkdir(mode=0o755,exist_ok=True)
+uv=shared/'bin/uv'
+if not uv.exists():
+ uv.write_bytes((transfer/'uv').read_bytes());uv.chmod(0o555)
+subprocess.run([str(uv),'--version'],check=True,stdout=sys.stderr)
+helper=root/'recovery-operator';helper.mkdir(mode=0o700)
+for archive,destination in [(transfer/row['operator_archive'],helper),
+ (transfer/row['bootstrap_inputs'],shared),(transfer/'replay-inputs-@SLUG@.tar',shared/'assets')]:
+ destination.mkdir(parents=True,exist_ok=True)
+ with tarfile.open(archive) as incoming:incoming.extractall(destination,filter='data')
+metadata=json.loads((transfer/row['source_metadata']).read_bytes())
+images=json.loads((transfer/row['image_proof']).read_bytes())
+# Controller fixes retain the exact measured runtime image. Their source
+# revision is independently bound by READY and the exported source receipt.
+archive=transfer/row['source']
+with archive.open('rb') as stream:assert hashlib.file_digest(stream,'sha256').hexdigest()==metadata['sha256']
+source=root/'build/src';source.mkdir(mode=0o755,parents=True)
+with tarfile.open(archive) as incoming:incoming.extractall(source,filter='data')
+(root/'source-revision.txt').write_text(metadata['revision']+'\\n')
+(root/'worker-image-ref').write_text('127.0.0.1:5097/'+images['worker_image'].split('/',1)[1]+'\\n')
+(root/'durable-images.json').write_text(json.dumps(images,indent=2)+'\\n')
+for src,name in [(transfer/row['model_input'],'model-input.json'),(transfer/row['known_hosts'],'known_hosts')]:
+ target=root/name;target.write_bytes(src.read_bytes());target.chmod(0o600)
+probe=root/'.write-probe'
+with probe.open('xb') as out:out.write(b'bootstrap');out.flush();os.fsync(out.fileno())
+assert probe.read_bytes()==b'bootstrap';probe.unlink()
+argv=['/usr/bin/python3','-B','-u',str(helper/'commission_worker.py'),
+ '--shared',str(shared),'--root',str(root),'--host',row['host'],'--user',row['user'],
+ '--known-hosts',str(root/'known_hosts'),'--model-input',str(root/'model-input.json'),
+ '--tag',row['tag'],'--lane',row['lane'],'--baseline',row['baseline'],'--pod-port',row['pod_port']]
+if row['runtime_seed']:argv+=['--runtime-seed',row['runtime_seed']]
+with (root/'logs/commission-runner.log').open('xb',buffering=0) as output:
+ child=subprocess.Popen(argv,stdin=subprocess.DEVNULL,stdout=output,stderr=subprocess.STDOUT,start_new_session=True)
+receipt={'pid':child.pid,'boot_id':row['boot'],'started_at':int(time.time()),'root':str(root),'argv':argv}
+(root/'commission-started.json').write_text(json.dumps(receipt,indent=2)+'\\n')
+print(json.dumps(receipt))
+'''
+result = subprocess.check_output(ssh+[shlex.join(['sudo','-n','python3','-c',remote])],
+                                  input=json.dumps(payload),text=True,timeout=120)
+print(result,flush=True)
+state.mkdir(mode=0o700,parents=True,exist_ok=True)
+(state/(args.tag+'-started.json')).write_text(result)
+command = [sys.executable,'-B','-u',str(helper/'await_commission.py'),'--pod-root',root,'--',
+    '--base',args.base,'--state-root',args.state_root,'--host',args.host,'--user',args.user,
+    '--pod-stage',root+'/node/pair-'+args.tag,'--known-hosts',args.known_hosts,
+    '--image-proof',args.image_proof,'--tag',args.tag,'--owner','@OWNER@',
+    '--source',args.source,'--source-metadata',args.source_metadata]
+print('COMMISSIONING_ONLY: retain the handoff; do not install or activate it yet.', flush=True)

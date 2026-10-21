@@ -18,17 +18,77 @@
 # path was owner disposition of whole-model pruners): +84 runtime, +27 docs, +40 tests, surface, +2 notes.
 # Engines boot on their sealed schedulers' NUMA node (DeepSeek Engram tables landed on the remote socket of a
 # two-socket pair, Lium 2026-10-17): +21 runtime, +3 docs, +20 tests, +2 notes.
+# Node seal accepts an empty attribute filled with a module the node already holds (Muse Spark's FP4 experts
+# receive their post-expert norm on the first forward; day-0 check-002, proven end to end by check-003 on the
+# B300 node): +5 runtime, +2 docs, +3 notes. No deletion was available; next: cacheon/eval/tokenizer_identity.py.
 # Admission follows the commissioned-incumbent binding (unbound, the queue previewed no claim and the first claim after
 # the Lium recommission passed reviewed pruner 747f8d71, 2026-10-17): +0 runtime, +31 tests, +2 notes.
 # Admission previews as the claimer under the arena's capacity (the one-lease default let a second pair's lease
 # empty the preview and admit reviewed pruner 73263b71 unreviewed, Verda 2026-10-18): +8 runtime, +36 tests, +2 notes.
-(root) 1158
-.github 345
+# Muse Spark arena inputs and the engine options its stock arm needs (hybrid-SWA ratio as the one float kwarg,
+# a draft sealed under the model root; the value checkers move out of the oversized protocol module):
+# +59 runtime, +7 docs, +2 examples, +37 tests, +3 notes.
+# Muse Spark seals SGLang's unified-cache out-of-window release switch (the Muse hook forces it off; measured hit rate
+# 0.34 and 15.7 tok/s per user at 24 sessions, 0.95 with it on, Verda 2026-10-18): +4 runtime, +1 docs, +6 examples,
+# +1 tests, +3 notes (the notes themselves are the +3 under scripts).
+# Muse Spark development requests (the DeepSeek recipe re-tokenized) and the measured boot bounds: +4 examples, +1 note.
+# Muse Spark seals 16 sessions with the 2x capacity rule (32 running, 32-row decode graphs; owner 2026-10-18): +2 examples, +1 note.
+# One CPU end-to-end validator test replaces six composition-tier files (owner 2026-10-19): +767 tests, -1,868 tests.
+# Tranche-2 wave 0 deletes 61 pod-, engine- and helper-tier test files and two support modules: -16,131 tests.
+# The arena operator becomes a tracked, parameterized recipe (owner 2026-10-19): the Muse r26 operator lifted into
+# scripts/arena templates, one operator.json per arena, a render tool and a launcher: +1,640 scripts (+3 notes),
+# +35 examples, +135 docs, +1 root. Casualty: the untracked per-task copy-and-edit derivation on the validator VM.
+# Tranche-2 wave 2: a hostile-intake end-to-end module over a shared deployment harness replaces 18 intake, scan,
+# payload and payment test files (owner 2026-10-19): +848 tests, -4,454 tests, +2 notes.
+# The arena's own inputs become tracked tools (owner 2026-10-19): prompt pool and authority builders, image retention,
+# runtime-seed harvest, the off-chain twin template, and the sealed audit controls as an operator parameter:
+# +599 scripts (3 of them these notes), +5 examples, +65 docs. Casualty: the per-node scratch copies of each.
+# Tranche-2 wave 3: a qualification-fault end-to-end module replaces 14 dispatcher, supervisor, recovery and pod-adapter
+# test files (owner 2026-10-19): +410 tests, -5,768 tests, -2 root, +2 notes; (root) and scripts lock the deletions in.
+# The first pair of an arena creates its plane root on the VM (the Muse connect failed on the hand-made DeepSeek
+# assumption, 2026-10-19): +2 scripts, +3 docs, +2 notes.
+# Tranche-2 wave 4: a crown, reward and weight-publication end-to-end module replaces two hold and cadence test files
+# and 41 set-weights CLI and journal tests (owner 2026-10-19): +442 tests, -1,416 tests, -2 scripts, +2 notes.
+# Tranche-2 wave 5: a weight-service end-to-end module (producer, gateway and follower processes) replaces five gateway,
+# follower and commit test files and 11 producer tests (owner 2026-10-19): +525 tests, -1,655 tests, -2 scripts, +2 notes.
+# Tranche-2 wave 6: parallel-arena and static-allocation end-to-end modules replace five arena, baseline, worker-pool and
+# reward test files and 8 allocation tests (owner 2026-10-19): +826 tests, -1,723 tests, -2 scripts, +2 notes.
+# Tranche-2 wave 7: an operator end-to-end module (fee credits, status and miner reports, explain, snapshot and restore
+# through a simulated S3 SDK, downtime requeue and claims) replaces five operator test files and trims the miner-feedback
+# file to its production-reason table (owner 2026-10-19): +369 tests, -2,209 tests, -1 root, -4 scripts, +3 notes.
+# Tranche-2 wave 8: intake runs as chain-validate's own process; it and the supervisor import no GPU stack or candidate
+# code; three launch/qualification/stack test files shrink to one golden (owner 2026-10-19): +57/-1,034 tests, -2 scripts, +2 notes.
+# That golden becomes the surface snapshot's native_build digest golden and the last launch test file goes: -99 tests,
+# +20 scripts (the golden), +1 baseline, -1 assert floor, +2 notes.
+# Tranche-2 wave 9: a second-target end-to-end module (both targets crowned across baseline rotations) and the pod play
+# moved out of e2e.py replace the stack-plan test file (owner 2026-10-19): +392/-415 tests, +2 notes.
+# Tranche-2 wave 10: target-admission and component-parser refusals become rows of the hostile-intake table, each asserting
+# the durable intake reason; the target-catalog and engine-tree test files go: +108/-1,766 tests, -1 docs, -3/+2 notes.
+# The catalog surface carries the node seam's audit literals and their agreement with the sealed forward-pass contract
+# (the deleted drift test's one claim a retained PASS depends on): +19 scripts, +1 baseline, +2 notes.
+# Tranche-2 wave 11: 27 pod-side unit test files, the replay and pipes support modules and the node_multi fixture go; the
+# commissioned node's off-chain twin proves what they modelled (owner 2026-10-19): +20/-16,811 tests, -7 .github, -1 root,
+# -30 scripts (26 assert floors, four file ceilings), +3 notes.
+# Tranche-2 wave 12: the real dashboard app served over HTTP on what intake, supervisor and weight service wrote, and fetch
+# refusals as hostile-intake rows, replace 12 dashboard, monitor, capacity and fetch test files: +397/-2,430 tests, -9 scripts, +2 notes.
+# Tranche-2 wave 13: a pre-cutover ABI row and content-hash golden, and a schema-2 store the restarted supervisor migrates, replace
+# the lease-schema, rename-compat and retained-rewards test files: +52/-338 tests (9 fixture), -3 assert floors, +1 golden, +2 notes.
+# Tranche-2 wave 14: commission refusals (READY, device, prompt, registration and calibration drift) through the production
+# materializer and replay replace the B300 deployment test file and two support names: +72/-643 tests, -1 assert floor, +2 notes.
+# Settlement composes the winner onto the current stack (a forward-pass crown measured before a prefix-cache crown
+# displaced it; owner order 2026-10-20): +50 runtime (the composed-tree module, settlement and intake shrink), +3 docs,
+# +12 tests, +3 notes. NEUTRALIZATION's displacement loop is the deletion.
+# Muse launch closure: ordinary library JIT keeps declared CUDA beside Python; settlement uses its measured
+# contribution's own publication. Runtime net 0; +25 docs for JIT/recovery, +10 tests in existing end-to-end modules.
+# Scripts include these three notes, the preceding change's three uncounted notes, and +1 for NUMA-safe GPU pin indexing.
+# First-arena start: +9 scripts/+4 docs replace manual intake installation and first-sync ordering; +1 accounting note.
+(root) 1155
+.github 338
 bundles 2398
-cacheon 92269
+cacheon 92378
 cacheon_kernels 936
 dashboard 4281
-docs 12745
-examples 396
-scripts 2136
-tests 67239
+docs 12989
+examples 582
+scripts 4352
+tests 13838

@@ -96,9 +96,9 @@ manifest, and a fast candidate cannot excuse a failed trusted reference.
 The test suite is organized by authority boundary. Examples:
 
 ```bash
-pytest -q tests/test_static.py tests/test_target_catalog.py
-pytest -q tests/test_stack_manifest.py tests/test_engine_tree.py
-pytest -q tests/test_qualification.py tests/test_qualification_runner.py
+pytest -q tests/test_validator_hostile_intake.py tests/test_validator_second_target.py
+pytest -q tests/test_validator_end_to_end.py
+pytest -q tests/test_validator_qualification_faults.py tests/test_oci_live_container.py
 pytest -q tests/test_chain_intake.py tests/test_weight_publication.py
 ```
 

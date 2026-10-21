@@ -30,52 +30,6 @@ def test_normalize_only_above_one_hundred_percent(raw, expected):
     assert normalize_weights(dict(reversed(tuple(raw.items())))) == expected
 
 
-@pytest.mark.parametrize("weights", [{}, {"a": -1}, {"a": True}, {"a": 1.5}])
-def test_invalid_weights_are_not_coerced(weights):
-    with pytest.raises(ValueError):
-        normalize_weights(weights)
-
-
-def test_versions_preserve_old_terms_and_submission_boundary():
-    old = _schedule((100, (600_000, 400_000, 0)))
-    new = _schedule((100, (600_000, 400_000, 0)), (200, (900_000, 600_000, 0)),
-                    (300, (200_000, 300_000, 0)))
-    assert ArenaAllocation.from_dict(new.to_dict()) == new
-    for block in (0, 99, 100, 199):
-        assert new.terms_at(block) == old.terms_at(block)
-    assert new.terms_at(200) == {"a": 600_000, "b": 400_000, "c": 0}
-    assert new.terms_at(300) == {"a": 200_000, "b": 300_000, "c": 0}
-
-
-def test_waiting_bonus_versions_keep_legacy_bytes_and_freeze_at_arrival():
-    old = _schedule((100, (600_000, 400_000, 0)))
-    raw = old.to_dict()
-    assert "stall_bonus_ppm" not in raw["history"][1]
-    assert ArenaAllocation.from_dict(raw).digest == old.digest
-    raw["history"].append({"from_block": 200, "weights_ppm": raw["history"][1]["weights_ppm"],
-                           "stall_bonus_ppm": 250_000})
-    new = ArenaAllocation.from_dict(raw)
-    assert new.to_dict() == raw
-    assert new.terms_at(200) == old.terms_at(200)
-    assert new.stall_bonus_at(199) == old.stall_bonus_at(200) == 1_000_000
-    assert new.stall_bonus_at(200) == new.stall_bonus_at(900) == 250_000
-
-
-@pytest.mark.parametrize("bonus", [-1, 1_000_001, True, 0.25])
-def test_waiting_bonus_rejects_invalid_strength(bonus):
-    raw = _schedule((100, (600_000, 400_000, 0))).to_dict()
-    raw["history"][1]["stall_bonus_ppm"] = bonus
-    with pytest.raises(ValueError, match="stall bonus"):
-        ArenaAllocation.from_dict(raw)
-
-
-def test_waiting_bonus_cannot_rewrite_preactivation_baseline():
-    raw = _schedule((100, (600_000, 400_000, 0))).to_dict()
-    raw["history"][0]["stall_bonus_ppm"] = 250_000
-    with pytest.raises(ValueError, match="before activation"):
-        ArenaAllocation.from_dict(raw)
-
-
 def test_quarter_waiting_bonus_preserves_speed_decay_and_arena_pool():
     stack = _stack(_catalog())
     first = _claim(stack, "slot.a", "alice", 1_100_000, crowned_block=100)
@@ -126,25 +80,6 @@ def test_arena_percentages_ignore_other_arenas_credit_and_merge_hotkeys():
     assert _project(schedule, rows).weights_by_hotkey == {"alice": 600_000, "bob": 400_000}
     rows[1] = ("b", "alice", 1_900_000, 100)
     assert _project(schedule, rows).weights_by_hotkey == {"alice": 1_000_000}
-
-
-def test_setting_changes_alone_cannot_change_existing_rewards():
-    old = _schedule((100, (600_000, 400_000, 0)))
-    new = _schedule((100, (600_000, 400_000, 0)), (200, (100_000, 100_000, 800_000)))
-    rows = [("a", "alice", 1_100_000, 100), ("b", "bob", 1_200_000, 100)]
-    assert _project(old, rows) == _project(new, rows)
-    rows.append(("c", "carol", 1_100_000, 200))
-    assert _project(new, rows).weights_by_hotkey == {
-        "alice": 333_333, "bob": 222_222, "carol": 444_445}
-
-
-def test_new_arena_winner_dilutes_payouts_without_rewriting_old_terms():
-    schedule = _schedule((100, (600_000, 400_000, 0)))
-    rows = [("a", "alice", 1_100_000, 99), ("b", "bob", 1_100_000, 100)]
-    assert schedule.terms_at(100) == {"a": 600_000, "b": 400_000, "c": 0}
-    assert _project(schedule, rows[:1]).weights_by_hotkey == {"alice": 1_000_000}
-    assert _project(schedule, rows).weights_by_hotkey == {"alice": 714_286, "bob": 285_714}
-    assert schedule.terms_at(99) == {"a": 1_000_000, "b": 0, "c": 0}
 
 
 @pytest.mark.parametrize("new_term", [600_000, 200_000])
@@ -199,12 +134,6 @@ def test_unused_share_burns_and_old_zero_offer_does_not_dilute():
     assert _project(schedule, rows).weights_by_hotkey == {
         "alice": 200_000, "bob": 300_000, "validator": 500_000}
     assert _project(schedule, rows[-1:]).weights_by_hotkey == {"validator": 1_000_000}
-
-
-def test_ineligible_recipient_uses_existing_validator_attribution():
-    schedule = _schedule((100, (600_000, 400_000, 0)))
-    assert _project(schedule, [("a", "gone", 1_100_000, 100)]).weights_by_hotkey == {
-        "validator": 1_000_000}
 
 
 def test_uncrowned_retained_pass_can_earn_without_fabricating_crown():

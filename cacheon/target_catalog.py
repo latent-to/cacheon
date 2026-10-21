@@ -363,11 +363,6 @@ def _validate_complete_feature_evidence(
 
     has_cuda = FEATURE_CUDA_SOURCES in features
     builds_cuda = FEATURE_REBUILD_BUILD_CUDA_EXT in features
-    if has_cuda and not builds_cuda:
-        raise TargetResolutionError(
-            "complete feature evidence has CUDA sources without "
-            "rebuild:build_cuda_ext"
-        )
     if builds_cuda and not has_cuda:
         raise TargetResolutionError(
             "complete feature evidence selects rebuild:build_cuda_ext "

@@ -1860,6 +1860,17 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
             tips,
         )
 
+    def composed_tree_digest(self, manifest: EvaluationStackManifest) -> str:
+        """The tree identity of a stack settlement composes, assembled from this store's retained publications."""
+
+        from cacheon.chain.composed_stack import composed_tree_digest
+        digests = tuple(ref.artifact_digest for ref in manifest.entries.values())
+        rows = self._db.execute(
+            "SELECT c.*, r.publication_root FROM settlement_candidates AS c JOIN reservations AS r USING(reservation_id) "
+            f"WHERE r.content_hash IN ({','.join('?' * len(digests))})", digests)
+        return composed_tree_digest(self.path.parent, manifest, (
+            (self._settlement_candidate(row), Path(row["publication_root"])) for row in rows if row["publication_root"]))
+
     def commit_settlement(
         self,
         lease: SettlementLease,
@@ -1871,12 +1882,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         """Atomically commit one independently planned retained-evidence disposition."""
 
         from cacheon.economics import StandingRewardClaim, WEIGHT_PPM
-        from cacheon.settlement import (
-            SettlementEvidence,
-            SettlementEventType,
-            SettlementPlan,
-            plan_settlement,
-        )
+        from cacheon.settlement import SettlementEvidence, SettlementEventType, SettlementPlan, plan_settlement
 
         if type(lease) is not SettlementLease or type(plan) is not SettlementPlan:
             raise IntakeError("settlement commit is not exactly typed")
@@ -1892,12 +1898,9 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
         ):
             raise IntakeError("settlement evidence or lease deadline is invalid")
         expected = plan_settlement(
-            lease.candidates,
-            current_manifest=lease.stack.manifest,
-            current_tree_digest=lease.stack.tree_digest,
-            initial_event_sequence=lease.initial_event_sequence,
-            previous_event_digest=lease.previous_event_digest,
-            lineage_tips=lease.lineage_tips,
+            lease.candidates, current_manifest=lease.stack.manifest, current_tree_digest=lease.stack.tree_digest,
+            initial_event_sequence=lease.initial_event_sequence, previous_event_digest=lease.previous_event_digest,
+            lineage_tips=lease.lineage_tips, tree_digest_of=self.composed_tree_digest,
         )
         if expected.to_dict() != plan.to_dict():
             raise IntakeError("settlement plan differs from its leased authority")
@@ -2071,24 +2074,15 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
 
             if commit_plan.transition is not None:
                 manifest = commit_plan.transition.manifest
-                encoded = json.dumps(
-                    manifest.to_dict(), separators=(",", ":"), sort_keys=True
-                )
+                encoded = json.dumps(manifest.to_dict(), separators=(",", ":"), sort_keys=True)
                 transition_id = commit_plan.events[-1].digest
                 cursor = self._db.execute(
                     "UPDATE evaluation_stacks SET generation=generation+1,stack_digest=?,"
                     "tree_digest=?,stack_json=?,transition_event_id=? WHERE arena_id=? "
                     "AND generation=? AND stack_digest=? AND tree_digest=?",
-                    (
-                        manifest.digest,
-                        commit_plan.transition.after.tree_digest,
-                        encoded,
-                        transition_id,
-                        lease.stack.arena_digest,
-                        lease.stack.generation,
-                        lease.stack.manifest.digest,
-                        lease.stack.tree_digest,
-                    ),
+                    (manifest.digest, commit_plan.transition.after.tree_digest, encoded, transition_id,
+                     lease.stack.arena_digest, lease.stack.generation, lease.stack.manifest.digest,
+                     lease.stack.tree_digest),
                 )
                 if cursor.rowcount != 1:
                     raise IntakeError("evaluation stack changed during settlement commit")

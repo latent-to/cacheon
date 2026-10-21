@@ -1,0 +1,472 @@
+"""One private deployment root driven through the validator's production entrypoints.
+
+The end-to-end modules share this root builder: miner archives sealed by
+``chain-package``, the simulated chain, finalized intake, the commissioned arena,
+the worker registration, the sealed dispatcher and standing configs, and the
+standing supervisor process; ``tests/support/pod.py`` plays the GPU pod through
+the production spool and response sealers. Which calls are subprocesses, which
+run in-process and which values are test-supplied is stated in
+``tests/test_validator_end_to_end.py``.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import queue
+import shutil
+import sqlite3
+import subprocess
+import sys
+import threading
+import time
+from contextlib import closing
+from pathlib import Path
+from types import SimpleNamespace
+
+from cacheon.chain import fetch, validator_loop
+from cacheon.chain import remote_worker_spool as spool
+from cacheon.chain.intake import FinalizedIntakeStore, IntakePolicy, IntakeScope
+from cacheon.chain.payload import encode_payload
+from cacheon.chain.ssh_worker_transport import _dispatcher_heartbeat
+from cacheon.chain.remote_worker_registration import verify_registration
+from cacheon.eval import b300_deployment as deployment
+from cacheon.eval.oci_backend import runtime_identity_from_preflight
+from cacheon.stack_identity import canonical_json_bytes, sha256_hex
+from cacheon.target_catalog import default_target_catalog
+from tests.support.b300 import gpu
+from tests.support.chain import reopen_state, write_state
+from tests.support.preflight import preflight_receipt
+
+REPO = Path(__file__).resolve().parents[2]
+SIMULATED_SDK = REPO / "tests" / "support" / "simulated_chain"
+NETUID, REVEAL_BLOCK, HEAD = 1, 90, 100
+PROFILES = {
+    "b300-tp4": SimpleNamespace(gpu="b300", host=8, lane=(0, 1, 2, 3), arch="sm103", sglang="0.5.18",
+                                model="MiniMax-M3", kwargs={"page_size": 128, "quantization": "modelopt_fp4"}),
+    "h100-tp1": SimpleNamespace(gpu="h100", host=2, lane=(0,), arch="sm90", sglang="0.5.19",
+                                model="Qwen3.6-35B-A3B-BF16", kwargs={"kv_cache_dtype": "fp8_e4m3"}),
+}
+
+
+def private(path: Path) -> Path:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return path
+
+
+def sealed_json(path: Path, value: object) -> str:
+    raw = json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    path.write_bytes(raw)
+    path.chmod(0o400)
+    return sha256_hex(raw)
+
+
+def run(*argv: str, env: dict[str, str] | None = None, code: int = 0) -> str:
+    """Run one module entrypoint to its expected exit code; a nonzero exit also returns stderr."""
+
+    done = subprocess.run([sys.executable, "-m", *argv], cwd=REPO, env=env,
+                          capture_output=True, text=True, timeout=300)
+    assert done.returncode == code, done.stdout + done.stderr
+    return done.stdout if code == 0 else done.stdout + done.stderr
+
+
+def chain_env() -> dict[str, str]:
+    return {**os.environ, "PYTHONPATH": os.pathsep.join((str(SIMULATED_SDK), str(REPO)))}
+
+
+def deployment_root(tmp_path: Path, name: str, monkeypatch):
+    """A private root whose validator decryption key the intake process reads."""
+
+    from nacl.public import PrivateKey
+
+    root = private(tmp_path / name)
+    key = PrivateKey.generate()
+    key_file = root / "bundle-decryption.key"
+    key_file.write_text(bytes(key).hex())
+    key_file.chmod(0o600)
+    monkeypatch.setenv("CACHEON_BUNDLE_DECRYPTION_KEY", str(key_file))
+    private(root / "validator")
+    return root, key
+
+
+def miner_bundle(root: Path, hotkey: str, forward: str | None = None) -> Path:
+    """The public node example, entered into this root's arena, optionally rewritten."""
+
+    bundle = root / "miners" / hotkey
+    shutil.copytree(REPO / "examples" / "miner_node_identity", bundle)
+    manifest = bundle / "manifest.toml"
+    manifest.write_text(manifest.read_text().replace('mode = "slot"', f'mode = "slot"\narena = "{root.name}"'))
+    if forward is not None:
+        (bundle / "kernels" / "forward.py").write_text(forward)
+    return bundle
+
+
+def cache_bundle(root: Path, hotkey: str) -> Path:
+    """A prefix-cache bundle (``tree_cache`` under ``prefix_cache``) entered into this root's arena."""
+
+    bundle = private(root / "miners" / hotkey)
+    (private(bundle / "cache") / "policy.py").write_text(
+        f"def build(cache):\n    label = {hotkey!r}\n    return type(cache)\n")
+    (bundle / "manifest.toml").write_text(
+        'bundle_id = "cache-identity"\nabi_version = "cacheon-op-abi-v0"\n\n[competition]\n'
+        f'target = "prefix_cache"\nmode = "slot"\narena = "{root.name}"\n\n'
+        '[[ops]]\nslot = "tree_cache"\nsource = "cache/policy.py"\nentry = "build"\n')
+    return bundle
+
+
+def labelled(hotkey: str) -> str:
+    """A distinct forward body per miner: none is a copy of another or of the example."""
+
+    return (f"def forward(module, *args, **kwargs):\n    label = {hotkey!r}\n"
+            "    return module.forward(*args, **kwargs)\n")
+
+
+def package(bundle: Path, validator_key) -> tuple[str, Path]:
+    """``chain-package`` seals the archive for the validator; returns its content hash."""
+
+    archive = bundle.with_suffix(".sealed")
+    out = run("cacheon.cli", "chain-package", str(bundle), "--out", str(archive),
+              "--encrypt-for", bytes(validator_key.public_key).hex())
+    return out.split("content_hash: ")[1].split()[0], archive
+
+
+def reveal(hotkey: str, content_hash: str, archive: Path, origin: dict[str, Path], block: int = REVEAL_BLOCK):
+    """One finalized commitment naming the archive at a canonical HTTPS URL."""
+
+    url = f"https://{hotkey}.example/{content_hash}.sealed"
+    origin[url] = archive
+    return block, encode_payload(content_hash, url)
+
+
+def chain(root: Path, reveals: dict[str, tuple], hotkeys: tuple[str, ...], owner: str = "") -> Path:
+    return write_state(root / "chain.json", hotkeys=("validator", *hotkeys), revealed=reveals,
+                       block=HEAD, validator="validator", owner=owner)
+
+
+def intake(root: Path, state: Path, origin: dict[str, Path], monkeypatch, **options) -> list[str]:
+    """One finalized intake pass; only the HTTPS transfer leg is the hermetic one."""
+
+    fetched: list[str] = []
+
+    def transfer(url, expected, private_root):
+        fetched.append(expected)
+        return fetch.fetch_bundle_from_local_file_for_testing(origin[url].as_uri(), expected, private_root)
+
+    monkeypatch.setattr(validator_loop, "fetch_bundle", transfer)
+    validator_loop.run_validator(
+        reopen_state(state), NETUID, intake_db=root / "validator" / "intake.sqlite3",
+        private_root=root / "validator" / "private", publication_root=root / "validator" / "worker",
+        once=True, audit_log=root / "validator" / "chain-audit.jsonl", **options,
+    )
+    return fetched
+
+
+def store_rows(root: Path, query: str) -> list[sqlite3.Row]:
+    """Read what the root's intake store retained, read-only."""
+
+    with closing(sqlite3.connect(f"file:{root / 'validator' / 'intake.sqlite3'}?mode=ro", uri=True)) as db:
+        db.row_factory = sqlite3.Row
+        return db.execute(query).fetchall()
+
+
+def scope(root: Path, state: Path | None = None) -> IntakeScope:
+    return IntakeScope(reopen_state(state or root / "chain.json").get_block_hash(0), NETUID)
+
+
+def commission(root: Path, profile, targets: tuple[str, ...] = ("forward_pass",)) -> tuple[dict, Path, dict]:
+    """The pod commission's sealed inputs, materialized into the arena identity.
+
+    ``targets`` is the prompt's registered set; radix caching is on exactly when the prefix cache is
+    registered, as on the live arena prompts.
+    """
+
+    pod = private(root / "pod")
+    model = private(pod / "model")
+    (model / "config.json").write_text('{"architectures": ["E2EForCausalLM"]}\n')
+    sealed = json.loads(run("cacheon.cli", "model-provision", str(model), str(private(pod / "receipts"))))
+    image = sha256_hex(f"{profile.gpu}-image".encode())
+    preflight = preflight_receipt(image=image, platform=sha256_hex(b"linux/amd64"),
+                                  worker=sha256_hex(b"cacheon-harness"), sglang_version=profile.sglang,
+                                  worker_file_count=100, worker_total_bytes=100_000)
+    runtime = runtime_identity_from_preflight(preflight)
+    lane = list(profile.lane)
+    device = pod / "device-execution.json"
+    prompt = pod / "prompt-authority.json"
+    calibration = pod / "calibration-package.json"
+    projection = pod / "calibration-projection-receipt.json"
+    sealed_json(projection, {"schema": "cacheon-calibration-projection-v1"})
+    authority = {
+        "arena_id": root.name, "authority_role": "primary",
+        "calibration": {"evidence_root": str(pod / "calibration-evidence"), "package": str(calibration),
+                        "package_sha256": sealed_json(calibration, {"schema": "cacheon-calibration-v1"})},
+        "device_execution": {"path": str(device), "sha256": sealed_json(device, {
+            "schema": "cacheon-private-device-control-v1",
+            "worker": {"preflight": preflight.canonical_payload()}})},
+        "fmha_cache_seed": {"directory_count": 2, "file_count": 3, "plan_sha256": sha256_hex(b"fmha-plan"),
+                            "root": str(pod / "fmha-cache"), "schema": "cacheon-fmha-cache-v1",
+                            "sealed_root_owned_read_only": True, "total_bytes": 4096,
+                            "tree_sha256": sha256_hex(b"fmha-tree")},
+        "model": {"content_digest": sealed["content_digest"], "manifest_digest": sealed["receipt_digest"],
+                  "revision_digest": sha256_hex(profile.model.encode()), "root": str(model)},
+        "prompt": {"path": str(prompt), "sha256": sealed_json(prompt, {
+            "accepted_token_subsequences": [], "registered_targets": list(targets),
+            "hidden_corpus_commitment": sha256_hex(b"hidden-corpus"),
+            "hidden_judge_digest": sha256_hex(b"hidden-judge"),
+            "hidden_task_policy_digest": sha256_hex(b"hidden-task-policy"),
+            "engine_config": {
+                "attention_backend": None, "deterministic": False, "disable_custom_all_reduce": True,
+                "dtype": "bfloat16", "engine_env": {}, "log_level": "error", "mem_fraction_static": 0.8,
+                "moe_runner_backend": "triton", "tp_size": len(lane),
+                "engine_kwargs": {"disable_radix_cache": "prefix_cache" not in targets, **profile.kwargs}},
+            "model_profile_key": profile.model, "prompt_batches": [["one"], ["two"], ["three"]],
+            "prompt_seed_scheme": "sealed-prompts-v1", "schema": "cacheon-private-prompt-authority-v1",
+            "selection_policy_digest": sha256_hex(b"selection-policy"),
+            "tokenizer_digest": sha256_hex(b"tokenizer"),
+            "workload_cell": {"cell_id": "s8", "concurrency": 1, "input_tokens": 8192,
+                              "output_tokens": 1024, "timed_reads": 2}})},
+        "qualification_builder_digest": sha256_hex(b"qualification-builder"),
+        "schema": "cacheon-private-b300-authority-v1",
+        "source": {"controller_digest": sha256_hex(b"controller")},
+        "topology": {"architecture": profile.arch, "gpu_count": len(lane), "lane": list(map(str, lane)),
+                     "lane_digest": sha256_hex(repr(lane).encode()), "tensor_parallel_size": len(lane),
+                     "topology_class": "nvlink-sxm"},
+        "worker": {"base_engine_digest": runtime.base_engine_digest, "image": preflight.requested_image,
+                   "local_image_id": preflight.local_image_id, "runtime_digest": runtime.runtime_digest,
+                   "validator_overlay_digest": runtime.validator_overlay_digest,
+                   "worker_distribution_digest": preflight.worker_distribution_digest},
+    }
+    authority_path, measurement = pod / "authority-config.json", pod / "measurement-config.json"
+    sealed_json(authority_path, authority)
+    sealed_json(measurement, authority)
+    gpus = tuple(gpu(index, profile.gpu) for index in range(profile.host))
+    python = Path(sys.executable)
+    receipt = Path(sealed["receipt_path"])
+    ready = {
+        "created_at_unix": int(time.time()),
+        "gpu": {"count": profile.host, "inventory": [
+            {"index": g.physical_id, "memory_mib": g.memory_total_mib, "name": g.name,
+             "pci_bus_id": g.pci_bus_id, "uuid": g.uuid} for g in gpus],
+            "inventory_sha256": sha256_hex(canonical_json_bytes([g.uuid for g in gpus])),
+            "topology_sha256": sha256_hex(b"nvlink-sxm")},
+        "lane": {"devices": lane, "lane_digest": sha256_hex(repr(lane).encode()), "tensor_parallel_size": len(lane)},
+        "model": {"content_digest": sealed["content_digest"], "path": str(model), "readonly_inventory_verified": True,
+                  "receipt_digest": sealed["receipt_digest"], "receipt_file_sha256": spool.file_sha256(receipt),
+                  "receipt_path": str(receipt)},
+        "provider": {"hostname": "pod", "machine_id_sha256": sha256_hex(b"machine"), "pod_endpoint": "pod.example:22"},
+        "python": {"path": str(python), "resolved_path": str(python.resolve()),
+                   "executable_sha256": spool.file_sha256(python.resolve()), "version": "Python 3.12.0"},
+        "runtime": {"path": str(pod / "runtime"), "tree_digest": sha256_hex(b"runtime-tree")},
+        "schema": "cacheon-current-pod-commission-v1",
+        "source": {"path": str(REPO), "tree_digest": sha256_hex(b"source-tree"), "revision": "0" * 40},
+        "state": "READY_FOR_REGISTRATION", "worker_epoch": sha256_hex(str(root).encode())[:32],
+        "worker_image": preflight.requested_image,
+    }
+    ready_path = _seal_ready(pod / "ready-receipt.json", ready)
+    return _materialize(root, profile, ready_path, pod / "commissioned"), ready_path, ready
+
+
+def _seal_ready(path: Path, ready: dict) -> Path:
+    ready["receipt_digest"] = spool.spool_digest("cacheon.current-pod-commission.v1", ready)
+    sealed_json(path, ready)
+    return path
+
+
+def _materialize(root: Path, profile, ready_path: Path, output: Path, devices=None) -> dict:
+    """``materialize_b300_identities`` over the root's pod inputs; ``devices(gpus, selected)`` plays a drifted provisioner."""
+
+    pod = root / "pod"
+    gpus = tuple(gpu(index, profile.gpu) for index in range(profile.host))
+    return deployment.materialize_b300_identities(
+        ready_receipt=ready_path, authority_config=pod / "authority-config.json",
+        measurement_config=pod / "measurement-config.json", calibration_package=pod / "calibration-package.json",
+        calibration_projection_receipt=pod / "calibration-projection-receipt.json",
+        prompt_authority=pod / "prompt-authority.json", output_root=private(output),
+        gpu_provisioner=lambda selected, *, deadline: (devices or (lambda gpus, chosen: tuple(gpus[i] for i in chosen)))(
+            gpus, selected),
+    )
+
+
+def _register(root: Path, materialized: dict, ready_path: Path, output: Path) -> dict:
+    """``make-registration`` binds the READY receipt, readiness and credential for the CPU side."""
+
+    manifest = json.loads(Path(materialized["arena_service_manifest"]).read_text())
+    run("cacheon.chain.remote_worker_service", "make-registration", "--ready-receipt", str(ready_path),
+        "--worker-readiness", materialized["worker_readiness"], "--known-hosts", str(root / "known_hosts"),
+        "--pod-host", "pod.example", "--pod-port", "22",
+        "--service-identity", deployment._manifest_from_dict(manifest).service_id,
+        "--remote-service", str(REPO / "cacheon/chain/remote_worker_service.py"),
+        "--adapter", str(REPO / "cacheon/eval/b300_remote_worker_adapter.py"),
+        "--credential", str(root / "credential.secret"), "--credential-id", "e2e-qualification-v1",
+        "--output", str(output))
+    return verify_registration(spool.load_json(output))
+
+
+def replace_worker(root: Path, profile, ready: dict, tag: str) -> dict:
+    """The operator replaces the pod: a fresh READY epoch, its registration, the dispatcher re-pointed."""
+
+    fresh = {**ready, "created_at_unix": int(time.time()), "worker_epoch": sha256_hex(tag.encode())[:32]}
+    del fresh["receipt_digest"]
+    ready_path = _seal_ready(root / "pod" / f"ready-receipt-{tag}.json", fresh)
+    materialized = _materialize(root, profile, ready_path, root / "pod" / f"commissioned-{tag}")
+    path = root / f"registration-{tag}.json"
+    registration = _register(root, materialized, ready_path, path)
+    dispatcher = root / "validator" / "dispatcher.json"
+    reseal(dispatcher, dispatcher, registration_digest=registration["registration_digest"],
+           registration_path=str(path), transport_identity_digest=registration["transport_identity_digest"],
+           worker_readiness=json.loads(Path(materialized["worker_readiness"]).read_text()))
+    return registration
+
+
+def reseal(source: Path, target: Path, **fields) -> Path:
+    """The operator derives a sealed config: ``source`` with ``fields`` replaced, sealed at ``target``."""
+
+    value = {**json.loads(source.read_text()), **fields}
+    target.unlink(missing_ok=True)
+    sealed_json(target, value)
+    return target
+
+
+def seal_authority(root: Path, materialized: dict, ready_path: Path, ready: dict, *, state: Path | None = None,
+                   intake_db: Path | None = None, legacy: bool = False):
+    """The operator registers the worker and seals the standing composition.
+
+    Another arena on the same validator names the first root's chain ``state`` and, when it shares
+    that intake store, its ``intake_db``; ``legacy`` makes this arena the default for bundles.
+    """
+
+    state, intake_db = state or root / "chain.json", intake_db or root / "validator" / "intake.sqlite3"
+    secret = root / "credential.secret"
+    secret.write_bytes(os.urandom(32))
+    secret.chmod(0o400)
+    known_hosts = root / "known_hosts"
+    known_hosts.write_text("pod.example ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE2E\n")
+    known_hosts.chmod(0o600)
+    manifest = json.loads(Path(materialized["arena_service_manifest"]).read_text())
+    registration_path = root / "registration.json"
+    registration = _register(root, materialized, ready_path, registration_path)
+    inputs, composition, _ = deployment.replay_commissioned_composition(
+        registration, ready, commissioned_root=Path(materialized["deployment"]).parent)
+    catalog = default_target_catalog()
+    _, context, incumbent, tree = deployment._commissioned_stock_authority(
+        inputs, composition.manifest, catalog, catalog.snapshot(),
+        error=deployment.B300DeploymentError, label="end-to-end genesis")
+    validator = root / "validator"
+    sealed_json(validator / "incumbent-stack.json", incumbent.to_dict())
+    policy = IntakePolicy()
+    sealed_json(validator / "dispatcher.json", {
+        "accept_legacy_bundles": legacy, "arena_service_manifest": manifest,
+        "credential_digest": registration["credential_digest"], "credential_path": str(secret),
+        "heartbeat_interval_ms": 1000, "heartbeat_join_timeout_ms": 2000, "idle_poll_ms": 100,
+        "intake_db": str(intake_db),
+        "intake_policy": {name: getattr(policy, name) for name in policy.__dataclass_fields__},
+        "intake_scope": scope(root, state).to_dict(), "lease_blocks": 20,
+        "lock_attempts": 1000, "lock_retry_delay_ms": 100,  # the values mainnet dispatcher configs seal
+        "owner": f"e2e-{root.name}", "registration_digest": registration["registration_digest"],
+        "registration_path": str(registration_path), "response_timeout_seconds": 1,
+        "restart_initial_backoff_ms": 100, "restart_max_backoff_ms": 400,
+        "schema": "cacheon-mainnet-screen-dispatcher-config-v1", "spool_root": str(private(root / "spool")),
+        "transport_identity_digest": registration["transport_identity_digest"], "transport_poll_seconds": 1,
+        "worker_readiness": json.loads(Path(materialized["worker_readiness"]).read_text()),
+    })
+    sealed_json(validator / "standing.json", {
+        "enable_qualification": True, "enable_settlement": True, "enable_weights": False,
+        "idle_poll_ms": 100, "pruning_review_root": "",
+        "qualification_evidence_root": str(private(validator / "evidence")),
+        "qualification_incumbent_stack_path": str(validator / "incumbent-stack.json"),
+        "qualification_incumbent_tree_digest": tree.tree_digest,
+        "restart_initial_backoff_ms": 100, "restart_max_backoff_ms": 400,
+        "schema": "cacheon-standing-supervisor-config-v1",
+        "screen_dispatcher_config": str(validator / "dispatcher.json"),
+        "settlement_network": str(state), "stall_timeout_ms": 600_000,
+        "weights_stage_config": "",
+    })
+    return SimpleNamespace(registration=registration, catalog=catalog, context=context, manifest=manifest,
+                           incumbent=incumbent, incumbent_tree=tree, scope=scope(root, state), policy=policy,
+                           inputs=inputs, composition=composition, resolver={})
+
+
+def rotate(root: Path, sealed):
+    """The operator moves the baseline to the durable crowned stack: the pod re-declares it, the CPU is re-pointed.
+
+    The pod's commission materializes the crowned entries from its own copies of their publications
+    (``_commissioned_stock_authority`` with ``entries``); the dispatcher's incumbent pin and the durable
+    commit refuse a declaration that is not the durable stack's identity.
+    """
+
+    with FinalizedIntakeStore(root / "validator" / "intake.sqlite3", scope=sealed.scope) as store:
+        durable = store.evaluation_stack(sealed.incumbent.arena_digest).manifest
+    address = {row["content_hash"]: Path(row["publication_root"]).name
+               for row in store_rows(root, "SELECT content_hash, publication_root FROM reservations")}
+    resolver = {("proposal", ref.artifact_digest): root / "pod" / "publications" / address[ref.artifact_digest][:2]
+                / address[ref.artifact_digest] for ref in durable.entries.values()}
+    _, _, incumbent, tree = deployment._commissioned_stock_authority(
+        sealed.inputs, sealed.composition.manifest, sealed.catalog, sealed.catalog.snapshot(),
+        error=deployment.B300DeploymentError, label="end-to-end rotation", entries=durable.entries,
+        resolver=resolver)
+    validator = root / "validator"
+    (validator / "incumbent-stack.json").unlink()
+    sealed_json(validator / "incumbent-stack.json", incumbent.to_dict())
+    reseal(validator / "standing.json", validator / "standing.json", qualification_incumbent_tree_digest=tree.tree_digest)
+    return SimpleNamespace(**{**vars(sealed), "incumbent": incumbent, "incumbent_tree": tree, "resolver": resolver})
+
+
+class Supervisor:
+    """The standing CPU supervisor process, observed through its status lines."""
+
+    def __init__(self, root: Path, config: Path | None = None) -> None:
+        self.log = (root / "supervisor.stderr").open("a")
+        self.process = subprocess.Popen(
+            [sys.executable, "-m", "cacheon.chain.standing_cpu_supervisor",
+             "--config", str(config or root / "validator" / "standing.json")],
+            cwd=REPO, env=chain_env(), stdout=subprocess.PIPE, stderr=self.log, text=True)
+        self.lines: queue.Queue[dict] = queue.Queue()
+        threading.Thread(target=self._pump, daemon=True).start()
+
+    def _pump(self) -> None:
+        for line in self.process.stdout:
+            self.lines.put(json.loads(line))
+
+    def until(self, predicate, timeout: float = 90.0, *, allow=frozenset()) -> dict:
+        deadline = time.monotonic() + timeout
+        while (remaining := deadline - time.monotonic()) > 0:
+            try:
+                status = self.lines.get(timeout=remaining)
+            except queue.Empty:
+                break
+            assert status["phase"] not in {"failed", "hold"} - allow, status
+            if predicate(status):
+                return status
+        raise AssertionError(f"supervisor never reached the expected status: {self.process.poll()}")
+
+    def stop(self, signum: int) -> int:
+        self.process.send_signal(signum)
+        code = self.process.wait(timeout=60)
+        self.log.close()
+        return code
+
+
+def supervisor_processes():
+    """Fixture body: start supervisors; reap any a failed assertion left running."""
+
+    started: list[Supervisor] = []
+    yield lambda root, config=None: started.append(Supervisor(root, config)) or started[-1]
+    for supervisor in started:
+        if supervisor.process.poll() is None:
+            supervisor.process.kill()
+            supervisor.process.wait(timeout=30)
+
+
+def relay(root: Path, sealed, spool_name: str = "spool"):
+    """The SSH shuttle's own liveness writer for one spool, standing in for the relay process."""
+
+    path = private(root / spool_name / "state") / "heartbeat.json"
+    return _dispatcher_heartbeat(sealed.registration, path, lambda: None)
+
+
+def waiting(status: dict) -> bool:
+    return status["last_disposition"] == "waiting" and status["request_id"] is not None
+
+
+def carriers(root: Path, spool_name: str = "spool") -> list[Path]:
+    outbox = root / spool_name / "outbox"
+    return sorted(path for path in outbox.iterdir() if path.is_dir()) if outbox.is_dir() else []

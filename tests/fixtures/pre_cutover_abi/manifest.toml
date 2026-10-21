@@ -1,0 +1,7 @@
+bundle_id = "pre-cutover-abi"
+abi_version = "optima-op-abi-v0"
+
+[[ops]]
+slot = "model.layers.*.mlp"
+source = "kernels/forward.py"
+entry = "forward"

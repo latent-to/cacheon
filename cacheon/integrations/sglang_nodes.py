@@ -381,6 +381,7 @@ def _rebound(sealed: list[tuple]) -> str | None:
 
     # Equality compares bound methods by function and instance, so a method the
     # engine re-reads and stores again is not a change; a rebound one is.
+    held = [m for m, _ in sealed]
     for m, methods in sealed:
         now = _methods(m)
         own = [v for k, v in methods.items() if not isinstance(k, str)]
@@ -391,11 +392,15 @@ def _rebound(sealed: list[tuple]) -> str | None:
             # SGLang's fused ops hold ``_forward_method = None`` until their first
             # call and then cache one of their own methods there; the first seal
             # refused every honest bundle for it (H100 Qwen run, 2026-09-19, "TopK:
-            # _forward_method"). An empty attribute may be filled with the module's
-            # own sealed method and with nothing else.
-            if (
-                key in methods and old is None
-                and getattr(new, "__self__", None) is m and new.__func__ in own
+            # _forward_method"). Muse Spark's FP4 experts likewise hold
+            # ``_post_expert_norm = None`` until the MoE block hands them its norm on
+            # the first forward (day-0 image, 2026-10-18 check-002,
+            # "MuseSpark1xFp4Experts: _post_expert_norm"). An empty attribute may be
+            # filled with the module's own sealed method or with a module this seal
+            # already holds, whose callables are all sealed too, and with nothing else.
+            if key in methods and old is None and (
+                (getattr(new, "__self__", None) is m and new.__func__ in own)
+                or any(new is module for module in held)
             ):
                 continue
             name = key if isinstance(key, str) else f"{key[0].__name__}.{key[1]}"

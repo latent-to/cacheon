@@ -1,0 +1,17 @@
+{
+  "schema": "cacheon-arena-operator-v1",
+  "arena_id": "musespark-b300-node-v1",
+  "slug": "musespark",
+  "model_profile_key": "Muse-Spark-Open",
+  "tensor_parallel_size": 4,
+  "replay_load": 16,
+  "tokenizer_asset": "tokenizer-muse",
+  "model_in_ram": false,
+  "owner": "musespark-node",
+  "audit_control_delta_digests": ["15229c59e8c6916f9f3b04809b57355bfc9227007303f1a5157727b2973bef29"],
+  "node": {
+    "name": "8-GPU Verda",
+    "scheduler_starts": [4, 34, 64, 94, 124, 154, 184, 214],
+    "client_cpus": {"0,1,2,3": [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]}
+  }
+}

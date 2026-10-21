@@ -1,0 +1,168 @@
+"""Bind the retained commissioning recipe to a bootstrapped worker's actual paths."""
+import argparse
+import ast
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+
+os.umask(0o077)
+parser = argparse.ArgumentParser(description=__doc__)
+for name in ('shared', 'root', 'known-hosts', 'tag', 'pod-host', 'pod-user', 'lane', 'baseline'):
+    parser.add_argument('--'+name, required=True)
+parser.add_argument('--model-input', type=Path)
+parser.add_argument('--pod-port', default='22')
+args = parser.parse_args()
+shared, root = Path(args.shared).resolve(), Path(args.root).resolve()
+known = Path(args.known_hosts).resolve()
+lane = [int(value) for value in args.lane.split(',')]
+baseline = [int(value) for value in args.baseline.split(',')]
+devices = lane+baseline
+assert len(lane) == len(baseline) == @TP@ and len(set(devices)) == @GPUS@
+assert lane == sorted(lane) and baseline == sorted(baseline)
+origin = shared / 'commission-inputs'
+source = root / 'build/src'
+packet = root / 'packet'
+operator = root / 'operator'
+stage = root / ('node/pair-'+args.tag)
+bootstrap = json.loads((shared/'bootstrap-complete.json').read_bytes())
+assert Path(bootstrap['controller_python']).is_file()
+assert Path(bootstrap['aiperf']).is_file() and known.is_file()
+assert Path(bootstrap['model_root']).is_dir()
+known.chmod(0o600)
+assert not stage.exists()
+operator.mkdir(mode=0o700)
+shutil.copytree(origin / 'packet', packet)
+
+# The owner commissioned the measured 5e72ce54 recipe. The same public input
+# feeds local check and the existing sealed production prompt authority.
+recipe = json.loads((source / 'examples/arena_inputs/@ARENA_INPUTS@/engine-config.json').read_bytes())
+prompt_path = packet / 'prompt-authority.current.json'
+prompt = json.loads(prompt_path.read_bytes())
+engine = prompt['engine_config']
+owned = set(engine) - {'engine_kwargs'} | {'max_running_requests'}
+engine.update({key: value for key, value in recipe.items() if key in owned})
+engine['engine_kwargs'] = {key: value for key, value in recipe.items() if key not in owned}
+prompt_path.chmod(0o600)
+prompt_path.write_text(json.dumps(prompt, sort_keys=True) + '\n')
+prompt_path.chmod(0o400)
+
+def change(text, old, new):
+    assert old in text, old
+    return text.replace(old, new)
+
+cap = packet / 'qualification_capabilities.py'
+text = cap.read_text()
+assets = str(shared/'assets')
+for old, new in [('/data/cacheon-dsv41/workload/', assets + '/workload/'),
+                 ('/data/cacheon-dsv41/aiperf-venv/', str(shared / 'aiperf-venv') + '/'),
+                 ('/data/cacheon-dsv41/tokenizer-nvfp4', assets + '/@TOKENIZER_ASSET@')]:
+    text = change(text, old, new)
+ast.parse(text)
+cap.chmod(0o600); cap.write_text(text); cap.chmod(0o400)
+service = (shared / 'inputs/pod-remote-worker-service.py').read_text()
+service = change(service, '/data/cacheon-dsv41/node/pair-0-1', '/data/cacheon-b300')
+(packet / 'remote_worker_service.@SLUG@.py').write_text(service)
+
+# Preserve the production launcher's image check and empty extra-mount set.
+launcher = root / 'build/bin/docker'
+launcher.parent.mkdir(mode=0o755, exist_ok=True)
+launcher.write_text('''#!/usr/bin/python3
+import json,os,sys
+from pathlib import Path
+config=json.loads((Path(__file__).resolve().parent.parent/'config.json').read_text())
+args=sys.argv[1:]
+if args and args[0]=='run':
+    if not any(image in args for image in (config['fixed_image'],config['local_image_id'])):
+        raise SystemExit('The development launcher requires its configured fixed image.')
+    args[1:1]=config['mounts']
+os.execv(config['docker'],[config['docker'],*args])
+''')
+launcher.chmod(0o555)
+image_ref, image_id = bootstrap['image'], bootstrap['image_id']
+(root / 'build/config.json').write_text(json.dumps({
+    'docker': '/usr/bin/docker', 'mounts': [],
+    'fixed_image': image_ref, 'local_image_id': image_id}) + '\n')
+(root / 'commission-image.json').write_text(json.dumps({
+    'source_commit': (root / 'source-revision.txt').read_text().strip(),
+    'image_id': image_id}) + '\n')
+
+# r25 (Verda 8x B300 KVM, one NUMA node, no SMT, 2026-10-18): map EVERY GPU on the box so both pairs commissioned
+# from this node root seal the same table (the 10-15 identity rule: separate tables gave separate arena identities and
+# the second pair held). The scheduler core a stands alone (r24 sibling-free rule); b keeps its SMT siblings, if any.
+# r22's box==pair assertion is gone. Verda KVM VMs expose unequal vCPUs (09-29 noise root cause): the schedulers must
+# sit on measured-fast positions.
+rows = subprocess.check_output(['lscpu', '-p=CPU,CORE,SOCKET,NODE'], text=True)
+topology = subprocess.check_output(['nvidia-smi', 'topo', '-m'], text=True)
+gpu_nodes = {int(line.split()[0][3:]): int(line.split()[-2])
+             for line in topology.splitlines()
+             if line.split() and line.split()[0] in {f'GPU{i}' for i in range(64)}}
+assert set(devices) <= set(gpu_nodes), 'the pair must be GPUs of this box'
+groups = {}
+for gpu, node in sorted(gpu_nodes.items()): groups.setdefault(node, []).append(gpu)
+cores = {}
+for line in rows.splitlines():
+    if not line or line.startswith('#'): continue
+    cpu, core, socket, node = map(int, line.split(','))
+    cores.setdefault(node, {}).setdefault((socket, core), []).append(cpu)
+pins = {}
+for node, group in sorted(groups.items()):
+    local = [sorted(cpus) for _, cpus in sorted(cores[node].items())]
+    assert len(local) >= 2 * len(group) + 24, 'too few local cores for the pin table and the client sets'
+    # Measured on this VM 2026-10-18: scheduler vCPUs chosen from the fast positions (single-thread sweep).
+    STARTS = @SCHEDULER_STARTS@
+    assert set(gpu_nodes) == set(range(len(STARTS))), 'this table is for the @NODE_NAME@ box'
+    by_cpu = {cpu: cpus for cpus in local for cpu in cpus}
+    for gpu in sorted(group):
+        first = STARTS[gpu]
+        a, b = by_cpu[first], by_cpu[first + 1]
+        assert a != b
+        pins[str(gpu)] = [a[0], b[0], *b[1:]]
+prior = json.loads((shared / 'inputs/deployment.json').read_bytes())
+prior['resources']['runtime']['cpu_pins'] = pins
+(root / 'deployment-template-r2.json').write_text(json.dumps(prior, indent=2) + '\n')
+
+fill = (origin / 'fill_deployment_@SLUG@.py').read_text()
+fill = change(fill, '/root/cacheon-dsv41/nvfp4-cutover-20261010/download-complete.json',
+              str(args.model_input or shared/'model-download.complete.json'))
+fill = change(fill, '/data/cacheon-dev/glm-baseline-20261005/stage/qualification-authority/deployment.json',
+              str(root / 'deployment-template-r2.json'))
+fill = change(fill, '/root/cacheon-dsv41/image.complete.json', str(root / 'commission-image.json'))
+ast.parse(fill)
+(operator / 'fill_deployment_@SLUG@.py').write_text(fill)
+shutil.copy2(origin / 'req_@SLUG@.py', operator / 'req_@SLUG@.py')
+
+commission = (origin / 'commission_pair_@SLUG@.sh').read_text()
+host = args.pod_host
+for old, new in [('/data/cacheon-dsv41/stage-e0d4a039/source', str(source)),
+                 ('/data/cacheon-dsv41/stage-e0d4a039/config.json', str(root / 'build/config.json')),
+                 ('/data/cacheon-dsv41/node', str(root / 'node')),
+                 ('/data/cacheon-dsv41/packet', str(packet)),
+                 ('/data/cacheon-dsv41/model-receipts', str(origin / 'model-receipts')),
+                 ('/data/cacheon-b300/controller-venv-h3/bin/python', bootstrap['controller_python']),
+                 ('/root/cacheon-dsv41/image.complete.json', str(root / 'commission-image.json')),
+                 ('/root/cacheon-dsv41/fill_deployment_@SLUG@.py', str(operator / 'fill_deployment_@SLUG@.py')),
+                 ('/root/cacheon-dsv41/preflight_replay_tokenizer.py', str(shared / 'preflight_replay_tokenizer.py')),
+                 ('/mnt/rootdisk/models/@MODEL_PROFILE_KEY@', bootstrap['model_root']),
+                 ('HOSTADDR=95.133.253.85; OPS=/root/cacheon-ops/state; KNOWN=$OPS/dsv41-b300-known-hosts',
+                  f'HOSTADDR={host}; OPS={root}/authority; KNOWN={known}')]:
+    commission = change(commission, old, new)
+commission = change(commission, '$PY -B -m py_compile "$SERVICE" && rm -rf "$STAGE/worker-bootstrap/bin/__pycache__"',
+                    '$PY -B -c \'import ast,sys;ast.parse(open(sys.argv[1]).read())\' "$SERVICE"')
+commission = change(commission, '--pod-port 22 --service-identity',
+                    f'--pod-port {args.pod_port} --pod-user {args.pod_user} --service-identity')
+commission = change(commission, '"--pod-endpoint", f"{host}:22"', '"--pod-endpoint", f"{host}:' + args.pod_port + '"')
+commission = change(commission, "$PY -B -c 'import ast,sys;ast.parse(open(sys.argv[1]).read())' \"$SERVICE\"",
+    'cp "$SERVICE" "$STAGE/worker-bootstrap/bin/commission_helper.py"\ncp "$PACKET/runtime_service.py" "$SERVICE"\nchmod 500 "$SERVICE"\n' + "$PY -B -c 'import ast,sys;ast.parse(open(sys.argv[1]).read())' \"$SERVICE\"")
+shutil.copy2(Path(__file__).with_name('runtime_service.py'), packet / 'runtime_service.py')
+(operator / 'commission.sh').write_text(commission)
+subprocess.run(['/bin/sh', '-n', str(operator / 'commission.sh')], check=True)
+for p in [source, *source.rglob('*')]:
+    assert not p.is_symlink()
+    p.chmod(p.stat().st_mode & ~0o222)
+print(json.dumps({'stage': str(stage), 'source': str(source), 'cpu_pins': pins,
+                  'candidate_devices': lane, 'baseline_devices': baseline,
+                  'replay_load': @REPLAY_LOAD@, 'replay_windows': 4,
+                  'speed_wall_seconds': prior['speed_policy']['max_stage_seconds'],
+                  'qualification_wall_seconds': prior['speed_policy']['max_qualification_seconds']}))

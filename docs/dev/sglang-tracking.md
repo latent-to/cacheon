@@ -20,8 +20,16 @@ Native MTP uses the existing `EngineSessionConfig.engine_kwargs`: set
 These options are bound into its existing digest and forwarded to SGLang.
 `EngineSessionConfig.engine_env` sets process environment for the engine and
 its ranks the same way, bound into the same digest; only reviewed names cross
-the boundary, currently the DeepSeek-V4.1 Engram host-table switches, which
-SGLang reads from the environment rather than from its server arguments.
+the boundary, currently the DeepSeek-V4.1 Engram host-table switches and the
+Muse Spark DFlash2 draft-sampler, TVM FFI architecture and unified-cache
+out-of-window release switches, which SGLang reads from the environment rather
+than from its server arguments.
+A separate draft model (`speculative_draft_model_path`) is sealed as one
+directory under the model root, `/cacheon/input/model/<name>`, so the model
+manifest and content digest cover its bytes and the engine lifetime mounts
+nothing else. `swa_full_tokens_ratio`, the only float among the engine
+options, is bound into the digest by its shortest round-trip spelling, as
+`mem_fraction_static` is.
 Target node addresses bind only to the target ModelRunner; the speculative
 drafter retains stock execution. Miners keep the same node interface, including
 the target-verification modes and shapes passed to it. Requalify the exact

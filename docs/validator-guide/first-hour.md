@@ -236,6 +236,10 @@ Do not substitute a shell command, dynamic import path, or fake provider that de
 success. A commissioned provider must construct the sealed paired-replay speed
 work, audit, and pristine-T qualification work.
 
+The tracked operator that performs this commissioning for one pair, rendered
+per arena from its `operator.json`, is described in
+[Commissioning a new arena](new-arena.md).
+
 ## 8. Observe one complete reservation lifecycle
 
 Before daemonizing, retain evidence for one deliberately controlled admission and verify

@@ -22,7 +22,7 @@ Run a focused test while developing, then the relevant broader suite before
 opening a pull request:
 
 ```bash
-python -m pytest -q tests/test_bundle_hash.py
+python -m pytest -q tests/test_validator_end_to_end.py
 python -m pytest -q tests
 ```
 

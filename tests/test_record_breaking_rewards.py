@@ -262,8 +262,15 @@ def test_statistical_records_pay_one_and_a_half_percent_over_the_previous_best(t
     from decimal import Decimal
     from cacheon.chain.evaluation_order import reward_comparisons
     from cacheon.eval.goodput_runtime import GoodputPolicy, GoodputReadSet
-    from tests.test_service_statistics import CONTRACT, WORK, _read
+    from cacheon.eval.service_capacity import LoadRead, ServiceContract, TurnRecord
 
+    def _read(arm, lane, window, seconds):  # one cold and one warm turn of the one session
+        cold = TurnRecord("session", "main", 0, 10**9, 10**9, 10**9+1, 2*10**9, 100, 2, "ok")
+        warm = TurnRecord("session", "main", 1, 3*10**9, 3*10**9, 3*10**9+1,
+                          3*10**9+round(seconds*10**9), 100, 2, "ok")
+        return LoadRead(arm, window, lane, 24, (cold, warm))
+
+    CONTRACT, WORK = ServiceContract(0.001, 1000.0, 0.8), {"session": (2, 0)}
     policy = GoodputPolicy(CONTRACT, 1.0, 0.0003, 0.0, 0.0, 0.01, 0.0001)
     with _store(tmp_path) as store:
         candidates = []

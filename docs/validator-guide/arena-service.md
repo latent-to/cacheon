@@ -104,7 +104,9 @@ TP1 therefore needs two GPUs, including an explicit pair within an eight-GPU
 host. TP4 uses two four-GPU lanes. Spare devices are never allocated implicitly.
 Pass the materializer's output as `--commissioned-root` to the remote adapter
 (or `commissioned_root` to its Python builders). Omission preserves the
-historical GLM path.
+historical GLM path. The operator that runs the materializer, the commissioner
+and the registration for one pair is rendered per arena from
+`scripts/arena/`; see [Commissioning a new arena](new-arena.md).
 
 Optional sealed `resources.runtime` and `resources.prebuild` objects override
 existing OCI capacity fields: `cpu_millis`, `memory_bytes`, `pids_limit`,
@@ -290,5 +292,5 @@ Next: [Authoritative qualification](qualification.md).
 
 - [Arena service types and registry](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py)
 - [B300 deployment materializer](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_deployment.py)
-- [Arena service tests](https://github.com/latent-to/cacheon/blob/main/tests/test_arena_service.py)
+- [End-to-end validator test](https://github.com/latent-to/cacheon/blob/main/tests/test_validator_end_to_end.py)
 - [Qualification intake projection](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_intake.py)

@@ -1,0 +1,80 @@
+"""Start or release one commissioned worker around its CPU supervisor lifecycle."""
+import json
+from pathlib import Path
+import shlex
+import sqlite3
+import subprocess
+import sys
+
+from cacheon.chain.remote_worker_registration import verify_registration
+from cacheon.chain.ssh_worker_transport import ssh_base
+
+standing_path, service_path, pod_root, relay_unit, action = sys.argv[1:]
+standing = json.loads(Path(standing_path).read_bytes())
+dispatch = json.loads(Path(standing['screen_dispatcher_config']).read_bytes())
+registration = verify_registration(json.loads(Path(dispatch['registration_path']).read_bytes()))
+ready = json.loads(Path(dispatch['registration_path']).with_name('ready-receipt.json').read_bytes())
+devices = ready['lane']['devices'] + ready['lane']['baseline_devices']
+assert action in {'start', 'stop'}
+if action == 'stop':
+    # A failed controller may leave a paid request running; never kill that work.
+    with sqlite3.connect('file:'+dispatch['intake_db']+'?mode=ro', uri=True) as db:
+        active = db.execute("SELECT lease_id FROM evaluation_leases WHERE owner=? AND state='active'",
+                            (dispatch['owner'],)).fetchall()
+    if active:
+        raise RuntimeError('worker still owns active evaluation; retain relay and GPU service')
+    subprocess.run(['systemctl', 'stop', relay_unit], check=True)
+
+remote = r'''
+import json, os, shlex, signal, subprocess, sys, time
+from pathlib import Path
+row=json.load(sys.stdin)
+action,service,root,python,session=[row[k] for k in ('action','service','root','python','session')]
+# r24 (Lium 4x B300): the validator client (pod-serve, its per-request adapter running both lanes' replay bridges,
+# and the AIPerf processes it spawns) runs on node-0 cores 8-19, first threads, clear of every sealed engine pin and
+# its SMT sibling. Unpinned, it migrated across 256 powersave cores; measured A/A noise 0.0201 pinned vs 0.0252.
+CLIENT=@CLIENT_SETS@[row['lane']]  # the measured-fast client core set of this lane, clear of the pin table
+pins=json.loads((Path(root).parent/'qualification-authority/deployment.json').read_bytes())['resources']['runtime']['cpu_pins']
+def siblings(cpu):
+ text=Path(f'/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list').read_text().strip()
+ return {c for part in text.split(',') for c in range(int(part.split('-')[0]),int(part.split('-')[-1])+1)}
+node0=Path('/sys/devices/system/node/node0/cpulist').read_text().strip()
+node0={c for part in node0.split(',') for c in range(int(part.split('-')[0]),int(part.split('-')[-1])+1)}
+pinned={c for cpus in pins.values() for c in cpus}
+assert set(CLIENT)<=node0, 'client CPUs are not all on NUMA node 0'
+assert not pinned&set().union(*map(siblings,CLIENT)), 'client CPUs share a core with a sealed engine pin'
+result=subprocess.run(['tmux','list-panes','-t',session,'-F','#{pane_pid}'],capture_output=True,text=True)
+if result.returncode:
+ if action=='stop':sys.exit(0)
+ command=shlex.join(['/usr/bin/taskset','-c',','.join(map(str,CLIENT)),python,'-B','-u',service,'pod-serve'])
+ command='exec '+command+' >>'+shlex.quote(str(Path(root)/'logs/service.log'))+' 2>&1'
+ (Path(root)/'logs').mkdir(exist_ok=True)
+ subprocess.run(['tmux','new-session','-d','-s',session,command],check=True)
+ time.sleep(1)
+ result=subprocess.run(['tmux','list-panes','-t',session,'-F','#{pane_pid}'],capture_output=True,text=True,check=True)
+pids=result.stdout.split()
+assert len(pids)==1, 'expected one service process'
+pid=int(pids[0]);proc=Path('/proc')/str(pid)
+args=(proc/'cmdline').read_bytes().split(b'\0')
+assert service.encode() in args and b'pod-serve' in args, 'service process identity differs'
+assert action=='stop' or os.sched_getaffinity(pid)==set(CLIENT), 'pod service does not run on the client CPUs'
+if action=='stop':
+ os.kill(pid,signal.SIGINT)
+ deadline=time.monotonic()+90
+ while proc.exists():
+  if time.monotonic()>deadline:raise RuntimeError('pod service did not close; inspect retained logs')
+  time.sleep(0.5)
+ busy=subprocess.check_output(['nvidia-smi','--id='+','.join(map(str,row['devices'])),
+                               '--query-compute-apps=pid','--format=csv,noheader'],text=True).strip()
+ assert not busy, 'commissioned devices still have GPU processes: '+busy
+print(json.dumps({'action':action,'service':service,'pid':pid,'stopped':action=='stop'}))
+'''
+payload = dict(action=action, service=service_path, root=pod_root,
+               python=registration['python_executable'], session=relay_unit+'-pod', devices=devices,
+               lane=','.join(map(str, ready['lane']['devices'])))
+prefix = [] if registration['pod_user'] == 'root' else ['sudo', '-n', '--']
+command = shlex.join([*prefix, '/usr/bin/python3', '-c', remote])
+subprocess.run([*ssh_base(registration), command], input=json.dumps(payload),
+               text=True, check=True, timeout=120)
+if action == 'start':
+    subprocess.run(['systemctl', 'start', relay_unit], check=True)

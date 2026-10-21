@@ -9,7 +9,9 @@ them with the committed baseline under ``scripts/surface_baseline/``:
 - ``seams``: the adapter rows and target modules;
 - ``capability_modules``: the declared private-caller manifest;
 - ``sqlite_ddl``: the verbatim DDL of a fresh intake and recoverable store;
-- ``catalog``: the target-catalog digest and every target's spec digests;
+- ``catalog``: the target-catalog digest, every target's spec digests, and the
+  node seam's audit literals beside whether they match the forward-pass
+  contract;
 - ``content_hashes``: ``content_hash`` of every committed example bundle and
   stack fixture;
 - ``modules``: ``__all__`` (or the public top-level names) and the exception
@@ -19,7 +21,8 @@ them with the committed baseline under ``scripts/surface_baseline/``:
   continuation codecs, whose keys are ``module.qualname`` and therefore move
   with any file split;
 - ``digest_goldens``: empty-store settlement, burn-projection and standalone
-  claim digests.
+  claim digests, and the native-build payload every retained launch digest
+  binds.
 
 Every section is a flat mapping written one key per line, so a baseline diff
 names the exact help text, table, module or wire type that moved.
@@ -52,6 +55,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from decimal import Decimal
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -59,7 +63,7 @@ BASELINE_DIR = ROOT / "scripts" / "surface_baseline"
 DIFF_KEYS = 20
 DIFF_WIDTH = 400
 THIRD_PARTY = ("bittensor", "numpy", "sglang", "torch")
-STACK_FIXTURES = ("tests/fixtures/node_singleton",)
+STACK_FIXTURES = ("tests/fixtures/node_singleton", "tests/fixtures/pre_cutover_abi")
 
 sys.path.insert(0, str(ROOT))
 # argparse wraps help to the terminal width; pin it before any format_help.
@@ -149,6 +153,22 @@ def catalog_surface() -> dict[str, object]:
             "spec_digest": catalog.target_spec_digest(target),
             "contract_digest": catalog.contract_digest(target),
         }
+    # The sealed forward-pass contract and the row audit the node seam runs are two literals: a retained PASS
+    # binds the first while the pod graded by the second. Read from source; the seam imports torch.
+    source = ast.parse((ROOT / "cacheon" / "integrations" / "sglang_nodes.py").read_text())
+    node = {stmt.targets[0].id: ast.literal_eval(stmt.value) for stmt in source.body
+            if isinstance(stmt, ast.Assign) and isinstance(stmt.targets[0], ast.Name)
+            and stmt.targets[0].id in ("_MODE", "_ROW_BAR", "_FLOOR")}
+    forward = catalog.require("forward_pass").contract_ref
+    correctness = forward.correctness.snapshot()
+    out["forward_pass_node_audit"] = {
+        "node": {name: str(value) for name, value in sorted(node.items())},
+        "matches_contract": (
+            correctness["mode"] == node["_MODE"]
+            and Decimal(correctness["min_ratio"]) == Decimal(str(node["_ROW_BAR"]))
+            and [Decimal(row.snapshot()["rtol"]) for row in forward.tolerances] == [Decimal(str(node["_FLOOR"]))]
+        ),
+    }
     return out
 
 
@@ -258,6 +278,12 @@ def digest_golden_surface() -> dict[str, object]:
         MetagraphMember,
         StandingRewardClaim,
     )
+    from cacheon.eval.engine_launch import (
+        NativeBuildSpec,
+        native_compiler_policy_digest,
+        native_patcher_digest,
+        native_toolchain_digest,
+    )
     from cacheon.eval.oci_session_protocol import SlotAuditControl
 
     scope = IntakeScope("0x" + "0" * 64, 307)
@@ -297,6 +323,19 @@ def digest_golden_surface() -> dict[str, object]:
     out["slot_audit_control"] = SlotAuditControl(
         sample_rate_ppm=1000, minimum_calls=10,
         expected_slots=("norm.rmsnorm",), expected_member_count=1,
+    ).digest
+    # Every launch digest a retained PASS carries binds a native-build digest; this freezes its schema-1 payload.
+    image, platform, distribution, dependency_policy = "1" * 64, "2" * 64, "3" * 64, "4" * 64
+    out["native_build"] = NativeBuildSpec(
+        tree_digest="5" * 64, image_digest=image, platform_digest=platform,
+        worker_distribution_digest=distribution,
+        toolchain_digest=native_toolchain_digest(image_digest=image, platform_digest=platform),
+        patcher_digest=native_patcher_digest(worker_distribution_digest=distribution),
+        compiler_flags_digest=native_compiler_policy_digest(
+            image_digest=image, worker_distribution_digest=distribution,
+            dependency_policy_digest=dependency_policy, target_architecture="sm120",
+        ),
+        target_architecture="sm120", dependency_policy_digest=dependency_policy,
     ).digest
     return out
 

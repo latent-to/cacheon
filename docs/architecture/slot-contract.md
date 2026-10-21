@@ -191,9 +191,11 @@ before any candidate code has run, and compared before each audited reference: a
 candidate that rebinds a `forward` makes stock agree with it, and one that rebinds
 a native path makes the twin noisy. A change raises, names the module and
 attribute, and is receipted as the candidate's. One change is the engine's own:
-SGLang's fused ops leave their dispatch target empty until the first call, so an
-attribute that was empty at binding may be filled with one of that module's own
-recorded methods and with nothing else. Weights are not recorded; a rewritten
+SGLang's fused ops leave their dispatch target empty until the first call, and
+Muse Spark's FP4 experts receive their post-expert norm, a child of the same node,
+on the first forward, so an attribute that was empty at binding may be filled with
+one of that module's own recorded methods or with a module the node already
+contains, and with nothing else. Weights are not recorded; a rewritten
 weight changes the served model itself, which the end-to-end quality gate grades
 against the pristine reference.
 

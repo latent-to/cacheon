@@ -230,6 +230,7 @@ def _settle_pending(
             initial_event_sequence=lease.initial_event_sequence,
             previous_event_digest=lease.previous_event_digest,
             lineage_tips=lease.lineage_tips,
+            tree_digest_of=store.composed_tree_digest,
         )
         evidence = tuple(
             store.reopen_settlement_evidence(candidate)

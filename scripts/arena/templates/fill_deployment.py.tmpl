@@ -1,0 +1,85 @@
+"""Derive the deployment profile from READY, the model receipt, the image probe and the lane topology. Nothing is typed by hand.
+
+Usage: fill_deployment_@SLUG@.py <ready> <model receipt> <stage root> <out>
+"""
+from pathlib import Path
+import hashlib, json, subprocess, sys
+from cacheon.chain.remote_worker_registration import verify_ready_receipt
+from cacheon.eval.runtime_preflight import _CONTAINER_SCRIPT
+from cacheon.stack_identity import canonical_digest, canonical_json_bytes
+
+ready_path, receipt_path, stage_root, out = sys.argv[1:5]
+ready = verify_ready_receipt(json.load(open(ready_path)))
+receipt = json.load(open(receipt_path))
+model_download = json.load(open("/root/cacheon-dsv41/nvfp4-cutover-20261010/download-complete.json"))
+if receipt["content_digest"] != ready["model"]["content_digest"]:
+    raise SystemExit("ABORT=model_receipt_differs_from_ready")
+image = ready["worker_image"]
+probe = subprocess.run(
+    ["/usr/bin/docker", "run", "--rm", "--pull=never", "--network=none", "--read-only", "--user=65534:65534",
+     "--tmpfs=/tmp:rw,size=64m", "--workdir=/tmp", "--env=NVIDIA_VISIBLE_DEVICES=void", "--env=CUDA_VISIBLE_DEVICES=",
+     "--entrypoint=/usr/bin/python3.12", image, "-I", "-S", "-c", _CONTAINER_SCRIPT],
+    check=True, capture_output=True, text=True, timeout=300)
+seen = json.loads(probe.stdout)
+if seen["python"]["executable"] != "/usr/bin/python3.12":
+    raise SystemExit("ABORT=container_python_realpath_differs")
+raw = subprocess.run(["nvidia-smi", "topo", "-m"], check=True, capture_output=True, timeout=30).stdout
+if hashlib.sha256(raw).hexdigest() != ready["gpu"]["topology_sha256"]:
+    raise SystemExit("ABORT=live_topology_differs_from_ready")
+# The lane topology digest the private factory recomputes: links among the lane's own GPUs.
+clean = raw.decode().replace("\x1b[4m", "").replace("\x1b[0m", "")
+rows = [line.split() for line in clean.splitlines() if line.strip()]
+header = next((tuple(c for c in r if c.startswith("GPU") and c[3:].isdigit())
+               for r in rows if any(c.startswith("GPU") for c in r)), ())
+allowed = {"X", "PIX", "PXB", "PHB", "NODE", "SYS"}
+links = {r[0]: r[1:1 + len(header)] for r in rows
+         if r and r[0] in header and len(r) >= 1 + len(header)
+         and all(c in allowed or (c.startswith("NV") and c[2:].isdigit()) for c in r[1:1 + len(header)])}
+labels = tuple(f"GPU{i}" for i in ready["lane"]["devices"])
+if "\x1b" in clean or not header or any(l not in links for l in labels):
+    raise SystemExit("ABORT=live_lane_topology_incomplete")
+matrix = [[links[r][header.index(c)] for c in labels] for r in labels]
+topology = hashlib.sha256(canonical_json_bytes({"matrix": matrix, "schema": "cacheon-gpu-topology-v1"})).hexdigest()
+glm = json.load(open("/data/cacheon-dev/glm-baseline-20261005/stage/qualification-authority/deployment.json"))
+profile = {
+    "architecture": "sm103",
+    "arena_id": "@ARENA_ID@",
+    "docker_binary": str(Path(ready["source"]["path"]).resolve().parent / "bin" / "docker"),
+    "gid": 65534,
+    "image": image,
+    "incumbent": "stock",
+    "machine": seen["python"]["machine"],
+    "model_content_digest": ready["model"]["content_digest"],
+    "model_manifest_digest": canonical_digest("cacheon.private.@SLUG@-b300-model-manifest.v1", {"files": receipt["files"]}),
+    "model_profile_key": "@MODEL_PROFILE_KEY@",
+    "model_receipt_digest": ready["model"]["receipt_digest"],
+    "model_revision_digest": canonical_digest(
+        "cacheon.private.@SLUG@-b300-model-revision.v1",
+        {"model": model_download["repo"], "revision": model_download["revision"]}),
+    "oci_platform": "linux/amd64",
+    "python_executable": "/usr/bin/python3.12",
+    "python_platform": seen["python"]["platform"],
+    "qualification_policy": {"audit_minimum_calls": 4, "hidden_tasks_per_prompt": 0, "hidden_tasks_required": False,
+                             "nll_tail_threshold": "0.35", "select_count": 8, "tokens_per_prompt": 9238, "topk_width": 0},
+    "resources": glm["resources"],
+    "sglang_version": seen["sglang_version"],
+    "source_commit": ready["source"]["revision"],
+    "speed_policy": {**glm["speed_policy"], "max_qualification_seconds": 14400},
+    "stage_root": stage_root,
+    "tensor_parallel_size": @TP@,
+    "topology_class": "nvlink-sxm6",
+    "topology_digest": topology,
+    "uid": 65534,
+    "worker_digest": seen["worker"]["digest"],
+    "worker_distribution": seen["worker"]["distribution"],
+    "worker_version": seen["worker"]["version"],
+}
+if set(profile) != set(glm):
+    raise SystemExit("ABORT=profile_keys_differ_from_glm:" + str(sorted(set(profile) ^ set(glm))))
+if ready["lane"]["tensor_parallel_size"] != @TP@ or ready["source"]["revision"] != json.load(open("/root/cacheon-dsv41/image.complete.json"))["source_commit"]:
+    raise SystemExit("ABORT=ready_lane_or_source_unexpected")
+payload = json.dumps(profile, indent=2, sort_keys=True).encode() + b"\n"
+with open(out, "xb") as handle:
+    handle.write(payload)
+print(json.dumps({"deployment_sha256": hashlib.sha256(payload).hexdigest(), "topology_digest": topology, "matrix": matrix,
+                  "sglang": seen["sglang_version"], "worker_digest": seen["worker"]["digest"], "lane": ready["lane"]}))
