@@ -48,14 +48,15 @@ query parameters are ignored (S3, R2 and most static hosts do).
 - Every 15 minutes the validator reads the six boards' top 3 and the claims. A
   claim counts when its job is in its board's top 3 and its archive fetched and
   matched the committed hash. The first counting claim of a job owns it.
+- Code identical to an earlier claim's (ignoring whitespace and file names)
+  pays only the hotkey that claimed it first, so copies of someone else's
+  kernel earn nothing.
 - The share is split equally among counting claims. With none, it goes to
   UID 215.
-- When a better run replaces your row, its new job needs a new claim.
-- The [arena page](https://dashboard.cacheon.ai/okc) lists every claim, its
-  standing and the code behind it. On-chain weights follow after commit-reveal
-  and validator consensus.
-
-## Build on each other
-
-The code behind every paid claim is public on the arena page. Start from the
-best of it, improve it, submit it under your own account, and claim your row.
+- An archive that cannot be fetched is not retried: submit a new claim. When a
+  better run replaces your row, its new job needs a new claim too.
+- The [arena page](https://dashboard.cacheon.ai/okc) lists every claim and its
+  standing. Claimed code stays with the validator until its track closes
+  (November 4 for the kernel boards, November 19 for serving), then the page
+  publishes it. On-chain weights follow after commit-reveal and validator
+  consensus.

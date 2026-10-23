@@ -88,13 +88,16 @@
 # Open Kernel Challenge arena, simplified: claims are unpaid reveals naming a board job, top-3 jobs split the share
 # equally, else UID 215; the dashboard's /okc page publishes their code: +68 dashboard (okc.py, +2 app.py wiring),
 # -5 scripts (gist and signature claims removed) +3 notes, -12 docs.
+# Copy guard (Shiv's order): identical code pays its first claimant only, failed fetches are not retried, and claimed
+# code stays private until its track closes: +37 scripts, +7 dashboard, +4 docs, +3 notes. No deletion was available;
+# the whole branch retires after the challenge's final results.
 (root) 1156
 .github 338
 bundles 2398
 cacheon 92461
 cacheon_kernels 936
-dashboard 4349
-docs 13090
+dashboard 4356
+docs 13094
 examples 582
-scripts 4485
+scripts 4525
 tests 13838

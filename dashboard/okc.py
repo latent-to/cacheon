@@ -1,7 +1,7 @@
-"""The Open Kernel Challenge arena: each claim's standing and the code behind it.
+"""The Open Kernel Challenge arena: each claim's standing, and its code once its track closes.
 
-scripts/arena/okc_shares.py rewrites the claims file on every refresh; the dashboard only serves it,
-so the code behind every paid claim is public.
+scripts/arena/okc_shares.py rewrites the public claims file on every refresh and leaves a claim's code
+out until the challenge closes that claim's track; the dashboard only serves the file.
 """
 from __future__ import annotations
 
@@ -33,10 +33,16 @@ def _page(doc: dict) -> str:
             f"<li>{e(str(row['team']))}: {row['value']:.4g} (job <code>{e(job)}</code>)</li>"
             for job, row in rows.items()) + "</ol>"
         for board, rows in doc["top"].items() if rows)
+    def held(claim: dict) -> str:
+        if claim["files"] or "fingerprint" not in claim:
+            return ""
+        after = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(claim["code_public_after"]))
+        return f"<p>Code held by the validator; public after {after}.</p>"
+
     claims = "".join(
         f"<section><h3>{e(claim['board'])} job <code>{e(claim['job'])}</code>: {e(claim['status'])}</h3>"
         f"<p>Hotkey <code>{e(claim['hotkey'])}</code>, block {claim['block']}, reservation "
-        f"<code>{e(claim['reservation_id'])}</code></p>"
+        f"<code>{e(claim['reservation_id'])}</code></p>" + held(claim)
         + "".join(f"<details><summary>{e(name)}</summary><pre>{e(text)}</pre></details>"
                   for name, text in claim["files"].items()) + "</section>"
         for claim in reversed(doc["claims"]))
@@ -47,7 +53,8 @@ def _page(doc: dict) -> str:
         "<style>body{font:15px/1.5 system-ui,sans-serif;max-width:60rem;margin:2rem auto;padding:0 1rem}"
         "pre{overflow:auto;background:#f4f4f4;padding:.75rem}code{word-break:break-all}</style>"
         f"<h1>Open Kernel Challenge arena</h1><p>Refreshed {refreshed}. A claim whose job is in its board's "
-        "top 3 is paid an equal part of the arena's share; with none, the default hotkey "
+        "top 3 is paid an equal part of the arena's share, and code identical to an earlier claim pays only "
+        "that earlier claimant; with none paid, the default hotkey "
         f"<code>{e(doc['default_hotkey'])}</code> is paid. "
         "<a href='https://openkernelchallenge.dev/'>The challenge</a>.</p>"
         f"<h2>Paid now</h2><ul>{share}</ul><h2>Top 3 per board</h2>{boards or '<p>No rows yet.</p>'}"
