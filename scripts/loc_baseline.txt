@@ -82,13 +82,16 @@
 # contribution's own publication. Runtime net 0; +25 docs for JIT/recovery, +10 tests in existing end-to-end modules.
 # Scripts include these three notes, the preceding change's three uncounted notes, and +1 for NUMA-safe GPU pin indexing.
 # First-arena start: +9 scripts/+4 docs replace manual intake installation and first-sync ordering; +1 accounting note.
-(root) 1155
+# Open Kernel Challenge share (competition branch, never merged): the weights stage blends an owner-set share file into
+# each offer and okc_shares.py writes it from claimed challenge crowns: +83 runtime, +113 docs, +1 root, +132 scripts,
+# +3 notes, surface digest_domains. Supersedes nothing; the branch retires after the challenge's final results.
+(root) 1156
 .github 338
 bundles 2398
-cacheon 92378
+cacheon 92461
 cacheon_kernels 936
 dashboard 4281
-docs 12989
+docs 13102
 examples 582
-scripts 4352
+scripts 4487
 tests 13838

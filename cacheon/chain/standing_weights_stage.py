@@ -11,13 +11,16 @@ whether anything reaches the chain. Composition lives in
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
 WEIGHTS_CONFIG_SCHEMA = "cacheon-standing-weights-config-v2"
 WEIGHTS_CONFIG_DOMAIN = "cacheon.chain.standing-weights-config.v1"
+EXTERNAL_SHARE_SCHEMA = "cacheon-external-share-v1"
 _WEIGHTS_CONFIG_FIELDS = frozenset(
     {
         "attribution_hotkey",
@@ -58,6 +61,10 @@ class WeightsStageConfig:
     confirmation_journal: Path | None = None
     arena_allocation_path: Path | None = None
     reward_checkpoint_path: Path | None = None
+    # Owner-set parts per million paid outside Cacheon's arenas (the Open Kernel
+    # Challenge). The file names recipients; unassigned parts go to burn_hotkey.
+    external_share_path: Path | None = None
+    external_share_ppm: int = 0
 
 
 @dataclass(frozen=True)
@@ -91,6 +98,8 @@ def load_weights_config(path: str | os.PathLike[str]) -> WeightsStageConfig:
     fields = _WEIGHTS_CONFIG_FIELDS
     if isinstance(raw, dict) and "arena_allocation_path" in raw:
         fields |= {"arena_allocation_path"}
+    if isinstance(raw, dict) and "external_share_path" in raw:
+        fields |= {"external_share_path", "external_share_ppm"}
     row = _closed_config(raw, fields, "weights stage config")
     if row["schema"] != WEIGHTS_CONFIG_SCHEMA:
         raise StandingCpuSupervisorError("weights stage config schema is unsupported")
@@ -129,6 +138,15 @@ def load_weights_config(path: str | os.PathLike[str]) -> WeightsStageConfig:
 
         allocation_path = _absolute_path(row["arena_allocation_path"], "arena_allocation_path")
         load_allocation(allocation_path)
+    external_path, external_ppm = None, 0
+    if "external_share_path" in row:
+        external_path = _absolute_path(row["external_share_path"], "external_share_path")
+        external_ppm = _positive_int(
+            row["external_share_ppm"], "weights external_share_ppm", maximum=999_999
+        )
+        if not burn_hotkey:
+            raise StandingCpuSupervisorError("an external share needs burn_hotkey for unassigned parts")
+        _read_external_share(external_path)
     return WeightsStageConfig(
         network=network,
         fallback_endpoint=fallback_endpoint,
@@ -155,6 +173,68 @@ def load_weights_config(path: str | os.PathLike[str]) -> WeightsStageConfig:
         confirmation_journal=journal,
         arena_allocation_path=allocation_path,
         reward_checkpoint_path=config_path.with_suffix(".rewards.json"),
+        external_share_path=external_path,
+        external_share_ppm=external_ppm,
+    )
+
+
+def _read_external_share(path: Path) -> tuple[dict[str, int], str]:
+    """Reopen the external-share file: each recipient's parts per million of the share.
+
+    The file is rewritten by its producer (``scripts/arena/okc_shares.py``), so
+    it is reopened on every offer and its digest returned with the parts.
+    """
+
+    from cacheon.chain.standing_cpu_supervisor import StandingCpuSupervisorError, _authority_file
+
+    _authority_file(path, "external share")
+    raw = path.read_bytes()
+    try:
+        value = json.loads(raw)
+    except ValueError as exc:
+        raise StandingCpuSupervisorError(f"external share is not JSON: {exc}") from None
+    if (type(value) is not dict or value.get("schema") != EXTERNAL_SHARE_SCHEMA
+            or not {"schema", "shares"} <= set(value) <= {"schema", "shares", "detail"}
+            or type(value["shares"]) is not list):
+        raise StandingCpuSupervisorError("external share schema is unsupported")
+    parts: dict[str, int] = {}
+    for row in value["shares"]:
+        if (type(row) is not dict or set(row) != {"hotkey", "parts"}
+                or type(row["hotkey"]) is not str or not row["hotkey"] or row["hotkey"] in parts
+                or type(row["parts"]) is not int or row["parts"] <= 0):
+            raise StandingCpuSupervisorError("external share rows are malformed")
+        parts[row["hotkey"]] = row["parts"]
+    if sum(parts.values()) > 1_000_000:
+        raise StandingCpuSupervisorError("external share assigns more than the whole share")
+    return parts, hashlib.sha256(raw).hexdigest()
+
+
+def _apply_external_share(projection: Any, stage: WeightsStageConfig, members: frozenset[str]) -> Any:
+    """Scale the arena vector to the remaining parts and pay the external share.
+
+    Rounding is the producer's own largest-remainder allocation. Recipients that
+    are not registered on the metagraph, and parts the file leaves unassigned,
+    go to the burn hotkey. Arena claims keep their evidence, so reward decay still
+    starts only for claims the arena projection rewarded. The file digest joins
+    ``arena_state_digests`` so the offer changes exactly when the file does.
+    """
+
+    from cacheon.economics import _allocate_pool
+
+    parts, digest = _read_external_share(stage.external_share_path)
+    share = stage.external_share_ppm
+    weights = _allocate_pool(dict(projection.weights_ppm), 1_000_000 - share)
+    paid = {hotkey: value for hotkey, value in parts.items() if hotkey in members}
+    pool = share * sum(paid.values()) // 1_000_000
+    if pool:
+        for hotkey, ppm in _allocate_pool(paid, pool).items():
+            weights[hotkey] = weights.get(hotkey, 0) + ppm
+    if share > pool:
+        weights[stage.burn_hotkey] = weights.get(stage.burn_hotkey, 0) + share - pool
+    return replace(
+        projection,
+        arena_state_digests=tuple(sorted({*projection.arena_state_digests, digest})),
+        weights_ppm=tuple(sorted((hotkey, ppm) for hotkey, ppm in weights.items() if ppm)),
     )
 
 
@@ -277,6 +357,9 @@ def compose_weight_offer_push(
             else:
                 if checkpoint is not None:
                     checkpoint.save()
+            # Before select_offer, so a same-block retry resends this exact blended offer.
+            if stage.external_share_path is not None:
+                projection = _apply_external_share(projection, stage, frozenset(metagraph.hotkeys))
             if checkpoint is not None:
                 projection = checkpoint.select_offer(projection)
             offer = CurrentWeightOffer.from_legacy_projection(projection)

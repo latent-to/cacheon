@@ -471,6 +471,38 @@ failure leaves the accepted history unchanged. Existing sources cannot be
 removed or redirected. Earlier submissions retain their original terms even
 after the new arena opens.
 
+### External share
+
+The optional pair `external_share_path` (absolute path to an owner-controlled
+file) and `external_share_ppm` (1 to 999,999) pays a fixed part of the vector
+outside Cacheon's arenas; it currently funds the
+[Open Kernel Challenge](../miner-guide/open-kernel-challenge.md). It requires a
+nonempty `burn_hotkey`. On every offer the stage scales the arena projection to
+`1,000,000 - external_share_ppm` parts with the producer's largest-remainder
+rounding, then splits `external_share_ppm` among the file's recipients in
+proportion to their `parts`. Parts the file leaves unassigned, and recipients
+that are not registered on the metagraph, go to `burn_hotkey`. The file's
+SHA-256 joins the projection's `arena_state_digests`, so the offer changes
+exactly when the file does. The blend precedes the reward checkpoint's retained
+offer, so a same-block retry resends the identical vector. Arena evidence is
+untouched: reward decay still starts only for claims the arena projection
+rewarded.
+
+```json
+{
+  "schema": "cacheon-external-share-v1",
+  "shares": [{"hotkey": "RECIPIENT_HOTKEY", "parts": 250000}],
+  "detail": {}
+}
+```
+
+`parts` are per million of the external share and may sum to less than
+1,000,000; `detail` is informational. The stage reopens the file on every offer
+and fails the push loudly if it is missing or malformed.
+`scripts/arena/okc_shares.py --out <external_share_path>` writes it from the
+challenge's public boards and miners' claims; run it as the service user on a
+timer (every 15 minutes, with `GITHUB_TOKEN` set for the GitHub API rate limit).
+
 For an already registered full-strength schedule, append a future row with the
 existing complete `weights_ppm` and `stall_bonus_ppm: 250000`; do not edit an
 accepted row. Retain `half_life_blocks` and the other emissions-policy settings.

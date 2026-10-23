@@ -20,7 +20,7 @@
  "cacheon/chain/remote_worker_checkpoints.py": ["cacheon.qualification.checkpoint-work.v2"],
  "cacheon/chain/reward_checkpoint.py": ["cacheon.checkpoint-decay.v1"],
  "cacheon/chain/standing_cpu_supervisor.py": ["cacheon-standing-cpu-supervisor-event-v1","cacheon-standing-cpu-supervisor-status-v1","cacheon-standing-supervisor-config-v1","cacheon.chain.standing-supervisor-config.v1"],
- "cacheon/chain/standing_weights_stage.py": ["cacheon-standing-weights-config-v2","cacheon.chain.standing-weights-config.v1"],
+ "cacheon/chain/standing_weights_stage.py": ["cacheon-external-share-v1","cacheon-standing-weights-config-v2","cacheon.chain.standing-weights-config.v1"],
  "cacheon/chain/weight_offer_service.py": ["cacheon-weight-offer-service-config-v1","cacheon.chain.weight-offer-service-config.v1"],
  "cacheon/chain/weight_projection.py": ["cacheon.chain.weight-projection"],
  "cacheon/chain/weight_publication_record.py": ["cacheon.chain.weight-publication"],

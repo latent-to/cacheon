@@ -123,6 +123,7 @@ nav:
       - Submit on-chain: miner-guide/submitting.md
       - Why submissions fail: miner-guide/why-submissions-fail.md
       - Troubleshooting: miner-guide/diagnostics.md
+      - Open Kernel Challenge: miner-guide/open-kernel-challenge.md
   - Validator guide:
       - Overview: validator-guide/overview.md
       - Deployment readiness: validator-guide/first-hour.md
