@@ -31,6 +31,7 @@ from dashboard.enrichment import Enrichment
 from dashboard.social import install_social, submission_page
 from dashboard.sources import selected, value, install_sources, process_matches, scope_reservations, worker_heartbeats
 from dashboard.disclosure import disclose_bundle, install_disclosure_routes
+from dashboard.okc import install_okc
 from dashboard.competition import competition_label, submission_baseline, target_summary
 from cacheon.chain.baseline_band import qualification_evidence_roots
 from cacheon.chain.eval_cost import PUBLISHED_EVAL_COST_TAO_RAO
@@ -918,6 +919,7 @@ def _sqlite_error(_req: Any, exc: sqlite3.Error) -> JSONResponse:
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 install_social(app, globals())
+install_okc(app)
 install_sources(app, globals())
 if ENRICH:
     ENRICHER.start()

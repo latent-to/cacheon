@@ -85,13 +85,16 @@
 # Open Kernel Challenge share (competition branch, never merged): the weights stage blends an owner-set share file into
 # each offer and okc_shares.py writes it from claimed challenge crowns: +83 runtime, +113 docs, +1 root, +132 scripts,
 # +3 notes, surface digest_domains. Supersedes nothing; the branch retires after the challenge's final results.
+# Open Kernel Challenge arena, simplified: claims are unpaid reveals naming a board job, top-3 jobs split the share
+# equally, else UID 215; the dashboard's /okc page publishes their code: +68 dashboard (okc.py, +2 app.py wiring),
+# -5 scripts (gist and signature claims removed) +3 notes, -12 docs.
 (root) 1156
 .github 338
 bundles 2398
 cacheon 92461
 cacheon_kernels 936
-dashboard 4281
-docs 13102
+dashboard 4349
+docs 13090
 examples 582
-scripts 4487
+scripts 4485
 tests 13838

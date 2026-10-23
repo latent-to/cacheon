@@ -499,9 +499,17 @@ rewarded.
 `parts` are per million of the external share and may sum to less than
 1,000,000; `detail` is informational. The stage reopens the file on every offer
 and fails the push loudly if it is missing or malformed.
-`scripts/arena/okc_shares.py --out <external_share_path>` writes it from the
-challenge's public boards and miners' claims; run it as the service user on a
-timer (every 15 minutes, with `GITHUB_TOKEN` set for the GitHub API rate limit).
+`scripts/arena/okc_shares.py` writes it from miners' claims and the challenge's
+public boards. A claim is an unpaid reveal whose URL ends in
+`?okc=<board>:<job>`; intake keeps it as a reservation and never evaluates it.
+The script reads those reservations (`--intake-db`), fetches each top-3 claim's
+bundle with the validator's decryption key, and splits the share equally among
+the first claim of every top-3 job whose bundle matched its committed hash, or
+gives it all to `--default-hotkey`. It also writes the claims and their code
+(`--public`), which the dashboard serves at `/okc` and `/api/okc` from
+`CACHEON_DASH_OKC_CLAIMS`. Run it as the service user on a timer (every 15
+minutes) with `CACHEON_BUNDLE_DECRYPTION_KEY` set as for intake; it stops
+before writing anything when the key is not provisioned.
 
 For an already registered full-strength schedule, append a future row with the
 existing complete `weights_ppm` and `stall_bonus_ppm: 250000`; do not edit an

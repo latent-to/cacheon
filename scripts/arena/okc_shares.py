@@ -1,131 +1,126 @@
-"""Write the weights stage's external-share file from Open Kernel Challenge crowns held by Cacheon miners.
+"""Write the weights stage's external-share file for the Open Kernel Challenge arena.
 
-Every miner enters the challenge (openkernelchallenge.dev) under their own GitHub account and claims a
-board by publishing, from that same account, a public gist holding the exact code of their official
-job beside ``cacheon-okc-claim.json``: ``{"board", "job", "hotkey", "code_sha256", "signature"}``. The
-signature is the hotkey's over ``cacheon-okc-claim:v1:<board>:<job>:<github login>:<code_sha256>``, so
-the gist proves the account and the signature the hotkey; the gists are the shared code miners build on.
-A claim counts only while its job is still that account's row on the public board: superseding it
-without republishing, a withdrawal, or an organizer removal stops it at the next refresh.
+Cacheon miners enter the challenge (openkernelchallenge.dev) under their own accounts and also submit
+their code to Cacheon with the ordinary unpaid ``chain-submit``: the bundle holds the exact file they
+submitted to the challenge, and the committed URL ends in ``?okc=<board>:<job>``, naming the board and
+their job on it. Unpaid commits are never evaluated; intake keeps them as reservations, which this reads.
 
-A board's crown passes to a claim only when it beats the holder's official result by the margin (shared
-code must not win on judge noise), or when the holder's claim lapses. Until a crown exists on the serving
-board, the four boards that count toward the challenge's serving priority pay a quarter of the share each;
-then the serving board pays all of it. Unheld parts go to the burn hotkey in the weights stage. The output
-file doubles as the crown state; see docs/miner-guide/open-kernel-challenge.md.
+Each refresh pays the share equally to every claim whose job is in its board's top 3 and whose bundle
+fetched and matched its committed hash. The first such claim of a job, in chain order, owns it. With no
+paid claim the whole share goes to the default hotkey. Every claim's standing and the code behind it are
+written for the dashboard, which publishes that code; see docs/miner-guide/open-kernel-challenge.md.
 """
 
 import argparse
-import hashlib
 import json
 import os
+import re
+import sqlite3
 import time
-import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
-from cacheon.chain.weight_share import default_verify_fn
+from cacheon.chain.bundle_privacy import validator_key
+from cacheon.chain.fetch import FetchError, fetch_bundle
 
 OKC = "https://openkernelchallenge.dev/api/v1"
-# The challenge's decode-step problems: the boards its serving-queue priority ranks.
-COUNTED = ("muse_bf16_proj", "muse_attention_decode", "muse_moe_w4a16", "muse_decode_layer")
-CLAIM_FILE = "cacheon-okc-claim.json"
+BOARDS = ("muse_bf16_proj", "muse_attention_decode", "muse_moe_w4a16", "muse_decode_layer",
+          "muse_prefill_layer", "serving")
+TOP = 3
+WHOLE = 1_000_000
+_JOB = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_MAX_FILE_BYTES = 1 << 20
 
 
-def get(url: str, *, api: bool = False) -> bytes:
-    headers = {"User-Agent": "cacheon-okc-shares"}
-    if api and os.environ.get("GITHUB_TOKEN"):
-        headers["Authorization"] = "Bearer " + os.environ["GITHUB_TOKEN"]
-    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30) as response:
-        return response.read()
+def top_jobs(board: str) -> dict[str, dict]:
+    """The board's top rows by job, best first, as the public leaderboard orders them."""
+    url = f"{OKC}/serving/leaderboard" if board == "serving" else f"{OKC}/leaderboard/{board}"
+    request = urllib.request.Request(url, headers={"User-Agent": "cacheon-okc-shares"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        rows = json.loads(response.read())["rows"]
+    scored = [(row, row.get("score", row.get("speedup"))) for row in rows if row.get("job") and not row.get("reference")]
+    scored = sorted(((row, value) for row, value in scored if isinstance(value, (int, float))), key=lambda item: -item[1])
+    return {row["job"]: {"rank": rank, "team": row.get("team"), "value": value}
+            for rank, (row, value) in enumerate(scored[:TOP], 1)}
 
 
-def board_rows(board: str) -> dict[str, tuple[str | None, float]]:
-    """Each account's official row on one board: its job id and the board's score (higher is better)."""
-    if board == "serving":
-        rows = json.loads(get(f"{OKC}/serving/leaderboard"))["rows"]
-        return {row["team"]: (row.get("job"), row["score"]) for row in rows
-                if not row.get("reference") and isinstance(row.get("score"), (int, float))}
-    rows = json.loads(get(f"{OKC}/leaderboard/{board}"))["rows"]
-    return {row["team"]: (row["job"], row["speedup"]) for row in rows}
+def read_claims(intake_db: Path) -> list[dict]:
+    """Every reservation whose URL names a board and job, in chain order."""
+    db = sqlite3.connect(f"file:{intake_db}?mode=ro", uri=True)
+    try:
+        rows = db.execute(
+            "SELECT reservation_id, hotkey, content_hash, url, block FROM reservations "
+            "WHERE url LIKE '%okc=%' ORDER BY block, event_index, event_subindex").fetchall()
+    finally:
+        db.close()
+    claims = []
+    for reservation_id, hotkey, content_hash, url, block in rows:
+        values = parse_qs(urlparse(url).query).get("okc", [])
+        board, _, job = values[0].partition(":") if len(values) == 1 else ("", "", "")
+        if board in BOARDS and _JOB.fullmatch(job):
+            claims.append({"reservation_id": reservation_id, "hotkey": hotkey, "content_hash": content_hash,
+                           "url": url, "block": block, "board": board, "job": job})
+    return claims
 
 
-def claims(login: str, cache: dict) -> dict[str, dict]:
-    """A login's verified claims by board, newest gist first; a malformed claim is skipped, not trusted."""
-    if login not in cache:
-        found = {}
-        try:
-            gists = json.loads(get(f"https://api.github.com/users/{login}/gists?per_page=100", api=True))
-        except urllib.error.HTTPError as exc:
-            if exc.code != 404:  # a renamed or deleted account has no claims; rate limits stay loud
-                raise
-            gists = []
-        for gist in gists:
-            files = gist["files"]
-            if CLAIM_FILE not in files or gist["owner"]["login"] != login:
-                continue
-            try:
-                claim = json.loads(get(files[CLAIM_FILE]["raw_url"]))
-                board, job, hotkey, digest = (claim[key] for key in ("board", "job", "hotkey", "code_sha256"))
-                if board in found or not any(name != CLAIM_FILE and hashlib.sha256(get(meta["raw_url"])).hexdigest()
-                                             == digest for name, meta in files.items()):
-                    continue
-                message = f"cacheon-okc-claim:v1:{board}:{job}:{login}:{digest}".encode()
-                if default_verify_fn(hotkey, message, bytes.fromhex(claim["signature"].removeprefix("0x"))):
-                    found[board] = {"github": login, "job": job, "hotkey": hotkey, "gist": gist["html_url"]}
-            except (KeyError, TypeError, ValueError, AttributeError, OSError):
-                continue
-        cache[login] = found
-    return cache[login]
+def bundle_files(claim: dict, cache: Path) -> dict[str, str]:
+    """The claim's bundle as text by path; FetchError when it is unreachable or its hash differs."""
+    root = fetch_bundle(claim["url"], claim["content_hash"], cache)
+    return {path.relative_to(root).as_posix(): path.read_bytes()[:_MAX_FILE_BYTES].decode("utf-8", "replace")
+            for path in sorted(root.rglob("*")) if path.is_file()}
 
 
-def crown(board: str, holder: dict | None, margin: float, cache: dict) -> dict | None:
-    """Keep or pass one board's crown against the current public rows."""
-    rows = board_rows(board)
-
-    def current(login: str) -> dict | None:
-        claim = claims(login, cache).get(board)
-        job, value = rows.get(login, (None, None))
-        if claim is None or value is None or (job is not None and claim["job"] != job):
-            return None
-        return {**claim, "value": value}
-
-    held = current(holder["github"]) if holder else None
-    for login, (_job, value) in sorted(rows.items(), key=lambda row: -row[1][1]):
-        if held is not None and (login == held["github"] or value < held["value"] * (1 + margin)):
-            break
-        challenger = current(login)
-        if challenger is not None:
-            return {**challenger, "since": int(time.time())}
-    return held and {**held, "since": holder["since"]}
+def write(path: Path, body: dict) -> None:
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(body, indent=1, sort_keys=True) + "\n")
+    temporary.chmod(0o644)
+    os.replace(temporary, path)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", required=True, type=Path, help="the stage's external_share_path (also the state)")
-    parser.add_argument("--public", type=Path, help="also write the crowns and their gists here, for the dashboard")
-    parser.add_argument("--kernel-margin", type=float, default=0.01, help="fraction a new kernel crown must clear")
-    parser.add_argument("--serving-margin", type=float, default=0.02, help="fraction a new serving crown must clear")
+    parser.add_argument("--intake-db", required=True, type=Path, help="the intake database miners submit into")
+    parser.add_argument("--default-hotkey", required=True, help="paid the whole share when no claim is")
+    parser.add_argument("--cache", required=True, type=Path, help="private directory for fetched bundles")
+    parser.add_argument("--out", required=True, type=Path, help="the weights stage's external_share_path")
+    parser.add_argument("--public", required=True, type=Path, help="claims and their code, for the dashboard")
     args = parser.parse_args()
-    held = json.loads(args.out.read_text())["detail"]["crowns"] if args.out.exists() else {}
-    cache: dict = {}
-    crowns = {board: crown(board, held.get(board), args.serving_margin if board == "serving" else args.kernel_margin,
-                           cache) for board in (*COUNTED, "serving")}
-    paying = {"serving": 1_000_000} if crowns["serving"] else dict.fromkeys(COUNTED, 250_000)
+    validator_key()  # an unprovisioned key is the operator's fault: stop before judging any claim
+    standing = {board: top_jobs(board) for board in BOARDS}
+    claims, owned = read_claims(args.intake_db), set()
+    for claim in claims:
+        top = standing[claim["board"]].get(claim["job"])
+        claim.update(top or {}, status="not in the top 3", files={})
+        if top is None:
+            continue
+        if (claim["board"], claim["job"]) in owned:
+            claim["status"] = "job already claimed"
+            continue
+        try:
+            claim["files"] = bundle_files(claim, args.cache)
+        except FetchError as exc:
+            claim["status"] = f"code not fetched: {exc}"
+            continue
+        owned.add((claim["board"], claim["job"]))
+        claim["status"] = "paid"
+    paid = [claim for claim in claims if claim["status"] == "paid"]
     parts: dict[str, int] = {}
-    for board, value in paying.items():
-        if crowns[board]:
-            parts[crowns[board]["hotkey"]] = parts.get(crowns[board]["hotkey"], 0) + value
-    document = {"schema": "cacheon-external-share-v1",
-                "shares": [{"hotkey": hotkey, "parts": value} for hotkey, value in sorted(parts.items())],
-                "detail": {"crowns": crowns, "paying": sorted(paying), "refreshed": int(time.time())}}
-    for path, body in ((args.out, document), (args.public, document["detail"])):
-        if path is not None:
-            temporary = path.with_name(path.name + ".tmp")
-            temporary.write_text(json.dumps(body, indent=1, sort_keys=True) + "\n")
-            temporary.chmod(0o644)
-            os.replace(temporary, path)
-    print(json.dumps(document["detail"], sort_keys=True))
+    if paid:
+        base, extra = divmod(WHOLE, len(paid))
+        for index, claim in enumerate(paid):
+            claim["parts"] = base + (index < extra)
+            parts[claim["hotkey"]] = parts.get(claim["hotkey"], 0) + claim["parts"]
+    else:
+        parts[args.default_hotkey] = WHOLE
+    refreshed = int(time.time())
+    write(args.out, {"schema": "cacheon-external-share-v1",
+                     "shares": [{"hotkey": hotkey, "parts": value} for hotkey, value in sorted(parts.items())],
+                     "detail": {"refreshed": refreshed, "paid": [claim["reservation_id"] for claim in paid]}})
+    write(args.public, {"refreshed": refreshed, "default_hotkey": args.default_hotkey, "top": standing,
+                        "claims": claims, "shares": parts})
+    print(json.dumps({"refreshed": refreshed, "claims": len(claims), "paid": len(paid), "shares": parts},
+                     sort_keys=True))
 
 
 if __name__ == "__main__":
