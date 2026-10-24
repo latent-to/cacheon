@@ -1980,7 +1980,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     from cacheon.chain.archive import DEFAULT_VALIDATOR_ARCHIVE_PREFIX
     from cacheon.chain.publish import DEFAULT_BUNDLE_KEY_PREFIX
-
+    from cacheon.chain.okc_username import add_register_parser
     p = argparse.ArgumentParser(
         prog="cacheon",
         description=(
@@ -2000,7 +2000,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = p.add_subparsers(dest="cmd", required=True)
-
+    add_register_parser(sub)
     sp = sub.add_parser("compat", help="check our sglang integration points survived an upgrade")
     sp.add_argument("--sglang-version", help="exact version from the arena's runtime authority")
     sp.set_defaults(func=cmd_compat)

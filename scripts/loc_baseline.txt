@@ -91,13 +91,17 @@
 # Copy guard (Shiv's order): identical code pays its first claimant only, failed fetches are not retried, and claimed
 # code stays private until its track closes: +37 scripts, +7 dashboard, +4 docs, +3 notes. No deletion was available;
 # the whole branch retires after the challenge's final results.
-(root) 1156
+# Fresh OKC username binding (owner request): +274 runtime, +629 tests, +97 docs, +10 dashboard, +1 root, +59 arena script, +4 notes.
+# Consumers: chain-okc-register publishes native names; okc_shares indexes finalized history and enforces both unique sides.
+# Casualty: anonymous public-team claiming and the pre-OKC-run cutoff; the independent H200 trial is archived.
+# The round index replaces genesis backfill at the owner-authorized fresh start; old claims stay archived outside admission.
+(root) 1157
 .github 338
 bundles 2398
-cacheon 92461
+cacheon 92735
 cacheon_kernels 936
-dashboard 4356
-docs 13094
+dashboard 4366
+docs 13191
 examples 582
-scripts 4525
-tests 13838
+scripts 4588
+tests 14467

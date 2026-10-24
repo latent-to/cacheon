@@ -12,6 +12,7 @@ requires-python = ">=3.10"
 # matches the validator's CUDA/SGLang environment first, then `pip install -e .`.
 dependencies = [
   "PyNaCl>=1.6.2,<2",
+  "scalecodec>=1.2.12",  # decode a hotkey's SS58 public key for OKC usernames
   # Python 3.11+ has tomllib in the stdlib; 3.10 needs the same parser API.
   "tomli>=2; python_version<'3.11'",
 ]

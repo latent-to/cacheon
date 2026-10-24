@@ -500,9 +500,13 @@ rewarded.
 1,000,000; `detail` is informational. The stage reopens the file on every offer
 and fails the push loudly if it is missing or malformed.
 `scripts/arena/okc_shares.py` writes it from miners' claims and the challenge's
-public boards. A claim is an unpaid reveal whose URL ends in
-`?okc=<board>:<job>`; intake keeps it as a reservation and never evaluates it.
-The script reads those reservations (`--intake-db`), fetches each top-3 claim's
+public boards. A claim is an unpaid reveal whose URL contains
+`?okc=<board>:<job>&okc_user_block=<registration block>`; intake keeps it as a
+reservation and never evaluates it. Before a claim can own a job or code, its
+hotkey must own the exact case-sensitive OKC `team` username under the
+[username registration rules](../miner-guide/open-kernel-challenge.md#register-your-exact-username).
+Registration must precede the Cacheon claim, but may follow the OKC run or its
+top-three result. The script reads those reservations (`--intake-db`), fetches each top-3 claim's
 bundle with the validator's decryption key, and splits the share equally among
 the first claim of every top-3 job whose bundle matched its committed hash, or
 gives it all to `--default-hotkey`. Code identical to an earlier claim's,
@@ -513,6 +517,36 @@ the challenge closes each claim's track; the dashboard serves the public file at
 `/okc` and `/api/okc` from `CACHEON_DASH_OKC_CLAIMS`. Run it as the service user on a timer (every 15
 minutes) with `CACHEON_BUNDLE_DECRYPTION_KEY` set as for intake; it stops
 before writing anything when the key is not provisioned.
+
+The writer also requires `--network` (an archive endpoint), `--netuid` (matching
+intake), `--username-db` (its persistent SQLite history index), and `--start-block`
+(the round's inclusive finalized boundary, recorded in the deployment receipt).
+It indexes finalized native commitment events from that block in chain order, then
+binds each still-unbound username and hotkey together. Both columns are unique;
+repeated registration cannot reset priority, change the pair, or release it after
+deregistration. Same-block priority follows event order. This includes
+registrations whose owners have never submitted a claim, and commitments later
+overwritten by a bundle. Only registrations and Cacheon claims at or after the
+round boundary count. All miners must register and claim again; an existing OKC
+job may qualify without another OKC run.
+
+Persist the start block with the index and use it on every refresh. A new round
+requires a fresh username index and fresh share/claim outputs; an index from a
+different boundary is rejected. Archive the preceding round's files and retain
+its intake history rather than deleting old claims. Do not reuse its ownership
+or code-priority state. The public claims document exposes `start_block`, which
+the dashboard displays to miners.
+
+`--history-batch-blocks` bounds new history work per run (default 5,000 blocks).
+Backfill starts at the round boundary. Each completed block's bindings
+and cursor commit together, so the next run resumes after interruption. Until the
+index reaches that run's pinned finalized head, the writer exits with a history
+incomplete error and leaves share and claim files unchanged. Missing archive
+data, RPC failures, or ambiguous same-block commitment history also stop the
+writer; they do not turn into miner rejections. One writer holds the lock beside
+`--private` through indexing and publication. Complete the round's history and
+verify its first gated refresh before activating that round. Retain and back up
+`--username-db` and its fixed start block with the arena state.
 
 For an already registered full-strength schedule, append a future row with the
 existing complete `weights_ppm` and `stall_bonus_ppm: 250000`; do not edit an

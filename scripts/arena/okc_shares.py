@@ -3,7 +3,9 @@
 Cacheon miners enter the challenge (openkernelchallenge.dev) under their own accounts and also submit
 their code to Cacheon with the ordinary unpaid ``chain-submit``: the bundle holds the exact file they
 submitted to the challenge, and the committed URL ends in ``?okc=<board>:<job>``, naming the board and
-their job on it. Unpaid commits are never evaluated; intake keeps them as reservations, which this reads.
+their job on it, plus ``&okc_user_block=<registration block>``. The exact OKC username must be bound
+one-to-one to the claiming hotkey by its oldest accepted on-chain registration in the round. Unpaid commits are
+never evaluated; intake keeps them as reservations, which this reads.
 
 Each refresh pays the share equally to every claim whose job is in its board's top 3 and whose bundle
 fetched and matched its committed hash. The first such claim of a job, in chain order, owns it, and code
@@ -15,6 +17,7 @@ See docs/miner-guide/open-kernel-challenge.md.
 """
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -26,8 +29,11 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from cacheon import chain
 from cacheon.chain.bundle_privacy import validator_key
 from cacheon.chain.fetch import FetchError, fetch_bundle
+from cacheon.chain.okc_history import sync_registrations
+from cacheon.chain.okc_username import InvalidRegistration, check_claim_registration
 
 OKC = "https://openkernelchallenge.dev/api/v1"
 BOARDS = ("muse_bf16_proj", "muse_attention_decode", "muse_moe_w4a16", "muse_decode_layer",
@@ -60,22 +66,28 @@ def top_jobs(board: str) -> dict[str, dict]:
             for rank, (row, value) in enumerate(scored[:TOP], 1)}
 
 
-def read_claims(intake_db: Path) -> list[dict]:
-    """Every reservation whose URL names a board and job, in chain order."""
+def read_claims(intake_db: Path, start_block: int) -> list[dict]:
+    """Read round claims with an in-round registration pointer, in chain order."""
     db = sqlite3.connect(f"file:{intake_db}?mode=ro", uri=True)
     try:
         rows = db.execute(
             "SELECT reservation_id, hotkey, content_hash, url, block FROM reservations "
-            "WHERE url LIKE '%okc=%' ORDER BY block, event_index, event_subindex").fetchall()
+            "WHERE url LIKE '%okc=%' AND block >= ? ORDER BY block, event_index, event_subindex",
+            (start_block,)).fetchall()
     finally:
         db.close()
     claims = []
     for reservation_id, hotkey, content_hash, url, block in rows:
-        values = parse_qs(urlparse(url).query).get("okc", [])
+        query = parse_qs(urlparse(url).query, keep_blank_values=True)
+        values = query.get("okc", [])
         board, _, job = values[0].partition(":") if len(values) == 1 else ("", "", "")
-        if board in BOARDS and _JOB.fullmatch(job):
+        registration = query.get("okc_user_block", [])
+        user_block = (int(registration[0]) if len(registration) == 1
+                      and re.fullmatch(r"[1-9][0-9]{0,15}", registration[0]) else None)
+        if board in BOARDS and _JOB.fullmatch(job) and user_block is not None and user_block >= start_block:
             claims.append({"reservation_id": reservation_id, "hotkey": hotkey, "content_hash": content_hash,
-                           "url": url, "block": block, "board": board, "job": job})
+                           "url": url, "block": block, "board": board, "job": job,
+                           "okc_user_block": user_block})
     return claims
 
 
@@ -106,29 +118,74 @@ def main() -> None:
     parser.add_argument("--out", required=True, type=Path, help="the weights stage's external_share_path")
     parser.add_argument("--public", required=True, type=Path, help="claims, and code once its track closes")
     parser.add_argument("--private", required=True, type=Path, help="claims with their code, for the operator")
+    parser.add_argument("--network", required=True, help="archive chain endpoint used by intake")
+    parser.add_argument("--netuid", required=True, type=int, help="subnet used by intake and username registrations")
+    parser.add_argument("--start-block", required=True, type=int,
+                        help="first included finalized block of this fresh OKC round")
+    parser.add_argument("--username-db", required=True, type=Path, help="persistent oldest-username history index")
+    parser.add_argument("--history-batch-blocks", type=int, default=5000,
+                        help="maximum finalized history blocks indexed per run; no shares until caught up")
     args = parser.parse_args()
+    with args.private.with_name(args.private.name + ".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        st = chain.connect(args.network)
+        try:
+            refresh(args, st)
+        finally:
+            st.close()
+
+
+def refresh(args, st) -> None:
     validator_key()  # an unprovisioned key is the operator's fault: stop before judging any claim
+    finalized, owners = sync_registrations(st, args.netuid, args.username_db,
+                                          max_blocks=args.history_batch_blocks, start_block=args.start_block)
     standing, closes = {board: top_jobs(board) for board in BOARDS}, track_closes()
     previous = json.loads(args.private.read_text())["claims"] if args.private.exists() else []
-    failed = {claim["reservation_id"]: claim["status"] for claim in previous
-              if claim["status"].startswith("code not fetched")}
-    claims, owned, first = read_claims(args.intake_db), set(), {}
+    previous_by_id = {claim["reservation_id"]: claim for claim in previous}
+    failed = {claim["reservation_id"]: claim.get("fetch_error", claim["status"]) for claim in previous
+              if claim.get("fetch_error") or claim["status"].startswith("code not fetched")}
+    claims, owned, first = read_claims(args.intake_db, args.start_block), set(), {}
     for claim in claims:
         top = standing[claim["board"]].get(claim["job"])
         claim.update(top or {}, status="not in the top 3", files={})
-        # Earlier claims already fetched still own their code even after leaving the top 3.
-        if top is None and not (args.cache / claim["content_hash"]).is_dir():
-            continue
         if claim["reservation_id"] in failed:
-            claim["status"] = failed[claim["reservation_id"]]
+            claim["fetch_error"] = failed[claim["reservation_id"]]
+        if claim["block"] > finalized:
+            raise RuntimeError("claim intake is ahead of the finalized username history")
+        earlier = previous_by_id.get(claim["reservation_id"], {})
+        verified_team = earlier.get("verified_team") or (earlier.get("team") if earlier.get("username_verified") else None)
+        if top is None:
+            if verified_team is None:
+                continue
+            claim["team"] = verified_team
+        try:
+            owner = check_claim_registration(st, args.netuid, {**claim, "team": verified_team or claim.get("team")},
+                                             owners.get(claim["hotkey"]), finalized)
+        except InvalidRegistration as exc:
+            claim["status"] = f"username rejected: {exc}"
+            continue
+        username_matches = claim.get("team") == owner["username"]
+        claim.update(username=owner["username"], username_block=owner["block"],
+                     verified_team=owner["username"], username_verified=username_matches)
+        if not username_matches:
+            claim["status"] = "username rejected: OKC team does not exactly match the hotkey's committed username"
+        if claim.get("fetch_error"):
+            if username_matches:
+                claim["status"] = claim["fetch_error"]
+            continue
+        # Earlier claims already fetched still own their code even after leaving the top 3.
+        if (top is None or not username_matches) and not (args.cache / claim["content_hash"]).is_dir():
             continue
         try:
             claim["files"] = bundle_files(claim, args.cache)
         except FetchError as exc:
             claim["status"] = f"code not fetched: {exc}"
+            claim["fetch_error"] = claim["status"]
             continue
         claim["fingerprint"] = fingerprint(claim["files"])
         owner = first.setdefault(claim["fingerprint"], claim)
+        if not username_matches:
+            continue
         if owner["hotkey"] != claim["hotkey"]:
             claim["status"] = f"same code as earlier claim {owner['reservation_id']}"
         elif top is None:
@@ -150,8 +207,10 @@ def main() -> None:
     refreshed = int(time.time())
     write(args.out, {"schema": "cacheon-external-share-v1",
                      "shares": [{"hotkey": hotkey, "parts": value} for hotkey, value in sorted(parts.items())],
-                     "detail": {"refreshed": refreshed, "paid": [claim["reservation_id"] for claim in paid]}})
-    summary = {"refreshed": refreshed, "default_hotkey": args.default_hotkey, "top": standing, "shares": parts}
+                     "detail": {"refreshed": refreshed, "start_block": args.start_block,
+                                "paid": [claim["reservation_id"] for claim in paid]}})
+    summary = {"refreshed": refreshed, "start_block": args.start_block,
+               "default_hotkey": args.default_hotkey, "top": standing, "shares": parts}
     write(args.private, {**summary, "claims": claims}, 0o600)
     public = [{**claim, "files": claim["files"] if refreshed >= closes[claim["board"]] else {},
                "code_public_after": int(closes[claim["board"]])} for claim in claims]

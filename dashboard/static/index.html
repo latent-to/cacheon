@@ -909,8 +909,8 @@ async function loadArenas() {
   feeTotals = { tao: data.fees_total_tao || 0, count: data.fees_count || 0 };
   arena = arenas.find(s => s.slug === arena)?.key || arena;
   if (!arena) arena = data.default || "";
-  $("#arena-select").innerHTML = arenas.length ? arenas.map(s =>
-    `<option value="${esc(s.key)}" ${s.key === arena ? "selected" : ""}>${esc(s.label)}</option>`).join("") : '<option>Current arena</option>';
+  $("#arena-select").innerHTML = (arenas.length ? arenas.map(s =>
+    `<option value="${esc(s.key)}" ${s.key === arena ? "selected" : ""}>${esc(s.label)}</option>`).join("") : '<option>Current arena</option>') + '<option value="okc">Open Kernel Challenge</option>';
   $("#arena-status").innerHTML = arenas.map(s => {
     const h = s.health, hb = h.gpu_heartbeat || {};
     const active = workerActive(hb);
@@ -924,6 +924,7 @@ async function loadArenas() {
   if (arenas.length) $("#arena-status").innerHTML += `<span class="muted" title="Target settings refresh with the dashboard every 15 seconds.">Targets checked ${esc(new Date().toLocaleTimeString())} · refreshes every 15s</span>`;
 }
 $("#arena-select").onchange = async e => {
+  if (e.target.value === "okc") { location.href = "/okc"; return; }
   arena = e.target.value;
   closeDetail();
   subFilters.offset = 0;

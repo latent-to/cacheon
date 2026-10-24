@@ -27,6 +27,7 @@ installed `cacheon` console script resolves to the same parser.
 | `chain-eval-cost` | contributor | read-only | Print the published eval-cost quote (v1 is a fixed TAO transfer) |
 | `chain-eval-cost-credit` | validator operator | private intake mutation | Grant (or list) one artificial eval-cost credit admitting one unpaid reveal from a hotkey |
 | `chain-submit` | contributor | chain mutation | Commit a bundle hash and HTTPS fetch location through timelock reveal |
+| `chain-okc-register` | contributor | chain mutation | Commit an exact OKC username with the miner's hotkey and report its registration block |
 | `chain-status` | all | read-only | Inspect public subnet, registration, and reveal state |
 | `chain-reservation-status` | validator operator | read-only private diagnostics | Explain one retained reservation without taking the validator write lock |
 | `chain-miner-report` | validator operator | read-only private diagnostics | Report every retained submission for one miner hotkey with its stated cause and next step |
@@ -133,6 +134,36 @@ file, line, callable phase, exception, affected GPU/ranks, and failing call
 chain.
 
 ## Submission commands
+
+### `chain-okc-register`
+
+```bash
+python -m cacheon.cli chain-okc-register 'Cacheon-<five-hex-hotkey-prefix>-name' \
+  --netuid "$NETUID" --network "$NET" --wallet "$WALLET" --hotkey "$HOTKEY"
+```
+
+Publishes the exact, case-sensitive username as a native hotkey-signed commitment.
+The username must contain `Cacheon` and the first five lowercase hex characters
+of that hotkey's decoded public key. `--dry-run` validates and prints the payload
+without connecting or submitting. A real submission waits for finality and reads
+the username back; retain the returned registration block for the later OKC claim.
+Register again for the current arena round, at or after the start block shown on
+the [arena dashboard](https://dashboard.cacheon.ai/okc). Older registrations and
+claims are archived and do not count. The oldest valid on-chain commitment within
+the round establishes a one-to-one binding: one exact username per hotkey and one
+hotkey per exact username. Later registration cannot switch either side;
+registering the same pair again does not reset its priority.
+Registration must precede the Cacheon claim, but need not precede the OKC run or
+its top-three result. Claim arrival order does not establish username ownership.
+The claimed username must match OKC's public `team` string exactly.
+
+Reference the saved block in the bundle URL as
+`?okc=<board>:<job>&okc_user_block=<registration block>`. The same binding may
+claim distinct jobs under the [OKC reward rules](../miner-guide/open-kernel-challenge.md#existing-reward-rules);
+the same job cannot count twice within the round. Submit a new Cacheon claim in
+the round even for an existing qualifying OKC job. This command does not submit
+a bundle or authorize rewards; claims require the round's complete finalized
+commitment-history index.
 
 ### Package
 
