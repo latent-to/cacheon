@@ -82,13 +82,15 @@
 # contribution's own publication. Runtime net 0; +25 docs for JIT/recovery, +10 tests in existing end-to-end modules.
 # Scripts include these three notes, the preceding change's three uncounted notes, and +1 for NUMA-safe GPU pin indexing.
 # First-arena start: +9 scripts/+4 docs replace manual intake installation and first-sync ordering; +1 accounting note.
+# Pooled service attainment (a sealed attainment_pooled grades the bound once over all paired windows; policies
+# without it keep the per-window rule and their bytes): +17 runtime, +7 docs, +2 notes. Supersedes nothing.
 (root) 1155
 .github 338
 bundles 2398
-cacheon 92378
+cacheon 92395
 cacheon_kernels 936
 dashboard 4281
-docs 12989
+docs 12996
 examples 582
-scripts 4352
+scripts 4354
 tests 13838

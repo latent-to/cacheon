@@ -233,6 +233,7 @@ def grade(
     attainment_tolerance: float,
     attainment_margin: float,
     elapsed_time: bool = False,
+    pooled_attainment: bool = False,
 ) -> ServiceVerdict:
     """Grade paired fixed work with the sealed service-attainment requirement.
 
@@ -251,14 +252,19 @@ def grade(
     elapsed-work throughput, and neither calibrates its uncertainty.
 
     Attainment difference less the sealed noise margin must be at least
-    minus the fixed product tolerance in every window. Different work is
-    invalid evidence, never a candidate verdict.
+    minus the fixed product tolerance in every window or, when the sealed
+    policy pools attainment, once over the turns of all paired windows: one
+    window's attainment over a few hundred turns moves by more than that band
+    between windows of a single engine. Different work is invalid evidence,
+    never a candidate verdict.
     """
     # V16 is retained for historical evidence. Elapsed accounting charges every
     # pass's occupancy: overlapping request durations are not GPU time
     # (2026-09-29: c6790f93 scored +4.80% latency but only +0.63% elapsed work).
     if type(elapsed_time) is not bool:
         raise ServiceEvidenceError("elapsed-time scoring selection is not boolean")
+    if type(pooled_attainment) is not bool:
+        raise ServiceEvidenceError("attainment pooling selection is not boolean")
     if not _finite_positive(required) or required < 1.0:
         raise ServiceEvidenceError("required ratio must be at least 1.0")
     for name, value in (("attainment_tolerance", attainment_tolerance), ("attainment_margin", attainment_margin)):
@@ -268,7 +274,7 @@ def grade(
         raise ServiceEvidenceError("paired windows need one read per arm per window")
     work_c: list[WorkRate] = []
     work_i: list[WorkRate] = []
-    windows: list[tuple[int, float, float]] = []
+    windows: list[tuple[str, float, float]] = []
     seen = set()
     for cand, inc in zip(candidate, incumbent, strict=True):
         if (cand.arm, inc.arm) != ("candidate", "incumbent") or (cand.window, cand.load) != (inc.window, inc.load):
@@ -288,18 +294,22 @@ def grade(
         work_i.append(fixed_work_rate(inc, expected, wall_time=elapsed_time))
         if elapsed_time and work_c[-1].turns != work_i[-1].turns:
             raise ServiceEvidenceError("paired replay warm work differs")
-        windows.append((cand.window, attainment(cand, contract), attainment(inc, contract)))
+        windows.append((f"window {cand.window}", attainment(cand, contract), attainment(inc, contract)))
+    if pooled_attainment:
+        a_cand, a_inc = (sum(r.meets(contract) for read in arm for r in read.records)
+                         / sum(len(read.records) for read in arm) for arm in (candidate, incumbent))
+        windows = [(f"pooled {len(candidate)}-window", a_cand, a_inc)]
     if elapsed_time:
         candidate_rate = sum(w.turns for w in work_c) / sum(w.elapsed_s for w in work_c)
         incumbent_rate = sum(w.turns for w in work_i) / sum(w.elapsed_s for w in work_i)
         ratio = candidate_rate / incumbent_rate
     else:
         ratio = max(w.rate for w in work_c) / max(w.rate for w in work_i)
-    for window, a_cand, a_inc in windows:
+    for scope, a_cand, a_inc in windows:
         if a_cand - a_inc - attainment_margin < -attainment_tolerance:
             return ServiceVerdict(
                 SpeedStageDecision.FAIL, ratio, required,
-                f"service_contract_not_met: window {window} attainment {a_cand:.4f} against the incumbent's "
+                f"service_contract_not_met: {scope} attainment {a_cand:.4f} against the incumbent's "
                 f"{a_inc:.4f} is below the non-inferiority bound (tolerance {attainment_tolerance:.4g}, "
                 f"margin {attainment_margin:.4g})",
             )
@@ -316,7 +326,7 @@ def statistical_grade(
     contract: ServiceContract, expected: dict[str, tuple[int, int]], *,
     window_noise: float, boot_noise: float, error_rate: float, max_windows: int,
     attainment_tolerance: float, attainment_margin: float, futility_margin: float = 0.0,
-    orientations: tuple[int, ...] = (),
+    orientations: tuple[int, ...] = (), pooled_attainment: bool = False,
 ) -> ServiceVerdict:
     """Pool fixed-work costs within each orientation and spend one sealed error budget.
 
@@ -371,7 +381,8 @@ def statistical_grade(
     ratio, required, lower = math.exp(estimate), math.exp(z*se), math.exp(estimate-z*se)
     attainment_check = grade(candidate, incumbent, contract, expected, required=1.0,
                             attainment_tolerance=attainment_tolerance,
-                            attainment_margin=attainment_margin, elapsed_time=True)
+                            attainment_margin=attainment_margin, elapsed_time=True,
+                            pooled_attainment=pooled_attainment)
     if count == 2 and attainment_check.detail.startswith("service_contract_not_met"):
         return ServiceVerdict(SpeedStageDecision.FAIL, ratio, required,
                               attainment_check.detail, se, lower)

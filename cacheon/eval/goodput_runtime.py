@@ -80,10 +80,12 @@ class GoodputPolicy:
     boot_noise: float = field(default=0.0, metadata={"wire_optional": True})
     # Statistical grades only: a first orientation reading this far slower ends the stage (0 = off).
     futility_margin: float = field(default=0.0, metadata={"wire_optional": True})
+    # 1 grades service attainment once over all paired windows, 0 in every window; sealed only when set.
+    attainment_pooled: float = field(default=0.0, metadata={"wire_optional": True})
 
     def __post_init__(self):
         values = (self.required, self.null_noise, self.attainment_tolerance, self.attainment_margin,
-                  self.error_rate, self.boot_noise, self.futility_margin)
+                  self.error_rate, self.boot_noise, self.futility_margin, self.attainment_pooled)
         if (type(self.contract) is not ServiceContract
             or any(type(v) not in (int, float) or not math.isfinite(v) for v in values)
             or not (self.required == 1.0 if self.error_rate else 1 < self.required < 2)
@@ -91,7 +93,8 @@ class GoodputPolicy:
             or not 0 <= self.error_rate < 0.5
             or (self.error_rate > 0 and self.null_noise == self.boot_noise == 0)
             or (self.error_rate == 0 and (self.boot_noise or self.futility_margin)) or not 0 <= self.futility_margin < 1
-            or not 0 <= self.attainment_tolerance < 1 or not 0 <= self.attainment_margin < 1):
+            or not 0 <= self.attainment_tolerance < 1 or not 0 <= self.attainment_margin < 1
+            or self.attainment_pooled not in (0, 1)):
             raise ValueError("goodput calibration inputs are invalid")
         object.__setattr__(self, "contract", ServiceContract(**{
             name: float(value) for name, value in asdict(self.contract).items()
@@ -105,7 +108,7 @@ class GoodputPolicy:
         return {"contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
                 **{key: format(getattr(self, key), ".17g") for key in self.__dataclass_fields__
                    if key != "contract" and (self.error_rate or key not in ("error_rate", "boot_noise"))
-                   and (key != "futility_margin" or self.futility_margin)}}
+                   and (key not in ("futility_margin", "attainment_pooled") or getattr(self, key))}}
 
     @classmethod
     def from_dict(cls, value):
@@ -115,6 +118,8 @@ class GoodputPolicy:
             fields -= {"error_rate", "boot_noise"}
         if type(value) is dict and "futility_margin" not in value:
             fields -= {"futility_margin"}
+        if type(value) is dict and "attainment_pooled" not in value:
+            fields -= {"attainment_pooled"}
         if type(value) is not dict or set(value) != fields or type(value["contract"]) is not dict:
             raise ValueError("goodput policy fields differ")
         result = cls(ServiceContract(**{key: float(v) for key, v in value["contract"].items()}),
@@ -169,7 +174,7 @@ class GoodputReadSet:
             self.candidate, self.incumbent, policy.contract,
             {root: (main, inner) for root, main, inner in self.expected},
             **(statistic or {"required": policy.required}), attainment_tolerance=policy.attainment_tolerance,
-            attainment_margin=policy.attainment_margin,
+            attainment_margin=policy.attainment_margin, pooled_attainment=bool(policy.attainment_pooled),
         )
         if (type(result) is not ServiceVerdict or (not policy.error_rate and result.required != policy.required)
             or not math.isfinite(result.ratio) or result.ratio <= 0):

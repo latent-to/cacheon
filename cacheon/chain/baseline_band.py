@@ -147,7 +147,8 @@ def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
                         "boot_noise": policy.boot_noise if policy.error_rate else None,
                         "error_rate": policy.error_rate or None,
                         "attainment_tolerance": policy.attainment_tolerance,
-                        "attainment_margin": policy.attainment_margin, "futility_margin": policy.futility_margin},
+                        "attainment_margin": policy.attainment_margin, "futility_margin": policy.futility_margin,
+                        "attainment_pooled": bool(policy.attainment_pooled)},
         })
     except (RuntimeError, ValueError, KeyError, TypeError, AttributeError) as exc:
         speed["grading_error"] = str(exc)

@@ -713,6 +713,13 @@ batch-cell policies stay sealed as zero, because the policy digest binds them. V
 standard deviation `null_noise`, and paired boot standard deviation `boot_noise`.
 An optional `futility_margin` fails a stage whose complete first orientation
 reads more than that fraction slower, without booting the swapped orientation.
+The candidate's service attainment less the incumbent's, less
+`attainment_margin`, must be at least minus `attainment_tolerance` in every
+window. An optional `attainment_pooled` of `1` applies that bound once to the
+turns of all paired windows instead, because one window's attainment over a few
+hundred turns can move by more than the band between windows of a single engine.
+A policy without it keeps the per-window rule and its sealed bytes, so retained
+evidence regrades unchanged.
 At least one uncertainty component must be positive. These are calibrated
 uncertainty bounds, not a desired detection threshold. Greedy sampling and zero
 rollout top-k width are required. Coding replay uses a teacher-only quality
