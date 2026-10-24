@@ -95,13 +95,14 @@
 # Consumers: chain-okc-register publishes native names; okc_shares indexes finalized history and enforces both unique sides.
 # Casualty: anonymous public-team claiming and the pre-OKC-run cutoff; the independent H200 trial is archived.
 # The round index replaces genesis backfill at the owner-authorized fresh start; old claims stay archived outside admission.
+# OKC page return navigation: +4/-1 dashboard, +1 note; no removable code, retired with the competition page.
 (root) 1157
 .github 338
 bundles 2398
 cacheon 92735
 cacheon_kernels 936
-dashboard 4366
+dashboard 4369
 docs 13191
 examples 582
-scripts 4588
+scripts 4589
 tests 14467
