@@ -83,6 +83,7 @@
  "cacheon.dsl_jit_policy": {"all":null,"exceptions":[],"public":["ADMITTED_ATTRS","DSL_JIT_ENTRYPOINTS","DslJitEntrypoint","admitted_receivers","is_admitted_call"]},
  "cacheon.economics": {"all":["ArenaRewardAuthority","CREDIT_SCALE","DiscoveryBountyClaim","EconomicsError","EmissionsPolicyManifest","GlobalRewardProjection","GlobalRewardProjectionContext","HotkeyWeight","MetagraphMember","POLICY_SCHEMA_VERSION","POLICY_VERSION","STALL_SCALE_BLOCKS","StandingRewardClaim","WEIGHT_PPM","project_global_rewards"],"exceptions":["EconomicsError"]},
  "cacheon.engine_tree": {"all":null,"exceptions":["EngineTreeError"],"public":["ContributionSourceResolver","EmittedFile","EngineTreeError","InspectedContribution","MaterializedEngineTree","inspect_contribution","materialize_engine_tree","reopen_materialized_engine_tree","source_tree_digest"]},
+ "cacheon.engine_tree_paths": {"all":null,"exceptions":[],"public":["cuda_source_paths","generated_name","is_native_source"]},
  "cacheon.eval": {"all":null,"exceptions":[],"public":[]},
  "cacheon.eval.agent_replay": {"all":null,"exceptions":[],"public":["AgentReplayPlan","ReplayBridge","collect_read","run_replay"]},
  "cacheon.eval.agent_slice": {"all":["SliceManifest","SliceManifestError","SliceSession","load_slice_manifest"],"exceptions":["SliceManifestError"]},

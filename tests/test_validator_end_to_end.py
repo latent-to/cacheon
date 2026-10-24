@@ -131,7 +131,7 @@ def _imported(stderr: str) -> set[str]:
     return names
 
 
-def _submit(root: Path, validator_key) -> tuple[Path, dict[str, Path]]:
+def _submit(root: Path, validator_key, native_prebuild: bool) -> tuple[Path, dict[str, Path]]:
     """Miners package sealed archives and reveal them in one finalized block."""
 
     reveals, origin = {}, {}
@@ -140,7 +140,13 @@ def _submit(root: Path, validator_key) -> tuple[Path, dict[str, Path]]:
         if hotkey == "miner-pass":
             (bundle / "kernels/kernel.cuh").write_text("#define JIT_VALUE 1\n")
             manifest = bundle / "manifest.toml"
-            manifest.write_text(manifest.read_text() + 'cuda_sources = ["kernels/kernel.cuh"]\n')
+            sources = ["kernels/kernel.cuh"]
+            if native_prebuild:
+                sources.append("kernels/native.cu")
+                (bundle / sources[-1]).write_text('#include "kernel.cuh"\n')
+                (bundle / "rebuild.json").write_text(
+                    '{"steps":[{"type":"repo_python","path":"build_cuda_ext.py"}]}\n')
+            manifest.write_text(manifest.read_text() + f"cuda_sources = {json.dumps(sources)}\n")
         content_hash, archive = e2e.package(bundle, validator_key)
         reveals[hotkey] = (e2e.reveal(hotkey, content_hash, archive, origin),)
     return e2e.chain(root, reveals, MINERS), origin
@@ -157,12 +163,15 @@ def _store_schema(root: Path, script: str = "") -> tuple[str, ...]:
 
 
 @pytest.mark.parametrize("profile", sorted(e2e.PROFILES))
-def test_finalized_submissions_qualify_settle_and_project_weights(tmp_path, monkeypatch, supervisors, profile):
+@pytest.mark.parametrize("native_prebuild", [False, True])
+def test_finalized_submissions_qualify_settle_and_project_weights(
+    tmp_path, monkeypatch, supervisors, profile, native_prebuild,
+):
     started = time.monotonic()
     root, validator_key = e2e.deployment_root(tmp_path, f"e2e-{profile}", monkeypatch)
 
     # Intake: finalized order, private fetch, immutable publication, copy demotion, in the CLI's own process.
-    state, origin = _submit(root, validator_key)
+    state, origin = _submit(root, validator_key, native_prebuild)
     armed = {"CACHEON_BUNDLE_PATH": str(root / "miners" / "miner-pass"), "CACHEON_ACTIVE": "1"}
     validator = root / "validator"
     intake = subprocess.run(
@@ -234,23 +243,23 @@ def test_finalized_submissions_qualify_settle_and_project_weights(tmp_path, monk
     # A library JIT finds its declared header relative to the materialized Python module's __file__.
     (header,) = (root / "pod" / "trees" / stack.manifest.digest).glob("cacheon_c_*/kernels/kernel.cuh")
     assert header.read_text() == "#define JIT_VALUE 1\n" and header.with_name("forward.py").is_file()
-    # Muse k10 (2026-10-21): declared JIT headers must pass prebuild without a separate rebuild plan.
-    tree, native = header.parent.parent.parent, e2e.private(root / "jit-prebuild")
-    program = ("import json,os,sys; from cacheon.eval import oci_prebuild as p; "
-               "from cacheon.engine_tree import reopen_materialized_engine_tree; "
-               "p.CONTAINER_TREE,p.CONTAINER_STAGE=sys.argv[1:]; "
-               "os.environ['CACHEON_ENGINE_TREE_DIGEST']=reopen_materialized_engine_tree(p.CONTAINER_TREE).tree_digest; "
-               "print(p.container_build().read_text())")
-    checked = subprocess.run([sys.executable, "-B", "-c", program, str(tree), str(native)],
-        capture_output=True, text=True, timeout=30, env={**e2e.chain_env(),
-            "CACHEON_NATIVE_BUILD_SPEC_DIGEST": stack.manifest.digest,
-            "CACHEON_TARGET_GPU_ARCH": e2e.PROFILES[profile].arch,
-            "CACHEON_NATIVE_ARTIFACT_STAGE": str(native), "CACHEON_PINNED_BUILD_ROOTS": "/usr",
-            "CACHEON_BUILD_PATH": "/usr/bin", "CACHEON_BUILD_TMPDIR": "/tmp",
-            "CACHEON_NATIVE_COMPILE_TIMEOUT_S": "10", "CACHEON_REBUILD_CONTAINER": "1"})
-    assert checked.returncode == 0, checked.stdout + checked.stderr
-    built = json.loads(checked.stdout)
-    assert built["rebuild_applied"] is False and built["stage_entries"] == ["prebuild.json"]
+    from cacheon.manifest import all_declared_cuda_sources, load_manifest
+    from cacheon.sandbox import scan_tree
+
+    tree = header.parent.parent.parent
+    assert scan_tree(tree, declared_cuda_sources=all_declared_cuda_sources(tree, load_manifest(tree))).ok
+    if native_prebuild:
+        from cacheon.patchers.build_cuda_ext import _declared_sources
+
+        # Muse prefill capture (2026-10-24): a prebuild must not remove a library JIT's relative inputs.
+        units, inventory, selected = _declared_sources(tree, e2e.PROFILES[profile].arch)
+        assert len(units) == 1 and len(inventory) == len(selected) == 4
+        source = units[0][0]
+        assert source.relative_to(tree).parts[0] == "cuda"
+        assert source.with_name("kernel.cuh").read_bytes() == header.read_bytes()
+        assert header.with_name("native.cu").read_bytes() == source.read_bytes()
+    else:
+        _check_jit_only_prebuild(root, header, stack.manifest.digest, profile)
 
     # Weights: the signer projects the crowned hotkey over the same durable store.
     sign = ("cacheon.cli", "set-weights", "--dry-run", "--intake-db", str(root / "validator" / "intake.sqlite3"),
@@ -268,6 +277,26 @@ def test_finalized_submissions_qualify_settle_and_project_weights(tmp_path, monk
     assert "evaluation lease schema is unsupported" in e2e.run(*sign, env=e2e.chain_env(), code=1)
     assert time.monotonic() - started < 60
 
+
+def _check_jit_only_prebuild(root, header, stack_digest, profile):
+    """Exercise the real prebuild worker without native compilation or candidate imports."""
+    # Muse k10 (2026-10-21): declared JIT headers must pass prebuild without a separate rebuild plan.
+    tree, native = header.parent.parent.parent, e2e.private(root / "jit-prebuild")
+    program = ("import json,os,sys; from cacheon.eval import oci_prebuild as p; "
+               "from cacheon.engine_tree import reopen_materialized_engine_tree; "
+               "p.CONTAINER_TREE,p.CONTAINER_STAGE=sys.argv[1:]; "
+               "os.environ['CACHEON_ENGINE_TREE_DIGEST']=reopen_materialized_engine_tree(p.CONTAINER_TREE).tree_digest; "
+               "print(p.container_build().read_text())")
+    checked = subprocess.run([sys.executable, "-B", "-c", program, str(tree), str(native)],
+        capture_output=True, text=True, timeout=30, env={**e2e.chain_env(),
+            "CACHEON_NATIVE_BUILD_SPEC_DIGEST": stack_digest,
+            "CACHEON_TARGET_GPU_ARCH": e2e.PROFILES[profile].arch,
+            "CACHEON_NATIVE_ARTIFACT_STAGE": str(native), "CACHEON_PINNED_BUILD_ROOTS": "/usr",
+            "CACHEON_BUILD_PATH": "/usr/bin", "CACHEON_BUILD_TMPDIR": "/tmp",
+            "CACHEON_NATIVE_COMPILE_TIMEOUT_S": "10", "CACHEON_REBUILD_CONTAINER": "1"})
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    built = json.loads(checked.stdout)
+    assert built["rebuild_applied"] is False and built["stage_entries"] == ["prebuild.json"]
 
 def test_commission_refuses_each_drift_from_its_sealed_inputs(tmp_path, monkeypatch):
     """The pod commission (``materialize_b300_identities``, then the registration replay) refuses each drift by name."""

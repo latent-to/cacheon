@@ -9,7 +9,6 @@ Execution, publication, and crown authority intentionally live elsewhere.
 from __future__ import annotations
 
 import ast
-import hashlib
 import json
 import keyword
 import os
@@ -26,6 +25,7 @@ from typing import Iterator, Protocol
 
 from cacheon import dsl_jit_policy
 from cacheon.bundle_hash import content_hash
+from cacheon.engine_tree_paths import cuda_source_paths, generated_name as _generated_name
 from cacheon.manifest import ABI_VERSION, Manifest, OpEntry, load_manifest
 from cacheon.rebuild import RebuildPlan, parse_rebuild_plan
 from cacheon.stack_identity import (
@@ -44,7 +44,6 @@ _REBUILD_ORDER = {
 }
 _SKIP_DIRS = frozenset({".git", "__pycache__"})
 _SKIP_SUFFIXES = frozenset({".pyc", ".pyo"})
-_SAFE_NAME_RE = re.compile(r"[^0-9A-Za-z_]+")
 _INCLUDE_RE = re.compile(rb"(?m)^[ \t]*#[ \t]*include\b[ \t]*(.*)$")
 _UNSUPPORTED_INCLUDE_RE = re.compile(
     rb"(?m)^[ \t]*(?:#[ \t]*include_next\b|%:[ \t]*include(?:_next)?\b)"
@@ -598,13 +597,6 @@ def _python_closure(
     return tuple(sorted(seen))
 
 
-def _generated_name(prefix: str, relative: str, *, suffix: str) -> str:
-    stem = PurePosixPath(relative).stem
-    slug = _SAFE_NAME_RE.sub("_", stem).strip("_") or "module"
-    path_hash = hashlib.sha256(relative.encode("utf-8")).hexdigest()[:10]
-    return f"{prefix}__{slug}_{path_hash}{suffix}"
-
-
 def _module_name(prefix: str, relative: str) -> str:
     path = PurePosixPath(relative)
     parts = path.parent.parts if path.name == "__init__.py" else path.with_suffix("").parts
@@ -1043,23 +1035,22 @@ def _contribution_files(
         relative: _module_name(prefix, relative)
         for relative in inspection.python_files
     }
-    native_paths: dict[str, str] = {}
+    native_paths: dict[str, tuple[str, ...]] = {}
     native_names: dict[str, str] = {}
     prebuild = bool(inspection.rebuild_plan and inspection.rebuild_plan.steps)
-    native_root = PurePosixPath("cuda") / prefix if prebuild else PurePosixPath(prefix)
     for relative in inspection.cuda_files:
         source_path = PurePosixPath(relative)
-        suffix = source_path.suffix
-        output_name = _generated_name(prefix, relative, suffix=suffix) if prebuild and suffix == ".cu" else source_path.name
-        output = (native_root / source_path.parent / output_name).as_posix()
-        native_paths[relative] = output
-        if prebuild and suffix == ".cu":
-            original = PurePosixPath(relative).stem
-            generated = PurePosixPath(output_name).stem
+        output, runtime = cuda_source_paths(prefix, relative, prebuild=prebuild)
+        native_paths[relative] = tuple(dict.fromkeys((output, runtime)))
+        if prebuild and source_path.suffix == ".cu":
+            original = source_path.stem
+            generated = PurePosixPath(output).stem
             previous = native_names.setdefault(original, generated)
             if previous != generated:
                 raise EngineTreeError(f"ambiguous native import {original!r}")
-        _put_file(files, output, _stable_read(inspection.root, relative))
+        raw = _stable_read(inspection.root, relative)
+        for path in native_paths[relative]:
+            _put_file(files, path, raw)
 
     if "__init__.py" not in inspection.python_files:
         _put_file(files, f"{prefix}/__init__.py", b"")
@@ -1118,7 +1109,7 @@ def _contribution_files(
         row = _op_identity(inspection.manifest, op)
         row["source"] = entry_paths[op.source]
         row["metadata"] = metadata_paths.get(op.metadata) if op.metadata else None
-        row["cuda_sources"] = [native_paths[path] for path in row["cuda_sources"]]
+        row["cuda_sources"] = [emitted for path in row["cuda_sources"] for emitted in native_paths[path]]
         op_rows.append(row)
     return files, op_rows, _rebuild_rows(inspection.rebuild_plan)
 
