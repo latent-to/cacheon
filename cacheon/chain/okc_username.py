@@ -11,23 +11,29 @@ class InvalidRegistration(ValueError):
     """A claim's registration evidence fails the username rules."""
 
 
-def hotkey_tag(ss58: str) -> str:
-    """Return the first five lowercase hexadecimal characters of an AccountId32."""
+def _public_key(ss58: str) -> str:
+    """Decode and validate an AccountId32 as lowercase hexadecimal."""
     from scalecodec.utils.ss58 import ss58_decode
 
     decoded = ss58_decode(ss58)
     if not isinstance(decoded, str) or re.fullmatch(r"[0-9a-fA-F]{64}", decoded) is None:
         raise ValueError("hotkey must decode to an AccountId32")
-    return decoded[:5].lower()
+    return decoded.lower()
+
+
+def hotkey_tag(ss58: str) -> str:
+    """Return the minimum five-character username prefix of an AccountId32."""
+    return _public_key(ss58)[:5]
 
 
 def validate_username(hotkey: str, username: str) -> str:
-    """Require the exact case-sensitive marker and hotkey tag without normalization."""
-    tag = hotkey_tag(hotkey)
+    """Match an entire contiguous hexadecimal prefix without normalizing the username."""
+    public_key = _public_key(hotkey)
     if not isinstance(username, str) or not username.isascii() or not 1 <= len(username) <= 128:
         raise ValueError("OKC username must contain 1–128 ASCII bytes")
-    if "Cacheon" not in username or tag not in username:
-        raise ValueError(f"OKC username must contain exact 'Cacheon' and hotkey tag '{tag}'")
+    prefixes = re.findall(r"[0-9a-fA-F]{5,}", username)
+    if "Cacheon" not in username or not any(public_key.startswith(prefix) for prefix in prefixes):
+        raise ValueError("OKC username must contain exact 'Cacheon' and a full matching lowercase public-key prefix of 5–64 hex characters")
     return username
 
 
@@ -121,6 +127,10 @@ def check_claim_registration(st, netuid: int, claim: dict, owner: dict | None,
         raise InvalidRegistration("claim must reference the oldest accepted username registration block")
     if claim.get("team") != owner["username"]:
         raise InvalidRegistration("OKC team does not exactly match the hotkey's committed username")
+    try:
+        validate_username(claim["hotkey"], owner["username"])
+    except ValueError as exc:
+        raise InvalidRegistration(str(exc)) from exc
     return owner
 
 

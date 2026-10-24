@@ -98,13 +98,14 @@
 # OKC page return navigation: +4/-1 dashboard, +1 note; no removable code, retired with the competition page.
 # Oldest-only registration: +1/-6 runtime replaces repeated-proof acceptance; +2 dashboard, +5 docs, +32 tests, +2 notes, +2 module inventory.
 # The real OKC writer and external-share blender jointly verify same-block payouts and event/subevent copy priority.
+# Full pubkey-prefix matching (owner request): +17/-7 runtime replaces five-character substring acceptance; +1 dashboard, +8 docs, +25 tests, +1 note.
 (root) 1157
 .github 338
 bundles 2398
-cacheon 92730
+cacheon 92740
 cacheon_kernels 936
-dashboard 4371
-docs 13196
+dashboard 4372
+docs 13204
 examples 582
-scripts 4591
-tests 14499
+scripts 4592
+tests 14524

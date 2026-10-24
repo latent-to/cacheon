@@ -24,13 +24,19 @@ python -m pip install --upgrade 'git+https://github.com/latent-to/cacheon.git@ke
 The new username requirement is:
 
 - The OKC username contains the literal, case-sensitive string `Cacheon`.
-- It contains the first five lowercase hex characters of the miner hotkey's
-  decoded 32-byte public key, without `0x`. These are hex characters, not the
-  beginning of the SS58 address, and not the coldkey.
+- It contains at least the first five lowercase hex characters of the miner
+  hotkey's decoded 32-byte public key, without `0x`. Longer prefixes are accepted.
+  These are hex characters, not the beginning of the SS58 address or the coldkey.
+- The entire supplied prefix must match. Each contiguous run of hex characters
+  is checked in full, so five correct characters followed by a wrong sixth are
+  rejected. Separate the prefix from a name with `-` or `_` to avoid ambiguity.
 - The same hotkey commits the entire exact username on-chain before submitting
   the Cacheon claim. Registration may follow the OKC run or its top-three result.
 - The committed username must match OKC's public `team` string exactly. No
   lowercasing, trimming, or other normalization is applied.
+
+Cacheon's on-chain commitment accepts at most 128 ASCII characters. The chosen
+username must also be accepted by OKC; this is not a statement of OKC's own limit.
 
 Set `NET`, `NETUID`, `WALLET`, and `HOTKEY` as in
 [Submitting a proposal](submitting.md#step-by-step-commands), then register:

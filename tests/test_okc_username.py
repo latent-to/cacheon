@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from scalecodec.utils.ss58 import ss58_encode
+from scalecodec.utils.ss58 import ss58_decode, ss58_encode
 
 from cacheon import chain, cli
 from cacheon.chain import okc_username as okc
@@ -40,7 +40,31 @@ def test_tags_use_decoded_public_key_and_exact_names():
         okc.hotkey_tag(ss58_encode("01"))
 
 
-@pytest.mark.parametrize("name", ["cacheon_28ef5", "Cacheon_28EF5", "Cacheon_ac494", "28ef5",
+@pytest.mark.parametrize("length", range(5, 65))
+def test_accepts_every_public_key_prefix_length_from_five_to_full_key(length):
+    name = "Cacheon_" + ss58_decode(HOTKEY)[:length]
+    assert okc.validate_username(HOTKEY, name) == name
+
+
+@pytest.mark.parametrize("length", [6, 16, 64])
+def test_rejects_wrong_suffix_after_correct_first_five_characters(length):
+    prefix = ss58_decode(HOTKEY)[:length]
+    wrong = prefix[:-1] + ("0" if prefix[-1] != "0" else "1")
+    with pytest.raises(ValueError, match="full matching"):
+        okc.validate_username(HOTKEY, "Cacheon_" + wrong)
+    owner = {"username": "Cacheon_" + wrong, "block": 70}
+    claim = {"hotkey": HOTKEY, "team": owner["username"], "block": 90, "okc_user_block": 70}
+    with pytest.raises(okc.InvalidRegistration, match="full matching"):
+        okc.check_claim_registration(subtensor(), 14, claim, owner, 100)
+
+
+@pytest.mark.parametrize("prefix", ["0" + ss58_decode(HOTKEY), ss58_decode(HOTKEY) + "0", "28ef5A"])
+def test_rejects_partial_matches_inside_hex_runs(prefix):
+    with pytest.raises(ValueError, match="full matching"):
+        okc.validate_username(HOTKEY, "Cacheon_" + prefix)
+
+
+@pytest.mark.parametrize("name", ["cacheon_28ef5", "Cacheon_28EF5", "Cacheon_ac494", "Cacheon_28ef", "28ef5",
                                   "Cacheon28ef5é", "Cacheon28ef5" + "x" * 117, None])
 def test_invalid_username_is_not_normalized(name):
     with pytest.raises(ValueError):

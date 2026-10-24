@@ -126,13 +126,14 @@ def test_rpc_error_rolls_back_whole_block_and_resumes(tmp_path, failure):
     assert len(sync_registrations(st, 14, path)[1]) == 2
 
 
-def test_invalid_raw_and_wrong_marker_do_not_reserve_names(tmp_path):
-    st = Chain(head=3)
+def test_invalid_raw_marker_and_full_prefix_do_not_reserve_names(tmp_path):
+    st = Chain(head=4)
     st.add(1, A, "cacheon_28ef5")
     st.add(2, A, "Cacheon_28ef5")
     st.metadata[14, A, 2]["info"] = {"fields": [{"Raw1": "0xff"}]}
-    st.add(3, A, "Cacheon_28ef5_valid")
-    assert sync_registrations(st, 14, tmp_path / "history.db")[1][A]["block"] == 3
+    st.add(3, A, "Cacheon_28ef5" + "0" * 59)
+    st.add(4, A, "Cacheon_28ef5_valid")
+    assert sync_registrations(st, 14, tmp_path / "history.db")[1][A]["block"] == 4
 
 
 def test_binary_case_sensitive_names_and_second_netuid(tmp_path):

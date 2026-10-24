@@ -143,9 +143,11 @@ python -m cacheon.cli chain-okc-register 'Cacheon-<five-hex-hotkey-prefix>-name'
 ```
 
 Publishes the exact, case-sensitive username as a native hotkey-signed commitment.
-The username must contain `Cacheon` and the first five lowercase hex characters
-of that hotkey's decoded public key. `--dry-run` validates and prints the payload
-without connecting or submitting. A real submission waits for finality and reads
+The username must contain `Cacheon` and at least the first five lowercase hex
+characters of that hotkey's decoded public key; longer prefixes are accepted.
+The entire contiguous hex prefix must match; separate it from a name with `-`
+or `_`. Cacheon accepts at most 128 ASCII characters. `--dry-run` validates and
+prints the payload without connecting or submitting. A real submission waits for finality and reads
 the username back; retain the returned registration block for the later OKC claim.
 Register again for the current arena round, at or after the start block shown on
 the [arena dashboard](https://dash.cacheon.ai/okc). Older registrations and
