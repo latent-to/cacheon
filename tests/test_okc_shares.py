@@ -45,13 +45,14 @@ def arena(tmp_path, monkeypatch):
     return args, boards, fetch, st
 
 
-def claim(args, ident, hotkey, block, job, registration, *, board=BOARD, code=None):
+def claim(args, ident, hotkey, block, job, registration, *, board=BOARD, code=None,
+          event_index=0, event_subindex=0):
     url = f"https://example.test/{ident}?okc={board}:{job}"
     if registration is not None:
         url += f"&okc_user_block={registration}"
     with sqlite3.connect(args.intake_db) as db:
         db.execute("INSERT INTO reservations VALUES (?,?,?,?,?,?,?)",
-                   (ident, hotkey, code or ident, url, block, 0, 0))
+                   (ident, hotkey, code or ident, url, block, event_index, event_subindex))
 
 
 def row(team, rank=1):
@@ -111,6 +112,35 @@ def test_verified_former_top_claim_still_owns_code_and_publication_waits_for_clo
     assert read(args.public)["claims"][0]["files"] == {"kernel.py": "same"}
 
 
+@pytest.mark.parametrize("positions", [((1, 5), (2, 0), (2, 1)), ((1, 0), (1, 1), (1, 2))])
+def test_same_block_claims_pay_together_in_final_vector_with_chain_order_priority(arena, positions):
+    from cacheon.chain.standing_weights_stage import _apply_external_share
+    from cacheon.chain.weight_projection import WeightProjection
+
+    args, boards, _, _ = arena
+    boards[BOARD] = {"a": row(AN), "b": row(BN, 2), "copy": row(BN, 3)}
+    # Insert in reverse order: chain event/subevent order must decide code ownership.
+    for (ident, hotkey, job, registration, code), (event, subevent) in reversed(list(zip(
+            [("original", A, "a", 5, "first code"), ("copy", B, "copy", 6, "first code"),
+             ("independent", B, "b", 6, "second code")], positions))):
+        claim(args, ident, hotkey, 10, job, registration, code=code,
+              event_index=event, event_subindex=subevent)
+    shares.main()
+    assert [(c["reservation_id"], c["status"]) for c in read(args.private)["claims"]] == [
+        ("original", "paid"), ("copy", "same code as earlier claim original"), ("independent", "paid")]
+    assert read(args.out)["shares"] == [{"hotkey": A, "parts": 500000}, {"hotkey": B, "parts": 500000}]
+    projection = WeightProjection(
+        chain_scope_digest="a" * 64, netuid=14, validator_hotkey="validator", policy_digest="b" * 64,
+        settlement_state_digest="c" * 64, evaluation_state_digest="d" * 64, metagraph_digest="e" * 64,
+        arena_state_digests=("f" * 64,), stack_generation=0, effective_block=100, crown_count=0,
+        evidence_digests=(), weights_ppm=(("other-arena", 1000000),))
+    stage = SimpleNamespace(external_share_path=args.out, external_share_ppm=100000, burn_hotkey="default")
+    offered = _apply_external_share(projection, stage, frozenset((A, B, "other-arena", "default")))
+    assert dict(offered.weights_ppm) == {A: 50000, B: 50000, "other-arena": 900000}
+    shares.main()
+    assert _apply_external_share(projection, stage, frozenset((A, B, "other-arena", "default"))).weights_ppm == offered.weights_ppm
+
+
 def test_failed_fetch_is_sticky_but_new_claim_can_succeed(arena):
     args, boards, fetch, _ = arena
     boards[BOARD] = {"a": row(AN)}
@@ -143,14 +173,16 @@ def test_history_failure_leaves_all_outputs_untouched(arena, failure):
     st.close.assert_called_once()
 
 
-def test_historical_registration_rpc_failure_is_not_a_miner_rejection(arena):
-    args, boards, _, st = arena
+def test_repeated_registration_pointer_is_rejected_before_fetch(arena):
+    args, boards, fetch, st = arena
     boards[BOARD] = {"a": row(AN)}
     claim(args, "repeat", A, 10, "a", 7)
     st.get_commitment_metadata.side_effect = ValueError("archive unavailable")
-    with pytest.raises(ValueError, match="archive unavailable"):
-        shares.main()
-    assert not args.out.exists()
+    shares.main()
+    assert "oldest accepted" in read(args.private)["claims"][0]["status"]
+    assert read(args.out)["shares"] == [{"hotkey": "default", "parts": 1000000}]
+    st.get_commitment_metadata.assert_not_called()
+    fetch.assert_not_called()
 
 
 def test_writer_indexes_unclaimed_registrations_before_processing_claim_arrival(arena, monkeypatch):

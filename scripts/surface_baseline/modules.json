@@ -38,6 +38,8 @@
  "cacheon.chain.intake": {"all":["EvaluationStackState","FinalizedArrival","FinalizedIntakeStore","IntakeError","IntakePolicy","IntakeReservation","IntakeScope","SQLiteFollowerWeightPublicationJournal","SQLiteWeightPublicationJournal","SettlementLease"],"exceptions":["IntakeError"]},
  "cacheon.chain.mainnet_screen_dispatcher": {"all":null,"exceptions":["MainnetScreenDispatcherError"],"public":["CONFIG_DOMAIN","CONFIG_SCHEMA","DispatcherConfig","LiveFinalizedCursor","MainnetScreenDispatcherError","RemoteOnlyArenaProvider","build_coordinator_and_transport","load_config","make_qualification_publication_resolver"]},
  "cacheon.chain.miner_feedback": {"all":null,"exceptions":[],"public":["SCHEMA","format_miner_submissions","miner_submissions"]},
+ "cacheon.chain.okc_history": {"all":null,"exceptions":[],"public":["sync_registrations"]},
+ "cacheon.chain.okc_username": {"all":null,"exceptions":["InvalidRegistration"],"public":["InvalidRegistration","add_register_parser","check_claim_registration","cmd_register","hotkey_tag","read_registration","validate_username"]},
  "cacheon.chain.operator_status": {"all":["OperatorStatusError","format_reservation_status","reservation_status"],"exceptions":["OperatorStatusError"]},
  "cacheon.chain.payload": {"all":null,"exceptions":["PayloadError"],"public":["ALLOWED_URL_SCHEMES","MAX_PAYLOAD_BYTES","PAID_PAYLOAD_VERSION","PAYLOAD_VERSION","PayloadError","SubmissionRef","decode_payload","encode_payload"]},
  "cacheon.chain.pruning_review": {"all":null,"exceptions":["PruningReviewError"],"public":["PRUNING_REASON","PruningReviewError","REVIEW_SCHEMA","admit","review_verdict"]},

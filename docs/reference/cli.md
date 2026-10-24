@@ -148,11 +148,12 @@ of that hotkey's decoded public key. `--dry-run` validates and prints the payloa
 without connecting or submitting. A real submission waits for finality and reads
 the username back; retain the returned registration block for the later OKC claim.
 Register again for the current arena round, at or after the start block shown on
-the [arena dashboard](https://dashboard.cacheon.ai/okc). Older registrations and
+the [arena dashboard](https://dash.cacheon.ai/okc). Older registrations and
 claims are archived and do not count. The oldest valid on-chain commitment within
 the round establishes a one-to-one binding: one exact username per hotkey and one
 hotkey per exact username. Later registration cannot switch either side;
-registering the same pair again does not reset its priority.
+registering the same pair again is not a new valid registration. Claims must
+always reference the original accepted registration block.
 Registration must precede the Cacheon claim, but need not precede the OKC run or
 its top-three result. Claim arrival order does not establish username ownership.
 The claimed username must match OKC's public `team` string exactly.

@@ -117,13 +117,8 @@ def check_claim_registration(st, netuid: int, claim: dict, owner: dict | None,
     block = claim.get("okc_user_block")
     if type(block) is not int or not 0 < block < claim["block"] or block > finalized_block:
         raise InvalidRegistration("username registration must be finalized before the claim")
-    if block < owner["block"]:
-        raise InvalidRegistration("registration predates the hotkey's accepted username")
-    # Repeating the same binding keeps its original priority; it cannot rename it.
     if block != owner["block"]:
-        registration = read_registration(st, netuid, claim["hotkey"], block, finalized_block)
-        if registration["username"] != owner["username"]:
-            raise InvalidRegistration("hotkey is already bound to a different username")
+        raise InvalidRegistration("claim must reference the oldest accepted username registration block")
     if claim.get("team") != owner["username"]:
         raise InvalidRegistration("OKC team does not exactly match the hotkey's committed username")
     return owner

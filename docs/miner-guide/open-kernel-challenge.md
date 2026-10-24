@@ -53,8 +53,9 @@ the URL or relying on the hotkey's latest commitment.
 The oldest valid on-chain username commitment within the round wins the binding.
 Each hotkey may bind one exact username, and each exact username may bind one
 hotkey. A later commitment cannot change either side of an existing binding.
-Registering the same pair again keeps its original priority; it does not reset
-it. Claim arrival order does not establish or change username ownership. Within one block,
+Registering the same pair again is not a new valid registration. Every claim
+must reference the original accepted registration block. Claim arrival order
+does not establish or change username ownership. Within one block,
 chain event order breaks ties. Later overwrites or deregistration do not release
 an accepted binding within the round.
 
@@ -82,9 +83,11 @@ rank in its board's top three; the bundle must fetch and match its committed
 hash; a job may count only once; and code identical to an earlier
 claim, ignoring whitespace and file names, pays only its earlier claimant.
 The same username and hotkey binding may claim distinct jobs under these rules.
-The share is split equally among counting claims, or goes to the configured
-default hotkey if none qualify. Failed fetches require a new claim. Claimed code
-remains private until its track closes.
+All counting claims receive weight together: two claims split the 10% allocation
+into 5% each, including when submitted in the same block. Claim priority follows
+block, event index, then event subindex, not database insertion or refresh order.
+The default hotkey receives the allocation if none qualify. Failed fetches require
+a new claim. Claimed code remains private until its track closes.
 
 Username registration and a five-character key marker do not prove code
 authorship or that the submitted bundle matches the code evaluated by OKC.

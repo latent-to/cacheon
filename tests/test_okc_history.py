@@ -84,7 +84,7 @@ def test_earliest_unclaimed_registration_wins_both_uniqueness_constraints(tmp_pa
     assert sync_registrations(st, 14, path)[1] == owners and st.visited == []
     st.metadata.clear()  # Later overwrites or purges cannot release indexed bindings.
     st.head = 5
-    st.add(5, A, "Cacheon_28ef5_new")
+    st.add(5, A, SHARED)
     assert sync_registrations(st, 14, path)[1] == owners
 
 

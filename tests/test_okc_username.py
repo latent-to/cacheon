@@ -148,15 +148,15 @@ def test_concurrent_replacement_cannot_report_success(monkeypatch, capsys):
     st.close.assert_called_once()
 
 
-def test_claim_uses_original_binding_even_after_same_name_is_repeated():
+def test_claim_requires_original_registration_even_after_same_name_is_repeated():
     st = subtensor()
     owner = {"username": NAME, "block": 70}
     claim = {"hotkey": HOTKEY, "team": NAME, "block": 90, "okc_user_block": 80}
-    assert okc.check_claim_registration(st, 14, claim, owner, 100) is owner
-    st.get_commitment_metadata.return_value = metadata("Cacheon_28ef5_new")
-    with pytest.raises(okc.InvalidRegistration, match="already bound"):
+    with pytest.raises(okc.InvalidRegistration, match="oldest accepted"):
         okc.check_claim_registration(st, 14, claim, owner, 100)
     claim["okc_user_block"] = 70
+    assert okc.check_claim_registration(st, 14, claim, owner, 100) is owner
+    st.get_commitment_metadata.assert_not_called()
     claim["team"] = NAME.lower()
     with pytest.raises(okc.InvalidRegistration, match="exactly match"):
         okc.check_claim_registration(st, 14, claim, owner, 100)

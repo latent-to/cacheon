@@ -523,7 +523,8 @@ intake), `--username-db` (its persistent SQLite history index), and `--start-blo
 (the round's inclusive finalized boundary, recorded in the deployment receipt).
 It indexes finalized native commitment events from that block in chain order, then
 binds each still-unbound username and hotkey together. Both columns are unique;
-repeated registration cannot reset priority, change the pair, or release it after
+only the original registration block is valid claim evidence. Repeating the
+registration cannot reset priority, change the pair, or release it after
 deregistration. Same-block priority follows event order. This includes
 registrations whose owners have never submitted a claim, and commitments later
 overwritten by a bundle. Only registrations and Cacheon claims at or after the

@@ -96,13 +96,15 @@
 # Casualty: anonymous public-team claiming and the pre-OKC-run cutoff; the independent H200 trial is archived.
 # The round index replaces genesis backfill at the owner-authorized fresh start; old claims stay archived outside admission.
 # OKC page return navigation: +4/-1 dashboard, +1 note; no removable code, retired with the competition page.
+# Oldest-only registration: +1/-6 runtime replaces repeated-proof acceptance; +2 dashboard, +5 docs, +32 tests, +2 notes, +2 module inventory.
+# The real OKC writer and external-share blender jointly verify same-block payouts and event/subevent copy priority.
 (root) 1157
 .github 338
 bundles 2398
-cacheon 92735
+cacheon 92730
 cacheon_kernels 936
-dashboard 4369
-docs 13191
+dashboard 4371
+docs 13196
 examples 582
-scripts 4589
-tests 14467
+scripts 4593
+tests 14499
