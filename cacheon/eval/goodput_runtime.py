@@ -93,7 +93,7 @@ class GoodputPolicy:
             or not 0 <= self.error_rate < 0.5
             or (self.error_rate > 0 and self.null_noise == self.boot_noise == 0)
             or (self.error_rate == 0 and (self.boot_noise or self.futility_margin)) or not 0 <= self.futility_margin < 1
-            or not 0 <= self.attainment_tolerance < 1 or not 0 <= self.attainment_margin < 1
+            or not 0 <= self.attainment_tolerance <= 1 or not 0 <= self.attainment_margin < 1
             or self.attainment_pooled not in (0, 1)):
             raise ValueError("goodput calibration inputs are invalid")
         object.__setattr__(self, "contract", ServiceContract(**{

@@ -718,8 +718,9 @@ The candidate's service attainment less the incumbent's, less
 window. An optional `attainment_pooled` of `1` applies that bound once to the
 turns of all paired windows instead, because one window's attainment over a few
 hundred turns can move by more than the band between windows of a single engine.
-A policy without it keeps the per-window rule and its sealed bytes, so retained
-evidence regrades unchanged.
+An `attainment_tolerance` of `1` with a zero margin cannot fail: attainment is
+then reported and the elapsed fixed-work score decides. Retained evidence
+regrades under the values its commission sealed.
 At least one uncertainty component must be positive. These are calibrated
 uncertainty bounds, not a desired detection threshold. Greedy sampling and zero
 rollout top-k width are required. Coding replay uses a teacher-only quality

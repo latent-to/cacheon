@@ -267,9 +267,11 @@ def grade(
         raise ServiceEvidenceError("attainment pooling selection is not boolean")
     if not _finite_positive(required) or required < 1.0:
         raise ServiceEvidenceError("required ratio must be at least 1.0")
+    # Owner ruling 2026-10-25: a sealed tolerance of 1 with margin 0 cannot fail. Eight Muse candidates
+    # 1.05-1.22x faster in elapsed fixed work had failed only this bound; stock met the contract on ~0.77.
     for name, value in (("attainment_tolerance", attainment_tolerance), ("attainment_margin", attainment_margin)):
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= float(value) < 1:
-            raise ServiceEvidenceError(f"{name} must be in [0, 1)")
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= float(value) <= 1:
+            raise ServiceEvidenceError(f"{name} must be in [0, 1]")
     if not candidate or len(candidate) != len(incumbent):
         raise ServiceEvidenceError("paired windows need one read per arm per window")
     work_c: list[WorkRate] = []

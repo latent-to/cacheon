@@ -57,9 +57,9 @@ function replayPerformance(speed, title) {
       ${grade.lower_speedup == null ? "" : `Lower bound of the gain: ${metricGain(grade.lower_speedup)}.`}</p>
     <p class="metric-note">Service contract: first token within ${metricNumber(speed.contract.ttft_bound_s, 2)} s,
       decode at least ${metricNumber(speed.contract.decode_floor_tps, 1)} tok/s.
-      Attainment includes every attempted turn. Candidate attainment less its noise allowance of
+      Attainment includes every attempted turn. ${grade.attainment_tolerance >= 1 ? "It is reported only: this commission seals no attainment bound." : `Candidate attainment less its noise allowance of
       ${metricNumber(grade.attainment_margin * 100, 2)} percentage points must stay within
-      ${metricNumber(grade.attainment_tolerance * 100, 2)} percentage points of the incumbent in each window.</p>
+      ${metricNumber(grade.attainment_tolerance * 100, 2)} percentage points of the incumbent ${grade.attainment_pooled ? "over the pooled windows" : "in each window"}.`}</p>
     <p class="metric-note">${fastest ? 'Configured noise allowance' : 'Configured paired window log SD'}: ${metricNumber(grade.null_noise * 100, 3)}% · replay policy ${metricNumber(speed.policy_version, 0)}.
       ${grade.standard_error == null ? '' : `Final log standard error: ${metricNumber(grade.standard_error * 100, 3)}%; configured paired boot log SD: ${metricNumber(grade.boot_noise * 100, 3)}%. The statistical bound depends on the commissioned calibration.`}
       Workload <code style="overflow-wrap:anywhere">${esc(speed.workload_digest)}</code>.</p></details>
