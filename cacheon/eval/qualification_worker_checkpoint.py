@@ -371,8 +371,10 @@ def read_snapshot(path, digest):
         raise QualificationContinuationError("worker checkpoint expands beyond its byte bound")
     value = json.loads(raw)
     if (set(value) != {"schema", "origin", "stages"} or value["schema"] != SCHEMA
-            or canonical_json_bytes(value) != raw or set(value["stages"]) - set(_COMPLETE)):
+            or canonical_json_bytes(value) != raw):
         raise QualificationContinuationError("worker checkpoint is not canonical")
+    # Policy 16-18 snapshots also carry per-window speed stages; policy 19 re-measures them.
+    value["stages"] = {name: row for name, row in value["stages"].items() if name in _COMPLETE}
     return value
 
 

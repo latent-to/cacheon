@@ -750,10 +750,10 @@ contrasts; it does not establish runtime resolution by itself. A fixed 1% gain
 floor is absent.
 
 Concurrent two-lane pairing cancelled only 4–8% of window variance across 149
-retained evaluations (2026-10-24) and doubled the GPUs per qualification. At 2
-boots × 2 windows the candidate's standard error is about 1.1% (paired v17/v18:
-1.3–1.7%), a final-look bar of about +1.4% instead of +2.2%. The candidate's
-boot-to-boot spread, about 1%, is the floor; more windows per boot buy little.
+retained evaluations (2026-10-24) and doubled the GPUs per qualification. With 1.3%
+window and 1.0% boot noise, 2 × 2 candidate reads against a 4 × 2 reference give a
+standard error of 1.2–1.3% and a final-look bar near +1.6% (paired sealed: +2.2%);
+a true +2.25% gain passes 70% of the time, not 51%. Boot spread is the floor.
 
 Reward credit uses the point estimate, not a confidence-bound haircut; a later
 V17, V18 or V19 PASS is paid only when that estimate beats the best earlier

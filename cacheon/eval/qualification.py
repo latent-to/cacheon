@@ -554,10 +554,10 @@ def cohort_trajectory_digest(lifecycle: object) -> str:
     from cacheon.eval.qualification_trajectories import trajectory_digest
     from cacheon.eval.scoring import marginal_workload_digest
 
-    crossover = lifecycle.crossover
+    crossover, candidate = lifecycle.crossover, lifecycle.crossover.candidate_execution
+    stock = crossover.baseline_execution or candidate  # v19 non-PASS: no bracket boot, no prompt pairs
     return trajectory_digest(marginal_workload_digest(lifecycle.prepared.baseline_session_plan),
-                             crossover.prompt_pairs, crossover.baseline_execution.session.batches,
-                             crossover.candidate_execution.session.batches)
+                             crossover.prompt_pairs, stock.session.batches, candidate.session.batches)
 
 
 def candidate_lifecycle_digest(

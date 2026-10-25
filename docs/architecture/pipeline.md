@@ -37,7 +37,7 @@ flowchart TD
     C --> D["Qualification queue<br/>admission at first claim"]
     D -->|"copy of a loser"| F["Terminal invalid or attributable failure"]
     D -->|"post-crown commitment"| X["Returned unevaluated<br/>NO_DECISION, payment released"]
-    D -->|"claimed cohort"| Q["Paired replay speed<br/>audit, then pristine T"]
+    D -->|"claimed cohort"| Q["Replay speed vs retained stock reference<br/>audit, then pristine T"]
     Q -->|"FAIL"| F
     Q -->|"NO_DECISION"| N["NO_DECISION / retry"]
     Q -->|"complete audited PASS"| S["Reopen retained evidence"]
@@ -225,7 +225,7 @@ The candidate clears the registered speed, quality, graph, evidence, and whole-s
 
 ### `FAIL`
 
-Complete evidence attributes a policy failure to the candidate under a valid authority. Examples include incorrect output, a quality regression, or a speed gain not established by the last sealed window.
+Complete evidence attributes a policy failure to the candidate under a valid authority. Examples include incorrect output, a quality regression, or a speed gain not established by the last sealed candidate boot.
 
 ### `NO_DECISION`
 

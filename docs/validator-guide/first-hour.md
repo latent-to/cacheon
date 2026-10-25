@@ -222,7 +222,7 @@ and review all of the following as one service identity:
 2. prompt-corpus digest, seed scheme, the workload cells, and the sealed replay slice that is scored;
 3. queue depth, queue age, active-qualification, and cohort bounds;
 4. provider implementation digest and qualification-policy digest; and
-5. adaptive resident speed policy, two non-overlapping physical TP lanes, audit-only
+5. adaptive resident speed policy, one commissioned physical TP lane, audit-only
    plan, calibration, pristine reference, evidence-root, entropy, hidden judge, OCI
    executor, and absolute-deadline authorities used by `build_qualification`.
 

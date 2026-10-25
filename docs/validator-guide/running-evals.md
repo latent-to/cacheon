@@ -139,5 +139,5 @@ See [Qualification](qualification.md), [Fidelity](fidelity.md), and
 - [Static scanner](https://github.com/latent-to/cacheon/blob/main/cacheon/sandbox.py)
 - [Miner development check](https://github.com/latent-to/cacheon/blob/main/cacheon/miner_check.py)
 - [Node binder and audit](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py)
-- [Paired replay runtime](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/goodput_runtime.py)
+- [Replay runtime and stock reference](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/goodput_runtime.py)
 - [Statistical grade](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/service_capacity.py)
