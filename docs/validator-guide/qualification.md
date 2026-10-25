@@ -732,14 +732,14 @@ V19 grades engine boots, not windows:
 
 ```text
 cost(b)     = log(mean same-work elapsed time over boot b's N windows)
-variance(b) = max(null_noise² / N, within-boot jackknife variance) + boot_noise²
+variance(b) = max(null_noise² / 2N, within-boot jackknife variance) + boot_noise² / 2
 log speedup = mean cost of the 4 reference boots − mean cost of the k candidate boots
 SE          = sqrt(Σ reference variances / 16 + Σ candidate variances / k²)
 PASS        when exp(log speedup − z·SE) > 1
 ```
 
-The reference variance is shared by every candidate graded against it and never
-divides by the candidate's boot count. Requests sharing a window are not treated
+Sealed noise bounds the stock/candidate log ratio, as in v16–v18, so each arm's boot carries
+half of it. The shared reference variance never divides by the candidate's boot count. Requests sharing a window are not treated
 as independent replications. Looks fall at candidate boot boundaries and spend the
 sealed 12.5% one-sided error budget under v17's alpha-spending shares; the final
 look spends 80% of it, so `z` is the 90% one-sided quantile. After the first boot
@@ -750,10 +750,10 @@ contrasts; it does not establish runtime resolution by itself. A fixed 1% gain
 floor is absent.
 
 Concurrent two-lane pairing cancelled only 4–8% of window variance across 149
-retained evaluations (2026-10-24) and doubled the GPUs per qualification. With 1.3%
-window and 1.0% boot noise, 2 × 2 candidate reads against a 4 × 2 reference give a
-standard error of 1.2–1.3% and a final-look bar near +1.6% (paired sealed: +2.2%);
-a true +2.25% gain passes 70% of the time, not 51%. Boot spread is the floor.
+retained evaluations (2026-10-24). Simulated with both graders at the Muse seal and
+measured TP4 spreads, 2 × 2 candidate reads against a 4 × 2 reference pass a true
++2.25% gain 41% of the time (v18: 35%) at the same 1.8% false-pass rate; the median
+bar is +2.1% (v18: +2.24% at look 4, +4.28% at look 3). Boot spread is the floor.
 
 Reward credit uses the point estimate, not a confidence-bound haircut; a later
 V17, V18 or V19 PASS is paid only when that estimate beats the best earlier

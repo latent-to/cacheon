@@ -388,14 +388,16 @@ def _boot_costs(reads: Sequence[LoadRead], arm: str, expected: dict[str, tuple[i
 
 
 def _boot_term(costs: list[float], window_noise: float, boot_noise: float) -> tuple[float, float]:
-    """Log mean elapsed cost of one lifetime and its variance: v17's orientation term with the boot as unit."""
+    """Log mean cost of one lifetime and its variance; sealed noise bounds the stock/candidate log ratio.
+
+    Each arm carries half: a whole bound per arm put the sealed bar above v18's (simulated 2026-10-25)."""
     n, total = len(costs), math.fsum(costs)
-    variance = window_noise ** 2 / n
+    variance = window_noise ** 2 / (2 * n)
     if n > 1:
         deleted = [math.log((total - cost) / (n - 1)) for cost in costs]
         center = math.fsum(deleted) / n
         variance = max(variance, (n - 1) / n * math.fsum((v - center) ** 2 for v in deleted))
-    return math.log(total / n), variance + boot_noise ** 2
+    return math.log(total / n), variance + boot_noise ** 2 / 2
 
 
 def reference_grade(
