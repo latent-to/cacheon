@@ -88,14 +88,14 @@
 # +2 runtime notes, +1 docs, +2 notes. Supersedes nothing; no deletion was available.
 # Speed policy 19 (one full-node engine against a retained stock reference) deletes the second lane, lane pair, role
 # swap, reproduction commission and replay checkpoints: -935 runtime, -6 docs, -4 tests, -4 scripts; +11 dashboard
-# lists per-boot rows for a reference read set, the one raise; +3 notes.
-(root) 1155
+# lists per-boot rows for a reference read set, the one raise; +3 notes. TP8 results page: +229 docs, +1 root.
+(root) 1156
 .github 338
 bundles 2398
 cacheon 91466
 cacheon_kernels 936
 dashboard 4292
-docs 12993
+docs 13222
 examples 582
 scripts 4350
 tests 13863

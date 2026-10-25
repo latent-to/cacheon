@@ -754,6 +754,8 @@ retained evaluations (2026-10-24). Simulated with both graders at the Muse seal 
 measured TP4 spreads, 2 × 2 candidate reads against a 4 × 2 reference pass a true
 +2.25% gain 41% of the time (v18: 35%) at the same 1.8% false-pass rate; the median
 bar is +2.1% (v18: +2.24% at look 4, +4.28% at look 3). Boot spread is the floor.
+[Full-node qualification and noise](../results/full-node-qualification-noise.md)
+records the TP8 run, its measured spreads and an outcome census.
 
 Reward credit uses the point estimate, not a confidence-bound haircut; a later
 V17, V18 or V19 PASS is paid only when that estimate beats the best earlier
