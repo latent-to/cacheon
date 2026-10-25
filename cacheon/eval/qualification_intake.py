@@ -570,7 +570,6 @@ def run_qualification_intake(
     factory: QualificationPlanFactory,
     *,
     executor,
-    resident_baseline_executor=None,
     entropy_provider,
     hidden_judge,
     deadline: float,
@@ -640,11 +639,10 @@ def run_qualification_intake(
         )
         from cacheon.eval.qualification_worker_checkpoint import configure_continuation
 
-        configure_continuation(value, continuation, resident_baseline_executor, executor)
+        configure_continuation(value, continuation, executor)
     try:
         runner_kwargs = {
             "executor": executor,
-            "resident_baseline_executor": resident_baseline_executor,
             "entropy_provider": entropy_provider,
             "hidden_judge": hidden_judge,
             "deadline": deadline,

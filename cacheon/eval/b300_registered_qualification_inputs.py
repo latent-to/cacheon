@@ -559,7 +559,6 @@ class B300RegisteredQualificationInputs:
     pristine_binding: MaterializedArmBinding
     pristine_launch: EngineLaunchSpec
     pristine_session_plan: SessionExecutionPlan
-    resident_baseline_arm: ResidentArmPlan
     resident_speed_policy: ResidentSpeedPolicy
     candidate_executor_namespace_digest: str
     candidate_runtime_resource_policy_digest: str
@@ -649,16 +648,6 @@ class B300RegisteredQualificationInputs:
         if reopened != self.calibration_manifest or not reopened.thresholds_frozen:
             raise B300RegisteredQualificationError(
                 "qualification calibration is not one frozen authority"
-            )
-        if (
-            self.resident_speed_policy.version < 3
-            or marginal_workload_digest(self.resident_baseline_arm.session_plan)
-            != marginal_workload_digest(self.baseline_session_plan)
-            or self.resident_baseline_arm.executor_namespace_digest
-            == self.candidate_executor_namespace_digest
-        ):
-            raise B300RegisteredQualificationError(
-                "resident-v3 baseline/candidate lane authority is inconsistent"
             )
         if (
             self.policy.tokens_per_prompt

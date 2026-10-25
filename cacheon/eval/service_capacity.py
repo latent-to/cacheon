@@ -171,32 +171,6 @@ def fixed_work_rate(read: LoadRead, expected: dict[str, tuple[int, int]], *, wal
     return WorkRate(len(warm), latency, len(warm) / latency)
 
 
-STOP_MIN_WINDOWS = 2
-STOP_Z = 2.0
-
-
-def continue_windows(ratios: Sequence[float], *, required: float, null_noise: float, max_windows: int) -> bool:
-    """Whether the sealed budget and the running mean still call for another paired window.
-
-    A sequential test on the per-window ratios: from the second window on, the
-    read stops once the mean sits ``STOP_Z`` sigma clear of ``required`` on
-    either side, with sigma the sealed per-window null noise over the square
-    root of the windows read. A clear win or a plain copy settles in two
-    windows; a marginal candidate runs to the sealed maximum, where the plain
-    mean decides. Both lanes call this on the same published rates, and the
-    regrade replays it from the retained reads, so the stopping point is part
-    of the evidence.
-    """
-    count = len(ratios)
-    if count >= max_windows:
-        return False
-    if count < STOP_MIN_WINDOWS:
-        return True
-    mean = sum(ratios) / count
-    band = STOP_Z * null_noise / math.sqrt(count)
-    return mean - band < required <= mean + band
-
-
 def attainment(read: LoadRead, contract: ServiceContract) -> float:
     """Fraction of attempted turns meeting the contract; errors and cancels are misses."""
     return sum(1 for r in read.records if r.meets(contract)) / len(read.records)
@@ -401,6 +375,95 @@ def statistical_grade(
     return ServiceVerdict(decision, ratio, required, detail, se, lower)
 
 
+def _boot_costs(reads: Sequence[LoadRead], arm: str, expected: dict[str, tuple[int, int]]) -> list[list[float]]:
+    """Split one arm's reads into engine lifetimes; each lifetime numbers its windows from 1."""
+    boots: list[list[float]] = []
+    for read in reads:
+        if read.arm != arm or (read.window != 1 and (not boots or read.window != len(boots[-1]) + 1)):
+            raise ServiceEvidenceError("reference reads do not form whole engine lifetimes")
+        if read.window == 1:
+            boots.append([])
+        boots[-1].append(fixed_work_rate(read, expected, wall_time=True).elapsed_s)
+    return boots
+
+
+def _boot_term(costs: list[float], window_noise: float, boot_noise: float) -> tuple[float, float]:
+    """Log mean elapsed cost of one lifetime and its variance: v17's orientation term with the boot as unit."""
+    n, total = len(costs), math.fsum(costs)
+    variance = window_noise ** 2 / n
+    if n > 1:
+        deleted = [math.log((total - cost) / (n - 1)) for cost in costs]
+        center = math.fsum(deleted) / n
+        variance = max(variance, (n - 1) / n * math.fsum((v - center) ** 2 for v in deleted))
+    return math.log(total / n), variance + boot_noise ** 2
+
+
+def reference_grade(
+    candidate: Sequence[LoadRead], reference: Sequence[LoadRead],
+    contract: ServiceContract, expected: dict[str, tuple[int, int]], *,
+    window_noise: float, boot_noise: float, error_rate: float, boots: int,
+    attainment_tolerance: float, attainment_margin: float, futility_margin: float = 0.0,
+    sentinel: Sequence[LoadRead] = (),
+) -> ServiceVerdict:
+    """Grade candidate engine lifetimes against a retained stock reference campaign on the same lane.
+
+    One engine owns the node, so stock is measured once per reference and every candidate is graded
+    against those reads; window correlation between concurrent lanes cancelled only 4-8% of window
+    variance (149 retained evaluations, 2026-10-24). The reference variance is shared and never
+    divides by the candidate's boot count. Looks fall at candidate boot boundaries under v17's
+    alpha-spending table: the first boot can only end the stage on the sealed futility margin.
+
+    A PASS carries one fresh stock lifetime read after it. Stock reading faster than its reference
+    beyond one-sided 1% would inflate every gain measured against that reference, so the PASS becomes
+    an infrastructure NO_DECISION, never a candidate FAIL.
+    """
+    if (not candidate or len(reference) < 2 or not 0 < error_rate < 0.5 or type(boots) is not int
+        or not 2 <= boots <= 4 or any(not math.isfinite(v) or v < 0 for v in (window_noise, boot_noise))
+        or window_noise == boot_noise == 0):
+        raise ServiceEvidenceError("reference comparison has invalid reads or uncertainty")
+    every = (*reference, *sentinel, *candidate)
+    shapes = _work_shapes(reference[0])
+    starts = [min(row.request_start_ns for row in read.records) for read in every]
+    if (len({read.lane for read in every}) != 1 or len(set(starts)) != len(starts)
+            or any(_work_shapes(read) != shapes for read in every)):
+        raise ServiceEvidenceError("reference and candidate reads differ in lane, work or identity")
+    stock = [_boot_term(costs, window_noise, boot_noise) for costs in _boot_costs(reference, "incumbent", expected)]
+    terms = [_boot_term(costs, window_noise, boot_noise) for costs in _boot_costs(candidate, "candidate", expected)]
+    bracket = [_boot_term(costs, window_noise, boot_noise) for costs in _boot_costs(sentinel, "incumbent", expected)]
+    look = len(terms)
+    if len(stock) < 2 or look > boots or len(bracket) > 1:
+        raise ServiceEvidenceError("reference comparison exceeds its sealed boots")
+    reference_mean = math.fsum(row[0] for row in stock) / len(stock)
+    reference_variance = math.fsum(row[1] for row in stock) / len(stock) ** 2
+    estimate = reference_mean - math.fsum(row[0] for row in terms) / look
+    se = math.sqrt(reference_variance + math.fsum(row[1] for row in terms) / look ** 2)
+    share = 0.8 if look == boots else 0.1 if look == boots - 1 else 0.05
+    z = NormalDist().inv_cdf(1 - error_rate * share)
+    ratio, required, lower = math.exp(estimate), math.exp(z * se), math.exp(estimate - z * se)
+    a_cand, a_ref = (sum(r.meets(contract) for read in arm for r in read.records)
+                     / sum(len(read.records) for read in arm) for arm in (candidate, reference))
+    if look >= 2 and a_cand - a_ref - attainment_margin < -attainment_tolerance:
+        decision, detail = SpeedStageDecision.FAIL, (
+            f"service_contract_not_met: pooled attainment {a_cand:.4f} against the reference's {a_ref:.4f} "
+            f"is below the non-inferiority bound (tolerance {attainment_tolerance:.4g}, margin {attainment_margin:.4g})")
+    elif look < 2 and futility_margin and estimate < math.log1p(-futility_margin):
+        decision, detail = SpeedStageDecision.FAIL, "first candidate boot is slower than the sealed futility margin"
+    elif look < 2:
+        decision, detail = SpeedStageDecision.NO_DECISION, "two candidate boots are required"
+    elif lower > 1:
+        decision, detail = SpeedStageDecision.PASS, "gain over the stock reference clears the sealed statistical boundary"
+    elif look == boots or estimate + z * se < 0:
+        decision, detail = SpeedStageDecision.FAIL, "gain over the stock reference is not established within the sealed boots"
+    else:
+        decision, detail = SpeedStageDecision.NO_DECISION, "reference comparison needs its remaining sealed boots"
+    if bracket and decision is not SpeedStageDecision.PASS:
+        raise ServiceEvidenceError("a stock sentinel follows only a passing reference comparison")
+    if bracket and reference_mean - bracket[0][0] > NormalDist().inv_cdf(0.99) * math.sqrt(
+            bracket[0][1] + reference_variance):
+        decision, detail = SpeedStageDecision.NO_DECISION, "stock sentinel reads faster than its reference"
+    return ServiceVerdict(decision, ratio, required, detail, se, lower)
+
+
 def _finite_positive(value: object) -> bool:
     return (
         not isinstance(value, bool)
@@ -421,5 +484,6 @@ __all__ = [
     "completed_work",
     "fixed_work_rate",
     "grade",
+    "reference_grade",
     "statistical_grade",
 ]

@@ -182,7 +182,6 @@ class B300MainnetWorker:
         self.service = service
         self.readiness = readiness
         self._provider = provider
-        self._remote_qualification_lane = authorities.qualification_stage
         self._closed = False
         self._lock = threading.RLock()
         self.worker_digest = canonical_digest(
@@ -191,7 +190,7 @@ class B300MainnetWorker:
                 "provider_digest": provider.provider_digest,
                 "ready_epoch": readiness.ready_epoch,
                 "ready_receipt_digest": readiness.ready_receipt_digest,
-                "remote_qualification_lane": self._remote_qualification_lane,
+                "remote_qualification_lane": "primary",
                 "service_digest": service.identity,
                 "worker_readiness_digest": readiness.digest,
             },
@@ -209,10 +208,9 @@ class B300MainnetWorker:
         """Run one path-free, lane-bound remote qualification cohort.
 
         The CPU transport sends immutable publications, reservations, and the
-        retained primary/reproduction lane.  A deployment
-        composes this worker with the corresponding physical TP4 role
-        orientation; this method refuses a missing or differently oriented lane
-        before constructing private qualification work.
+        retained screen lane.  One engine owns the whole physical lane, so only
+        the primary lane is commissioned; a reproduction lane is refused before
+        constructing private qualification work.
         """
 
         if type(continuation_store) is not QualificationContinuationStore:
@@ -233,9 +231,7 @@ class B300MainnetWorker:
             or any(type(row) is not ArenaCandidateBinding for row in candidate_rows)
             or lease.reservation_ids
             != tuple(row.reservation.reservation_digest for row in candidate_rows)
-            or screen_lane not in {"primary", "reproduction"}
-            or screen_lane != self._remote_qualification_lane
-            or (screen_lane == "reproduction" and len(candidate_rows) != 1)
+            or screen_lane != "primary"
         ):
             raise B300MainnetWorkerError(
                 "remote qualification lease differs from the exact leased cohort"
@@ -329,7 +325,6 @@ class B300MainnetWorker:
             batch = run_qualification_intake(
                 work.factory,
                 executor=work.executor,
-                resident_baseline_executor=work.resident_baseline_executor,
                 entropy_provider=work.entropy_provider,
                 hidden_judge=work.hidden_judge,
                 deadline=float(work.deadline),
@@ -395,8 +390,6 @@ class B300MainnetWorker:
             or type(work.factory) is not QualificationPlanFactory
             or work.factory.manifest.reservations != expected
             or type(work.executor) is not OCIEngineExecutor
-            or type(work.resident_baseline_executor) is not OCIEngineExecutor
-            or work.executor is work.resident_baseline_executor
             or not callable(work.entropy_provider)
             or not callable(work.hidden_judge)
         ):

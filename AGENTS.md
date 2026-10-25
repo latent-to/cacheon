@@ -89,11 +89,12 @@ AgentArchive for decision `86f27efd-e7e7-4203-93aa-ddba6f7663e7` and raw hits
   validator-owned, no-egress OCI lifetimes.
 - CUDA graphs are part of the scored contract.
 - One complete audited PASS qualifies for settlement. Each new bundle receives one
-  paired-replay qualification; historical PASS pairs retain their existing identities and credit.
-- Production version-3 qualification binds two physical TP lanes. Speed policy is the paired
-  replay (policy 17; retained policy-16 evidence stays readable): both engines replay the sealed
-  agent workload concurrently across both lane orientations. A separate eager/untimed audit role
-  runs when registered, then pristine T.
+  replay qualification; historical PASS pairs retain their existing identities and credit.
+- Production version-3 qualification binds one physical TP lane that one engine owns at a time.
+  Speed policy 19 grades fresh candidate boots against a retained stock reference campaign on
+  that lane, and a stock bracket boot after a PASS rechecks the reference (retained policy 16-18
+  evidence stays readable). A separate eager/untimed audit role runs when registered, then
+  pristine T.
 - Evaluation-stack settlement, incentive activation, weight publication,
   integration review, release signing, and serving are distinct authorities.
 - Legacy V1 weights are a fenced state machine. The V2 finite-debt economics

@@ -82,12 +82,6 @@ def run_continuation_quality_stage(
         # Charge completed work before launch, excluding downtime between durable
         # stages. An expired operator session must not buy a replacement B/C/B'.
         used = speed.completed_monotonic_s - speed.started_monotonic_s
-        if lifecycle.crossover.replay_windows:
-            import json
-            from cacheon.eval.replay_checkpoint import retained_seconds
-            windows = lifecycle.crossover.replay_windows
-            used += retained_seconds(windows, before=speed.started_monotonic_s,
-                                     boot=json.loads(windows[-1])["origin"]["boot"])
         if audit_state is not None:
             used += audit_state.audit_completed - audit_state.audit_started
         remaining = value.resident_speed_plan.policy.max_qualification_seconds - used
@@ -183,16 +177,15 @@ def run_continuation_quality_stage(
 
         if quality_state is None:
             teardown_before = executor.prove_quiescent()
-            # Bind quiescence to the FINAL executed baseline (B'' under repeat
-            # reads, B-prime otherwise) — baseline_after is mid-run in the
-            # 5-leg shape.
+            # Bind quiescence to the last engine lifetime on the lane: the stock
+            # bracket that follows a speed PASS.
             last_post = max(owner._lifecycle_causal_completion(lifecycle) if speed_same_clock else 0.0,
                 audit_state.audit_last_completed if stage_clock("audit") == current_clock else 0.0)
             if teardown_before.observed_monotonic_s < last_post:
                 raise owner.QualificationRunnerError("pre-T quiescence predates the final baseline teardown")
             # Replay controls bound this entropy to the candidate's last lane, which V17 swaps away
             # from this executor (every V17 PASS failed here, 2026-09-30); present that lane's receipt.
-            bound = teardown_before if lifecycle.crossover.goodput is None else lifecycle.crossover.candidate_quiescence
+            bound = lifecycle.crossover.candidate_quiescence
             entropy = (lifecycle.crossover.quality_entropy if recovery
                        else entropy_provider(value.commitment, bound))
             if type(entropy) is not owner.SelectionEntropyReceipt:

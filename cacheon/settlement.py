@@ -205,9 +205,8 @@ class ResidentLaneOrientation:
     """Physical TP-lane roles retained by one resident crossover PASS.
 
     ``control_digest`` identifies the validator-owned rule used to derive the
-    physical lane digests.  It is deliberately orientation-independent: an
-    independent reproduction must retain the same control and the same two
-    physical lanes while reversing their stock/candidate roles.
+    physical lane digests.  Paired policies name two lanes; version 19 runs
+    stock and candidate on one lane, so both roles name it.
     """
 
     speed_evidence_policy_digest: str
@@ -221,8 +220,6 @@ class ResidentLaneOrientation:
             if value == "0" * 64:
                 raise SettlementError(f"{field} must not be all-zero")
             object.__setattr__(self, field, value)
-        if self.baseline_physical_lane_digest == self.candidate_physical_lane_digest:
-            raise SettlementError("resident crossover reused one physical TP lane")
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -245,6 +242,8 @@ class ResidentLaneOrientation:
 
         if type(value) is not ResidentSpeedWitness:
             raise SettlementError("resident lane orientation lacks its exact speed witness")
+        if (value.baseline_lane_digest == value.candidate_lane_digest) != (value.resident_policy.version == 19):
+            raise SettlementError("resident crossover lanes differ from its speed policy topology")
         policy_digest = value.policy.digest
         control_digest = canonical_digest(
             "cacheon.settlement.resident-lane-control.v1",

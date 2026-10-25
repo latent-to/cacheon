@@ -520,33 +520,6 @@ def _executor_ids(executor: OCIEngineExecutor, role: str) -> tuple[str, ...]:
     return ids
 
 
-def _executor_pair(
-    candidate_executor: OCIEngineExecutor,
-    resident_baseline_executor: OCIEngineExecutor,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    candidate_ids = _executor_ids(candidate_executor, "candidate")
-    baseline_ids = _executor_ids(resident_baseline_executor, "resident baseline")
-    candidate_uuids = {
-        row.uuid for row in candidate_executor.device_policy.expected_gpus
-    }
-    baseline_uuids = {
-        row.uuid for row in resident_baseline_executor.device_policy.expected_gpus
-    }
-    if (
-        candidate_executor is resident_baseline_executor
-        or len(candidate_ids) != len(baseline_ids)
-        or candidate_executor.manager is resident_baseline_executor.manager
-        or candidate_executor.manager.namespace_digest
-        == resident_baseline_executor.manager.namespace_digest
-        or set(candidate_ids).intersection(baseline_ids)
-        or candidate_uuids.intersection(baseline_uuids)
-    ):
-        raise B300QualificationDeploymentError(
-            "candidate and resident-baseline executors overlap or differ in size"
-        )
-    return candidate_ids, baseline_ids
-
-
 def _executor_matches_resident_arm(
     executor: OCIEngineExecutor,
     arm: object,
@@ -613,8 +586,7 @@ def _validate_plan(
     cohort: B300QualificationCohort,
     secret: bytes,
     construction: B300QualificationConstructionAuthority,
-    candidate_executor: OCIEngineExecutor,
-    resident_baseline_executor: OCIEngineExecutor,
+    executor: OCIEngineExecutor,
 ) -> CausalQualificationInput:
     if type(value) is not CausalQualificationInput:
         raise B300QualificationDeploymentError(
@@ -679,23 +651,14 @@ def _validate_plan(
         construction,
     )
     resident = value.resident_speed_plan
-    _executor_matches_resident_arm(
-        candidate_executor,
-        resident.candidate,
-        role="candidate",
-    )
-    _executor_matches_resident_arm(
-        resident_baseline_executor,
-        resident.baseline,
-        role="resident baseline",
-    )
+    _executor_matches_resident_arm(executor, resident.candidate, role="candidate")
+    _executor_matches_resident_arm(executor, resident.baseline, role="stock")
     return value
 
 
 def _factory_builder(
     construction: B300QualificationConstructionAuthority,
-    candidate_executor: OCIEngineExecutor,
-    resident_baseline_executor: OCIEngineExecutor,
+    executor: OCIEngineExecutor,
     *,
     screen_lane: str,
 ):
@@ -757,8 +720,7 @@ def _factory_builder(
                 cohort,
                 secret,
                 construction,
-                candidate_executor,
-                resident_baseline_executor,
+                executor,
             )
 
         # A public manifest cannot be fabricated from only a target ID: it
@@ -827,7 +789,6 @@ class B300QualificationDeployment:
             type(self.manifest) is not ArenaServiceManifest
             or type(self.authorities) is not B300DeploymentAuthorities
             or self.screen_lane not in _STAGES
-            or self.authorities.qualification_stage != self.screen_lane
         ):
             raise B300QualificationDeploymentError(
                 "qualification deployment is not exactly typed"
@@ -854,16 +815,15 @@ def compose_b300_qualification_deployment(
     manifest: ArenaServiceManifest,
     declared: B300DeclaredAuthorities,
     construction: B300QualificationConstructionAuthority,
-    candidate_executor: OCIEngineExecutor,
-    resident_baseline_executor: OCIEngineExecutor,
+    executor: OCIEngineExecutor,
     screen_lane: str,
 ) -> B300QualificationDeployment:
     """Compose one exact full worker authority from validator-owned inputs.
 
     The commissioned manifest must have declared the *same* qualification
-    capability in advance.  A declaration that predicted overlapping executors,
-    another profile registry, or another orientation is rejected; it cannot be
-    upgraded in place by an operator flag.
+    capability in advance.  A declaration that predicted another executor,
+    lane, or profile registry is rejected; it cannot be upgraded in place by
+    an operator flag.
     """
 
     if type(manifest) is not ArenaServiceManifest:
@@ -882,7 +842,7 @@ def compose_b300_qualification_deployment(
         raise B300QualificationDeploymentError(
             "qualification screen lane is unsupported"
         )
-    _executor_pair(candidate_executor, resident_baseline_executor)
+    _executor_ids(executor, "qualification")
     if (
         manifest.runtime != declared.runtime_identity
         or manifest.provider_digest != b300_arena_provider_digest(declared)
@@ -910,12 +870,10 @@ def compose_b300_qualification_deployment(
             ),
             qualification_factory_builder=_factory_builder(
                 construction,
-                candidate_executor,
-                resident_baseline_executor,
+                executor,
                 screen_lane=screen_lane,
             ),
-            executor=candidate_executor,
-            resident_baseline_executor=resident_baseline_executor,
+            executor=executor,
             entropy_provider_digest=construction.entropy_provider_digest,
             entropy_provider=construction.entropy_provider,
             hidden_judge=construction.hidden_judge,
@@ -924,19 +882,16 @@ def compose_b300_qualification_deployment(
                 construction,
                 screen_lane=screen_lane,
             ),
-            qualification_lane_pair=declared.qualification.lane_pair,
-            qualification_stage=screen_lane,
+            qualification_lane=declared.qualification.lane,
         )
     except B300ArenaProviderError as exc:
         raise B300QualificationDeploymentError(
-            f"qualification executor orientation differs from declaration: {exc}"
+            f"qualification executor differs from declaration: {exc}"
         ) from exc
-    # This exact equality is the key declaration->qualification handoff.  The
-    # provider-level declaration must be stable across the primary/reproduction
-    # physical role swap; otherwise its manifest cannot validate both attempts.
+    # This exact equality is the key declaration->qualification handoff.
     if authorities.qualification != declared.qualification:
         raise B300QualificationDeploymentError(
-            "full qualification executors differ from the sealed declaration"
+            "full qualification executor differs from the sealed declaration"
         )
     return B300QualificationDeployment(
         manifest,

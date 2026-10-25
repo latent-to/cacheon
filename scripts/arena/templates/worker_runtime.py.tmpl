@@ -14,7 +14,7 @@ standing = json.loads(Path(standing_path).read_bytes())
 dispatch = json.loads(Path(standing['screen_dispatcher_config']).read_bytes())
 registration = verify_registration(json.loads(Path(dispatch['registration_path']).read_bytes()))
 ready = json.loads(Path(dispatch['registration_path']).with_name('ready-receipt.json').read_bytes())
-devices = ready['lane']['devices'] + ready['lane']['baseline_devices']
+devices = ready['lane']['devices']
 assert action in {'start', 'stop'}
 if action == 'stop':
     # A failed controller may leave a paid request running; never kill that work.

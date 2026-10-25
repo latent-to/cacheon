@@ -1,8 +1,8 @@
-"""Portable completed replay windows and stages for the qualification worker.
+"""Portable completed stages for the qualification worker.
 
 The original physical speed plan remains measurement authority. A replacement
 worker may execute missing stages under its own commissioned allocation; it
-cannot rename old devices or include an unfinished window in a score.
+cannot rename old devices or include an unfinished stage in a score.
 """
 
 from __future__ import annotations
@@ -29,8 +29,6 @@ RECOVERY_DOMAIN = "qualification.worker-recovery"
 RECOVERY_SCHEMA = "cacheon.qualification.worker-recovery.v1"
 MAX_CHECKPOINT_BYTES = 128 << 20
 _COMPLETE = {
-    **{f"speed_window_{i}": (f"speed_window_{i}",) for i in range(1, 6)},
-    "speed_first": ("speed_first",),
     "speed": ("speed",),
     "audit": ("audit_armed", "audit_completed"),
     "quality": ("t_armed", "quality"),
@@ -117,8 +115,6 @@ def _contract_fields(value, *, portable=False):
     if portable:
         def stack(manifest):
             return {key: item for key, item in manifest.to_dict().items() if key != "arena_digest"}
-        if result["speed_policy"]["version"] in (17, 18):
-            result["speed_policy"]["version"] = 17  # Retained stages regrade under their own exact version.
         for audit in result["audit"]:
             audit.pop("validator_seed")
         source = value.prepared.source
@@ -135,7 +131,7 @@ def _contract(value):
     return canonical_digest(SCHEMA + ".work", _contract_fields(value))
 
 
-def capture_origin(value, continuation, baseline_executor, candidate_executor):
+def capture_origin(value, continuation, executor):
     """Bind portable state to the plan and policies before paid execution."""
     from cacheon.eval.qualification_runner import qualification_authority_digest
     from cacheon.eval.evidence_store import reopen_evidence
@@ -154,8 +150,7 @@ def capture_origin(value, continuation, baseline_executor, candidate_executor):
         "source": value.prepared.source.digest,
         "boot": _clock_domain(),
         "contract": _contract(value),
-        "devices": [_device_contract(executor.device_policy)
-                    for executor in (baseline_executor, candidate_executor)],
+        "devices": [_device_contract(executor.device_policy)],
         "baseline": _binding(value.prepared.baseline_launch,
                              value.prepared.incumbent_binding.launch_binding),
         "pristine": _binding(value.pristine_launch, value.pristine_binding),
@@ -346,9 +341,6 @@ def publish_snapshot(continuation):
         if all(path.is_file() for path in paths):
             stages[name] = {"origin": origin,
                             "records": {path.stem: json.loads(path.read_bytes()) for path in paths}}
-    if "speed" in stages:
-        # Full speed embeds every original window; older immutable snapshots remain available.
-        stages = {name: row for name, row in stages.items() if not name.startswith("speed_window_")}
     body = {"schema": SCHEMA, "origin": origin, "stages": stages}
     raw = canonical_json_bytes(body)
     if len(raw) > MAX_CHECKPOINT_BYTES:
@@ -386,7 +378,6 @@ def read_snapshot(path, digest):
 
 def restore_stages(value, continuation, snapshot):
     """Reopen each completed stage under its own original plan and clock."""
-    current = continuation.checkpoint_origin
     stages = snapshot["stages"]
     if stages and ("quality" in stages and "audit" not in stages
                    or "audit" in stages and "speed" not in stages):
@@ -394,13 +385,6 @@ def restore_stages(value, continuation, snapshot):
     restored = {}
     for stage, row in stages.items():
         origin = row["origin"]
-        if stage == "speed_first" and "speed" not in stages and (
-            origin["boot"] != current["boot"] or origin["devices"] != current["devices"]
-            or row["records"]["speed_first"]["payload"]["plan_digest"] != value.resident_speed_plan.digest
-        ):
-            # The next snapshot retains no unfinished measurement under a
-            # different physical allocation. Its original remains on CPU.
-            continue
         original = restore_origin(value, origin)
         parent = QualificationContinuationStore(continuation.directory / "parents").scope(
             request_digest=origin["request"], authority_digest=origin["authority"],
@@ -418,37 +402,23 @@ def restore_stages(value, continuation, snapshot):
     return restored
 
 
-def configure_continuation(value, continuation, baseline_executor, candidate_executor):
+def configure_continuation(value, continuation, executor):
     """Install the authenticated imported checkpoint in the ordinary runner."""
     from cacheon.chain.remote_worker_spool import load_json
     continuation.checkpoint_value = value
-    continuation.checkpoint_origin = capture_origin(
-        value, continuation, baseline_executor, candidate_executor)
+    continuation.checkpoint_origin = capture_origin(value, continuation, executor)
     replacement = getattr(continuation, "replacement_execution", None)
     if replacement is not None:
-        continuation.checkpoint_origin["execution"] = capture_origin(
-            replacement, continuation, baseline_executor, candidate_executor)
+        continuation.checkpoint_origin["execution"] = capture_origin(replacement, continuation, executor)
     pointer = continuation.directory.parent / "imports" / (continuation.request_digest + ".json")
     continuation.worker_recovery = {}
-    windows = {}
     if pointer.exists():
         imported = load_json(pointer)
         snapshot = read_snapshot(pointer.parent / (imported["sha256"] + ".json.gz"), imported["sha256"])
         stages = restore_stages(value, continuation, snapshot)
-        windows = {int(name.rsplit("_", 1)[1]): stages[name].continuation._load(name)
-                   for name in stages if name.startswith("speed_window_")}
         if "speed" in stages:
             continuation.worker_recovery = stages
             _publish_recovery(value, continuation, imported["sha256"], snapshot["stages"])
-        elif "speed_first" in stages:
-            continuation._record("speed_first", stages["speed_first"].continuation._load("speed_first"))
-    for i in range(1, 6):
-        raw = continuation._load(f"speed_window_{i}")
-        if raw is not None:
-            if i in windows and windows[i] != raw:
-                raise QualificationContinuationError("local and imported replay windows differ")
-            windows[i] = raw
-    continuation.speed_windows = tuple(windows[i] for i in sorted(windows))
     publish_snapshot(continuation)
 
 
@@ -466,17 +436,6 @@ def _publish_recovery(value, continuation, digest, stages):
         "replacement": _public_origin(continuation.checkpoint_origin.get("execution", continuation.checkpoint_origin))}
     continuation.worker_recovery_reference = publish_evidence(value.evidence_root,
         canonical_json_bytes(public), domain=RECOVERY_DOMAIN, media_type="application/json", schema=RECOVERY_SCHEMA)
-
-
-def completed_speed(continuation):
-    """Use replacement audit/T bindings after the resumed windows finish."""
-    if not getattr(continuation, "speed_windows", ()) or continuation.replacement_execution is None:
-        return
-    value, origin = continuation.checkpoint_value, continuation.checkpoint_origin
-    continuation.worker_recovery["speed"] = SimpleNamespace(value=value, continuation=continuation, origin=origin)
-    record = json.loads((continuation.directory / "speed.json").read_bytes())
-    pointer = json.loads((continuation.checkpoint_root / (continuation.request_digest + ".json")).read_bytes())
-    _publish_recovery(value, continuation, pointer["sha256"], {"speed": {"origin": origin, "records": {"speed": record}}})
 
 
 def _public_origin(origin):
@@ -498,14 +457,10 @@ def prepare_work(work, store, request_digest):
         return work
     imported = load_json(pointer)
     snapshot = read_snapshot(pointer.parent / (imported["sha256"] + ".json.gz"), imported["sha256"])
-    stage = snapshot["stages"].get("speed") or snapshot["stages"].get("speed_window_1")
+    stage = snapshot["stages"].get("speed")
     if stage is None:
         return work
     origin = stage["origin"]
-    devices = [_device_contract(row.device_policy) for row in (work.resident_baseline_executor, work.executor)]
-    if any(name.startswith("speed_window_") and row["origin"]["devices"] != devices
-           for name, row in snapshot["stages"].items()):
-        raise CheckpointComputationChanged("replay continuation changed its GPU operating configuration")
     secret = bytes.fromhex(origin["selection_secret"])
     replacement = work.factory.build()
     original = restore_origin(replacement, origin)

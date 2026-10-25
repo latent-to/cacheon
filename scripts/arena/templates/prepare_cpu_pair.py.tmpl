@@ -56,11 +56,10 @@ ready = verify_ready_receipt(json.loads((handoff / "ready-receipt.json").read_by
 readiness, _ = verify_readiness(json.loads((handoff / "worker-readiness.json").read_bytes()))
 manifest = json.loads((handoff / "arena-service-manifest.json").read_bytes())
 capture = json.loads((handoff / "calibration-capture.json").read_bytes())
-lane, baseline = ready['lane']['devices'], ready['lane']['baseline_devices']
-assert len(lane) == len(baseline) == @TP@ and len(set(lane+baseline)) == @GPUS@
+lane = ready['lane']['devices']
+assert len(set(lane)) == @TP@ and 'baseline_devices' not in ready['lane'], ready['lane']
 assert reg["pod_host"] == POD_HOST and reg["pod_port"] == args.pod_port, (reg["pod_host"], reg["pod_port"])
 assert reg["ready_receipt_digest"] == ready["receipt_digest"]
-assert ready["lane"]["devices"] == lane and ready["lane"]["baseline_devices"] == baseline, ready["lane"]
 assert ready["source"]["revision"] == SOURCE.name.split("-", 1)[1]
 assert readiness["arena_id"] == ARENA and manifest["runtime"]["arena_id"] == ARENA
 assert reg["credential_id"] == f"@SLUG@-b300-pair-{TAG}", reg["credential_id"]
@@ -150,7 +149,7 @@ if not intake_unit.exists():
         "ExecStart=" + shlex.join(intake), "Restart=on-failure", "RestartSec=15",
         f"StandardOutput=append:{PLANE / 'state' / 'intake.log'}", "StandardError=inherit", "[Install]", "WantedBy=multi-user.target", ""]))
 shutil.copyfile(intake_unit, stage / intake_unit.name)
-report = {"prepared": True, "installed": False, "pair": TAG, "lane": lane, "baseline": baseline, "source_revision": ready["source"]["revision"],
+report = {"prepared": True, "installed": False, "pair": TAG, "lane": lane, "source_revision": ready["source"]["revision"],
           "registration_digest": reg["registration_digest"], "service_identity": reg["service_identity"], "worker_epoch": reg["worker_epoch"],
           "intake_db": dispatch["intake_db"], "accept_legacy_bundles": False, "fee_rao": int(FEE_RAO), "units": sorted(p.name for p in stage.glob("*.service"))}
 save("prepared.json", report)

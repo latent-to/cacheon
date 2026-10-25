@@ -1,10 +1,9 @@
-"""Physical two-lane qualification authority for a commissioned arena.
+"""Physical qualification lane authority for a commissioned arena.
 
-One sealed lane pair binds two disjoint, equally sized allocations.
-Lane A always carries the primary candidate and lane B the
-primary resident baseline; reproduction exchanges exactly those physical roles.
-``b300_arena_provider`` composes and re-exports these names, so import paths
-are unchanged.
+Version-19 qualification runs one engine at a time on the whole commissioned
+allocation: the retained stock reference, the candidate boots, and the stock
+bracket all execute on this one lane.  ``b300_arena_provider`` composes and
+re-exports these names, so import paths are unchanged.
 """
 
 from __future__ import annotations
@@ -19,8 +18,6 @@ from cacheon.stack_identity import canonical_digest
 
 
 QUALIFICATION_LANE_SCHEMA = "cacheon.eval.b300-qualification-lane.v1"
-QUALIFICATION_LANE_PAIR_SCHEMA = "cacheon.eval.b300-qualification-lane-pair.v1"
-QUALIFICATION_ROLE_SWAP_SCHEMA = "cacheon.eval.b300-qualification-role-swap.v1"
 
 
 class B300ArenaProviderError(RuntimeError):
@@ -33,7 +30,7 @@ def _digest(value: object, field: str) -> str:
 
 @dataclass(frozen=True)
 class B300QualificationLanePolicy:
-    """One physical allocation, independent of its execution role."""
+    """The one physical allocation every qualification engine runs on."""
 
     lane_id: str
     physical_gpu_ids: tuple[int, ...]
@@ -43,8 +40,8 @@ class B300QualificationLanePolicy:
     logical_device_policy_digest: str
 
     def __post_init__(self) -> None:
-        if self.lane_id not in {"A", "B"}:
-            raise B300ArenaProviderError("qualification lane id must be A or B")
+        if self.lane_id != "A":
+            raise B300ArenaProviderError("qualification lane id must be A")
         physical_ids = self.physical_gpu_ids
         uuids = self.gpu_uuids
         if (
@@ -88,6 +85,17 @@ class B300QualificationLanePolicy:
             logical_device_policy_digest(policy),
         )
 
+    def validate_runtime(self, runtime: ArenaRuntimeIdentity) -> None:
+        """Bind the allocation to the serving geometry before any execution."""
+        if (
+            type(runtime) is not ArenaRuntimeIdentity
+            or runtime.gpu_count != len(self.physical_gpu_ids)
+            or runtime.tensor_parallel_size != runtime.gpu_count
+        ):
+            raise B300ArenaProviderError(
+                "qualification lane differs from the commissioned TP runtime"
+            )
+
     def to_dict(self) -> dict[str, object]:
         return {
             "device_configuration_digest": self.device_configuration_digest,
@@ -98,125 +106,17 @@ class B300QualificationLanePolicy:
             "physical_gpu_ids": list(self.physical_gpu_ids),
         }
 
+    def service_policy(self) -> dict[str, object]:
+        """Bind the shared competition while each worker retains its physical lane."""
+        return {
+            "lane_id": self.lane_id,
+            "gpu_count": len(self.physical_gpu_ids),
+            "device_policy_digest": self.logical_device_policy_digest,
+        }
+
     @property
     def digest(self) -> str:
         return canonical_digest(QUALIFICATION_LANE_SCHEMA, self.to_dict())
-
-
-@dataclass(frozen=True)
-class B300QualificationLaneOrientation:
-    """The exact physical roles selected for one qualification stage."""
-
-    stage: str
-    candidate: B300QualificationLanePolicy
-    resident_baseline: B300QualificationLanePolicy
-
-    def __post_init__(self) -> None:
-        if (
-            self.stage not in {"primary", "reproduction"}
-            or type(self.candidate) is not B300QualificationLanePolicy
-            or type(self.resident_baseline) is not B300QualificationLanePolicy
-            or self.candidate.lane_id == self.resident_baseline.lane_id
-        ):
-            raise B300ArenaProviderError(
-                "qualification lane orientation is not an exact stage mapping"
-            )
-
-
-@dataclass(frozen=True)
-class B300QualificationLanePair:
-    """Stable two-lane authority with one permitted primary/reproduction swap.
-
-    Lane A always carries the primary candidate and lane B the primary resident
-    baseline.  Reproduction must exchange those exact physical roles.  The pair
-    and its digest do not depend on which of those two stages is executing.
-    """
-
-    lane_a: B300QualificationLanePolicy
-    lane_b: B300QualificationLanePolicy
-
-    def __post_init__(self) -> None:
-        if (
-            type(self.lane_a) is not B300QualificationLanePolicy
-            or type(self.lane_b) is not B300QualificationLanePolicy
-            or self.lane_a.lane_id != "A"
-            or self.lane_b.lane_id != "B"
-            or len(self.lane_a.physical_gpu_ids) != len(self.lane_b.physical_gpu_ids)
-        ):
-            raise B300ArenaProviderError(
-                "qualification lane pair must contain equally sized canonical lanes A and B"
-            )
-        if (
-            set(self.lane_a.physical_gpu_ids).intersection(
-                self.lane_b.physical_gpu_ids
-            )
-            or set(self.lane_a.gpu_uuids).intersection(self.lane_b.gpu_uuids)
-            or self.lane_a.device_configuration_digest
-            == self.lane_b.device_configuration_digest
-            or self.lane_a.device_policy_digest == self.lane_b.device_policy_digest
-        ):
-            raise B300ArenaProviderError(
-                "qualification lane pair is overlapping or not physically distinct"
-            )
-
-    def validate_runtime(self, runtime: ArenaRuntimeIdentity) -> None:
-        """Bind both allocations to the serving geometry before any execution."""
-        if (
-            type(runtime) is not ArenaRuntimeIdentity
-            or runtime.gpu_count != len(self.lane_a.physical_gpu_ids)
-            or runtime.tensor_parallel_size != runtime.gpu_count
-        ):
-            raise B300ArenaProviderError(
-                "qualification lanes differ from the commissioned TP runtime"
-            )
-
-    def orientation(self, stage: str) -> B300QualificationLaneOrientation:
-        if stage == "primary":
-            return B300QualificationLaneOrientation(
-                stage, self.lane_a, self.lane_b
-            )
-        if stage == "reproduction":
-            return B300QualificationLaneOrientation(
-                stage, self.lane_b, self.lane_a
-            )
-        raise B300ArenaProviderError("qualification stage must be primary or reproduction")
-
-    @property
-    def role_swap_digest(self) -> str:
-        return canonical_digest(
-            QUALIFICATION_ROLE_SWAP_SCHEMA,
-            {
-                "primary": {
-                    "candidate": "A",
-                    "resident_baseline": "B",
-                },
-                "reproduction": {
-                    "candidate": "B",
-                    "resident_baseline": "A",
-                },
-            },
-        )
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "lane_a": self.lane_a.to_dict(),
-            "lane_b": self.lane_b.to_dict(),
-            "role_swap_digest": self.role_swap_digest,
-        }
-
-    def service_policy(self) -> dict[str, object]:
-        """Bind the shared competition while each worker retains its physical pair."""
-        return {
-            "lanes": [{"lane_id": lane.lane_id,
-                       "gpu_count": len(lane.physical_gpu_ids),
-                       "device_policy_digest": lane.logical_device_policy_digest}
-                      for lane in (self.lane_a, self.lane_b)],
-            "role_swap_digest": self.role_swap_digest,
-        }
-
-    @property
-    def digest(self) -> str:
-        return canonical_digest(QUALIFICATION_LANE_PAIR_SCHEMA, self.to_dict())
 
 
 def commissioned_incumbent_arm(inputs, manifest, executor, *, entries, resolver, replay):

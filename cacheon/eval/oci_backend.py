@@ -1331,8 +1331,7 @@ class OCIEngineExecutor:
             transport = transport_type(
                 self.manager, lease, argv, clock=self.manager.clock
             )
-            value = run(transport, session_deadline, launch_id,
-                        (prebuild, publication.publication_digest, argv_digest, pre_receipt))
+            value = run(transport, session_deadline, launch_id)
         except BaseException as exc:
             primary = exc
         finally:
@@ -1408,7 +1407,6 @@ class OCIEngineExecutor:
                 transport: AttachedSessionTransport,
                 session_deadline: float,
                 launch_id: str,
-                checkpoint_metadata,
             ) -> tuple[SessionExecutionEvidence, DeviceStateActiveReceipt]:
                 conditioner = _FinalWarmupConditioner(
                     self.device_guard,
@@ -1434,9 +1432,14 @@ class OCIEngineExecutor:
                             check_cancelled()
                         transport.check_cancelled = check_cancelled
                         controller = OpenedOuterSession(plan, **kwargs)
-                        from cacheon.eval.replay_checkpoint import _drive_opened
-                        session = _drive_opened(controller, opened_driver, conditioner, launch, identity,
-                            preflight, mount, self.config.runtime.digest, recovered, checkpoint_metadata)
+                        try:  # Startup and driver failure stay inside the ordinary teardown path.
+                            controller.start()
+                            session = opened_driver(controller)
+                            if (not controller.closed or type(session) is not SessionExecutionEvidence
+                                    or session.session_id != controller.session_id):
+                                raise OCIBackendError("opened session driver did not close its own engine session")
+                        finally:
+                            controller.abort()
                     return session, conditioner.require_complete()
                 finally:
                     conditioner.cancel()
@@ -1553,7 +1556,6 @@ class OCIEngineExecutor:
                 transport: AttachedSessionTransport,
                 session_deadline: float,
                 _launch_id: str,
-                _checkpoint_metadata,
             ) -> ReferenceSessionEvidence:
                 if type(transport) is not AttachedReferenceTransport:
                     raise OCIBackendError("reference runtime received the wrong transport")

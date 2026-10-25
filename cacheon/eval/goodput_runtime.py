@@ -1,66 +1,39 @@
-"""Bind paired replay execution to the service scorer and existing qualification witness."""
+"""Run replay engine lifetimes on one lane and grade them through the service scorer.
+
+Version 19 gives one engine the whole node. A stock reference campaign is measured once per lane
+identity and retained; each candidate reads whole lifetimes against it; a PASS adds one stock bracket
+lifetime that is both the drift sentinel and the incumbent quality control. Paired read sets (versions
+16-18) stay readable for the witnesses that retain them.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import hashlib
+import json
 import math
-import threading
+import os
+import time
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 from cacheon.eval.continuation_codec import ContinuationCodec
-from cacheon.eval.service_capacity import (
-    LoadRead, ServiceContract, ServiceVerdict, continue_windows, fixed_work_rate,
-)
-from cacheon.eval.scoring import CrossoverRuntimeError, SpeedupVerdict
+from cacheon.eval.service_capacity import LoadRead, ServiceContract, ServiceVerdict, fixed_work_rate
+from cacheon.eval.scoring import CrossoverRuntimeError, SpeedupVerdict, marginal_workload_digest
 from cacheon.eval.speed_verdict import SpeedStageDecision
+from cacheon.stack_identity import canonical_digest, canonical_json_bytes
 
-
-class ReadSchedule:
-    """Cross-lane hand-off of the paired reads, keyed by role."""
-
-    def __init__(self) -> None:
-        self.condition = threading.Condition()
-        self.values: dict[str, object] = {}
-        self.failure: BaseException | None = None
-
-    def put(self, key: str, value: object = True) -> None:
-        with self.condition:
-            if key in self.values:
-                raise CrossoverRuntimeError(f"resident schedule repeated {key}")
-            self.values[key] = value
-            self.condition.notify_all()
-
-    def fail(self, exc: BaseException) -> None:
-        with self.condition:
-            if self.failure is None:
-                self.failure = exc
-            self.condition.notify_all()
-
-    def check_failed(self) -> None:
-        """Let a peer leave its pipe wait while the original failure keeps priority."""
-        with self.condition:
-            if self.failure is not None:
-                raise CrossoverRuntimeError(f"resident peer failed: {self.failure}") from self.failure
-
-    def get(self, key: str, *, deadline: float, clock) -> object:
-        with self.condition:
-            while key not in self.values:
-                self.check_failed()
-                remaining = deadline - float(clock())
-                if not math.isfinite(remaining) or remaining <= 0:
-                    raise CrossoverRuntimeError(
-                        "resident speed stage exceeded its deadline"
-                    )
-                self.condition.wait(timeout=min(0.1, remaining))
-            return self.values[key]
+# Version 19: stock lifetimes in one reference campaign, and the most candidate lifetimes a stage reads.
+REFERENCE_BOOTS = 4
+CANDIDATE_BOOTS = 2
+REFERENCE_DOMAIN = "cacheon.qualification.stock-reference"
+REFERENCE_SCHEMA = "cacheon.qualification.stock-reference.v1"
+_REFERENCE_BYTES = 512 << 20
 
 
 @dataclass(frozen=True)
 class ScheduleGrade:
-    """One grade of the paired windows: the headline verdict and the settled speedup text."""
+    """One grade of the retained windows: the headline verdict and the settled speedup text."""
 
     verdict: SpeedupVerdict
     decision: SpeedStageDecision
@@ -131,18 +104,44 @@ class GoodputPolicy:
 
 @dataclass(frozen=True)
 class GoodputReadSet:
-    """The turn records replacing token-window rates in a replay speed witness."""
+    """The turn records replacing token-window rates in a replay speed witness.
+
+    Paired policies hold one incumbent read per candidate read. Version 19 holds the stock reference
+    campaign (``reference_boots`` lifetimes, then at most one stock sentinel lifetime) as the incumbent
+    and up to ``boots`` candidate lifetimes, every lifetime ``window_limit`` windows on one lane.
+    """
 
     incumbent: tuple[LoadRead, ...]
     candidate: tuple[LoadRead, ...]
     expected: tuple[tuple[str, int, int], ...]
     window_limit: int = field(default=0, metadata={"wire_optional": True})
     orientations: tuple[int, ...] = field(default=(), metadata={"wire_optional": True})
+    boots: int = field(default=0, metadata={"wire_optional": True})
+    reference_boots: int = field(default=0, metadata={"wire_optional": True})
 
     def __post_init__(self):
-        if (not self.incumbent or len(self.incumbent) != len(self.candidate)
+        if (not self.incumbent or not self.candidate
             or tuple(sorted(set(self.expected))) != self.expected
             or len({row[0] for row in self.expected}) != len(self.expected)):
+            raise ValueError("goodput reads or fixed-work authority are incomplete")
+        work = {root: (main, inner) for root, main, inner in self.expected}
+        if self.boots or self.reference_boots:
+            size = self.window_limit
+            if (type(self.boots) is not int or type(self.reference_boots) is not int or self.orientations
+                or not 2 <= self.boots <= CANDIDATE_BOOTS or self.reference_boots != REFERENCE_BOOTS
+                or type(size) is not int or not 1 <= size <= 5
+                or len(self.incumbent) not in (self.reference_boots * size, (self.reference_boots + 1) * size)
+                or len(self.candidate) % size or len(self.candidate) > self.boots * size
+                or any(read.window != index % size + 1 for reads in (self.incumbent, self.candidate)
+                       for index, read in enumerate(reads))
+                or any(read.arm != "incumbent" for read in self.incumbent)
+                or any(read.arm != "candidate" for read in self.candidate)
+                or len({(read.lane, read.load) for read in (*self.incumbent, *self.candidate)}) != 1):
+                raise ValueError("reference read set is not whole lifetimes on one lane")
+            for read in (*self.incumbent, *self.candidate):
+                fixed_work_rate(read, work)
+            return
+        if len(self.incumbent) != len(self.candidate):
             raise ValueError("goodput reads or fixed-work authority are incomplete")
         if (type(self.window_limit) is not int or self.window_limit < 0
             or (self.window_limit and not len(self.incumbent) <= self.window_limit <= 5)):
@@ -150,7 +149,6 @@ class GoodputReadSet:
         if self.orientations and self.orientations != tuple(
                 int(i >= self.window_limit // 2) for i in range(len(self.incumbent))):
             raise ValueError("portable replay changed its sealed orientation order")
-        work = {root: (main, inner) for root, main, inner in self.expected}
         for baseline, candidate in zip(self.incumbent, self.candidate, strict=True):
             if (baseline.arm != "incumbent" or candidate.arm != "candidate"
                 or (baseline.window, baseline.load) != (candidate.window, candidate.load)
@@ -163,19 +161,26 @@ class GoodputReadSet:
         """Call the data/scoring owner's single grade entrypoint; retain no second estimator."""
         from cacheon.eval import service_capacity
 
-        statistic = {} if not policy.error_rate else dict(
-            window_noise=policy.null_noise, boot_noise=policy.boot_noise,
-            error_rate=policy.error_rate, max_windows=max_windows or self.window_limit or len(self.candidate),
-            futility_margin=policy.futility_margin,
-            **({"orientations": self.orientations} if self.orientations else {}),
-        )
-        grader = service_capacity.statistical_grade if statistic else service_capacity.grade
-        result = grader(
-            self.candidate, self.incumbent, policy.contract,
-            {root: (main, inner) for root, main, inner in self.expected},
-            **(statistic or {"required": policy.required}), attainment_tolerance=policy.attainment_tolerance,
-            attainment_margin=policy.attainment_margin, pooled_attainment=bool(policy.attainment_pooled),
-        )
+        work = {root: (main, inner) for root, main, inner in self.expected}
+        service = dict(attainment_tolerance=policy.attainment_tolerance, attainment_margin=policy.attainment_margin)
+        if self.boots:
+            split = self.reference_boots * self.window_limit
+            result = service_capacity.reference_grade(
+                self.candidate, self.incumbent[:split], policy.contract, work, window_noise=policy.null_noise,
+                boot_noise=policy.boot_noise, error_rate=policy.error_rate, boots=self.boots,
+                futility_margin=policy.futility_margin, sentinel=self.incumbent[split:], **service,
+            )
+        elif policy.error_rate:
+            result = service_capacity.statistical_grade(
+                self.candidate, self.incumbent, policy.contract, work, window_noise=policy.null_noise,
+                boot_noise=policy.boot_noise, error_rate=policy.error_rate,
+                max_windows=max_windows or self.window_limit or len(self.candidate),
+                futility_margin=policy.futility_margin, pooled_attainment=bool(policy.attainment_pooled),
+                **({"orientations": self.orientations} if self.orientations else {}), **service,
+            )
+        else:
+            result = service_capacity.grade(self.candidate, self.incumbent, policy.contract, work,
+                                            required=policy.required, **service)
         if (type(result) is not ServiceVerdict or (not policy.error_rate and result.required != policy.required)
             or not math.isfinite(result.ratio) or result.ratio <= 0):
             raise ValueError("service scorer returned another policy or result type")
@@ -200,329 +205,215 @@ class GoodputReadSet:
         return result
 
 
-def _orientation_plan(plan, windows, *, swapped=False):
-    """Derive a shorter read and, when requested, exchange the sealed physical bindings."""
-    def arm(source, lane):
-        launch = replace(source.launch, hardware=lane.launch.hardware,
-                         resource_policy_digest=lane.launch.resource_policy_digest)
-        binding = replace(source.binding, physical_hardware=lane.binding.physical_hardware,
-                          runtime_preflight_receipt=lane.binding.runtime_preflight_receipt)
-        session = replace(source.session_plan, launch_digest=launch.digest,
-                          expected_preflight=replace(source.session_plan.expected_preflight,
-                                                     launch_digest=launch.digest),
-                          replay=replace(source.session_plan.replay, windows=windows,
-                              max_work_seconds=(source.session_plan.replay.max_work_seconds * windows
-                                                // source.session_plan.replay.windows)))
-        return replace(source, launch=launch, binding=binding, session_plan=session,
-                       executor_namespace_digest=lane.executor_namespace_digest,
-                       runtime_resource_policy_digest=lane.runtime_resource_policy_digest,
-                       device_configuration_digest=lane.device_configuration_digest)
-    baseline_lane, candidate_lane = ((plan.candidate, plan.baseline) if swapped
-                                    else (plan.baseline, plan.candidate))
-    return replace(plan, baseline=arm(plan.baseline, baseline_lane),
-                   candidate=arm(plan.candidate, candidate_lane))
-
-
-def _host_boot_id():
-    """Linux's boot ID binds retained monotonic timestamps across controller restarts."""
-    return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-
-
-def _reopen_orientation(plan, retained):
-    """Recompute the first orientation from the same raw sessions used by final regrading."""
-    from cacheon.eval.qualification_continuation import QualificationContinuationError
-    from cacheon.eval.scoring import marginal_workload_digest
-
-    replay = plan.baseline.session_plan.replay
-    first_plan = _orientation_plan(plan, replay.windows // 2)
-    executions, quiet = retained["executions"], retained["quiescence"]
-    expected = tuple(sorted((root, main, inner) for root, (main, inner) in
-                            replay.slice.expected_work(replay.loads[0]).items()))
-    try:
-        reads = GoodputReadSet(*(row.session.replay_reads for row in executions), expected, replay.windows)
-        sessions = [(read, execution, arm, ()) for read, execution, arm in zip(
-            (reads.incumbent, reads.candidate), executions,
-            (first_plan.baseline, first_plan.candidate), strict=True)]
-        _validate_replay_sessions(sessions, replay)
-        for (_, execution, arm, _), receipt in zip(sessions, quiet, strict=True):
-            if (len(execution.session.replay_reads) != replay.windows // 2
-                or receipt.namespace_digest != arm.executor_namespace_digest
-                or not retained["started"] <= execution.session.ready_completed_at
-                <= execution.session.session_completed_at <= receipt.observed_monotonic_s):
-                raise ValueError("first orientation is incomplete or its closure differs")
-        return dict(reads=reads, grade=reads.grade(plan.policy.goodput), executions=executions,
-                    started=retained["started"], quality=((), (), None),
-                    workload=marginal_workload_digest(plan.baseline.session_plan))
-    except (ValueError, CrossoverRuntimeError) as exc:
-        raise QualificationContinuationError(f"retained speed orientation is invalid: {exc}") from None
-
-
-def run_goodput_pair(plan, *, baseline_executor, candidate_executor, model_mount, deadline, clock,
-                     quality_control, continuation=None):
-    """Run both lane orientations of one statistically graded replay, or only the first on a futility FAIL."""
+def _tokenizer(plan):
+    # A lazy tokenizer import once failed after both engines had booted (2026-09-28); resolve it first.
     from transformers import AutoTokenizer
 
-    # Concurrent lazy imports failed after both engines had booted (2026-09-28).
-    # Resolve every tokenizer input before launching either lane; each thread owns one instance.
-    tokenizers = tuple(AutoTokenizer.from_pretrained(
-        arm.session_plan.replay.tokenizer_path, trust_remote_code=True, local_files_only=True,
-    ) for arm in (plan.baseline, plan.candidate))
-    if plan.policy.version == 18:
-        from cacheon.eval.replay_checkpoint import run_pair
-        return run_pair(plan, baseline_executor=baseline_executor, candidate_executor=candidate_executor,
-            model_mount=model_mount, deadline=deadline, clock=clock, quality_control=quality_control,
-            continuation=continuation, tokenizers=tokenizers)
-    if not plan.policy.goodput.error_rate:
-        raise ValueError("V16 replay is regrade-only; new runs require the statistical policy")
-    from cacheon.eval.crossover_runtime import ResidentCrossoverEvidence, _expected_lane_digest
+    return AutoTokenizer.from_pretrained(plan.candidate.session_plan.replay.tokenizer_path,
+                                         trust_remote_code=True, local_files_only=True)
 
-    windows = plan.baseline.session_plan.replay.windows
-    if not 2 <= windows <= 5:
-        raise ValueError("statistical replay requires two to five paired windows")
-    split = windows // 2
-    boot_id = None if continuation is None else _host_boot_id()
-    retained = None if continuation is None else continuation.load_speed_orientation(plan.digest, boot_id)
-    kwargs = dict(model_mount=model_mount, deadline=deadline, clock=clock,
-                  quality_control=quality_control, tokenizers=tokenizers)
-    if retained is None:
-        first = _run_orientation(_orientation_plan(plan, split), baseline_executor=baseline_executor,
-                                 candidate_executor=candidate_executor, full_plan=plan, **kwargs)
-        if continuation is not None:
-            quiet = (baseline_executor.prove_quiescent(), candidate_executor.prove_quiescent())
-            continuation.record_speed_orientation(plan.digest, boot_id, first["started"],
-                                                   tuple(first["executions"]), quiet)
+
+def _boot(executor, arm, lane, model_mount, *, prefix, deadline, tokenizer, after=None):
+    """Run one engine lifetime's sealed windows; ``after`` runs on the still-open engine."""
+    from cacheon.eval.agent_replay import run_replay
+
+    replay = replace(arm.session_plan.replay, arm=prefix, lane=lane,
+                     output_directory=arm.session_plan.replay.output_directory / prefix)
+    session_plan = replace(arm.session_plan, replay=replay)
+    held = {}
+
+    def drive(controller):
+        for _ in range(session_plan.warmup_count):
+            controller.execute_next()
+        held["directory"] = replay.output_directory / controller.session_id
+        read_plan = replace(replay, output_directory=held["directory"])
+
+        async def bounded_replay():
+            task = run_replay(controller, read_plan, tokenizer=tokenizer)
+            return await asyncio.wait_for(task, timeout=read_plan.max_work_seconds or None)
+
+        asyncio.run(bounded_replay())
+        if after is not None:
+            held["after"] = after(controller, held["directory"])
+        return controller.finish(require_all=False)
+
+    execution = executor.execute_opened(arm.launch, arm.binding, model_mount, session_plan,
+                                        deadline=deadline, driver=drive)
+    return execution, executor.prove_quiescent(), held["directory"], held.get("after")
+
+
+def _reference_pointer(plan, evidence_root) -> Path:
+    identity = canonical_digest(REFERENCE_SCHEMA, {
+        "boots": REFERENCE_BOOTS, "lane": plan.baseline_lane_digest, "launch": plan.baseline.launch.digest,
+        "runtime": plan.baseline.binding.runtime_preflight_receipt.sha256,
+        "workload": marginal_workload_digest(plan.baseline.session_plan),
+    })
+    # A dot name can never be an evidence domain directory.
+    return Path(evidence_root) / ".stock-references" / f"{identity}.json"
+
+
+def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
+    """Reopen the lane's current stock reference, or measure its campaign when none is current.
+
+    The campaign runs before the speed clock starts. A missing or retired reference is measured
+    again on this lane, never borrowed from another lane, image, launch or workload.
+    """
+    from cacheon.eval.crossover_runtime import _lane_digest
+    from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence, reopen_evidence
+    from cacheon.eval.oci_backend import EngineExecutionEvidence
+
+    codec = ContinuationCodec((EngineExecutionEvidence,))
+    pointer = _reference_pointer(plan, evidence_root)
+    lane = _lane_digest(executor, plan.baseline)
+    if pointer.exists():
+        record = json.loads(reopen_evidence(evidence_root, EvidenceArtifactRef.from_dict(
+            json.loads(pointer.read_text())), max_bytes=_REFERENCE_BYTES))
+        if record.get("identity") != pointer.stem:
+            raise CrossoverRuntimeError("stock reference names another lane identity")
+        executions = tuple(codec.decode(row) for row in record["executions"])
     else:
-        from cacheon.eval.crossover_runtime import _lane_digest
-        from cacheon.eval.qualification_continuation import QualificationContinuationError
+        tokenizer = _tokenizer(plan)
+        executions = tuple(_boot(executor, plan.baseline, lane, model_mount, prefix="incumbent",
+                                 deadline=deadline, tokenizer=tokenizer)[0] for _ in range(REFERENCE_BOOTS))
+    if len(executions) != REFERENCE_BOOTS or any(type(row) is not EngineExecutionEvidence for row in executions):
+        raise CrossoverRuntimeError("stock reference lacks its sealed lifetimes")
+    _validate_replay_sessions([(row.session.replay_reads, row, plan.baseline, ()) for row in executions],
+                              plan.baseline.session_plan.replay)
+    if not pointer.exists():
+        reference = publish_evidence(evidence_root, canonical_json_bytes({
+            "identity": pointer.stem, "executions": [codec.encode(row) for row in executions],
+        }), domain=REFERENCE_DOMAIN, media_type="application/json", schema=REFERENCE_SCHEMA,
+            max_bytes=_REFERENCE_BYTES)
+        pointer.parent.mkdir(mode=0o700, exist_ok=True)
+        with pointer.open("x") as handle:
+            handle.write(json.dumps(reference.to_dict(), sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    return executions
 
-        first = _reopen_orientation(plan, retained)
-        try:
-            _lane_digest(baseline_executor, plan.baseline)
-            _lane_digest(candidate_executor, plan.candidate)
-        except CrossoverRuntimeError as exc:
-            raise QualificationContinuationError(f"retained speed executor changed: {exc}") from None
-        now = float(clock())
-        deadline = min(deadline, first["started"] + plan.policy.max_stage_seconds)
-        if (not math.isfinite(now) or now < max(row.observed_monotonic_s for row in retained["quiescence"])
-            or now >= deadline):
-            raise QualificationContinuationError("retained speed orientation has no remaining clock budget")
-        kwargs["deadline"] = deadline
-    if first["grade"].decision is SpeedStageDecision.FAIL:
-        # Only the sealed futility margin fails one orientation; simulated at the live seal, the second
-        # boot would have turned fewer than 1 in 500 of these stops into a PASS.
-        grade = first["grade"]
-        evidence = ResidentCrossoverEvidence(
-            plan.digest, plan.selected_delta_digest, plan.policy, first["workload"],
-            _expected_lane_digest(plan.baseline), _expected_lane_digest(plan.candidate), *first["executions"],
-            baseline_executor.prove_quiescent(), candidate_executor.prove_quiescent(), (),
-            grade.verdict, grade.verdict, False, grade.decision, "clear_fail",
-            first["started"], float(clock()), goodput=first["reads"],
-        )
-        evidence.regrade(plan)
-        return evidence
-    swapped = _orientation_plan(plan, windows-split, swapped=True)
-    last = _run_orientation(swapped, baseline_executor=candidate_executor,
-                            candidate_executor=baseline_executor, full_plan=plan,
-                            prior=first["reads"], **kwargs)
-    grade = last["grade"]
-    pairs, controls, entropy = last["quality"]
+
+def _expected(replay):
+    (load,) = replay.loads
+    return tuple(sorted((root, main, inner) for root, (main, inner) in replay.slice.expected_work(load).items()))
+
+
+def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root, deadline, clock,
+                        quality_control):
+    """Read whole candidate lifetimes against the reference; a PASS adds the stock bracket lifetime."""
+    from cacheon.eval.crossover_runtime import ResidentCrossoverEvidence, _lane_digest
+
+    if not callable(quality_control):
+        raise ValueError("the quality producer must be installed before engine launch")
+    tokenizer = _tokenizer(plan)
+    started = float(clock())
+    deadline = min(deadline, started + plan.policy.max_stage_seconds)
+    if not math.isfinite(deadline) or deadline <= started:
+        raise ValueError("goodput stage has no remaining execution budget")
+    lane = _lane_digest(executor, plan.candidate)
+    replay = plan.candidate.session_plan.replay
+    stock = tuple(read for row in reference for read in row.session.replay_reads)
+    boots = []
+    for _ in range(CANDIDATE_BOOTS):
+        boots.append(_boot(executor, plan.candidate, lane, model_mount, prefix="candidate",
+                           deadline=deadline, tokenizer=tokenizer))
+        reads = GoodputReadSet(stock, tuple(read for row in boots for read in row[0].session.replay_reads),
+                               _expected(replay), replay.windows, boots=CANDIDATE_BOOTS,
+                               reference_boots=REFERENCE_BOOTS)
+        grade = reads.grade(plan.policy.goodput)
+        if grade.decision is not SpeedStageDecision.NO_DECISION:
+            break
+    candidate, candidate_quiet, candidate_directory, _ = boots[-1]
+    bracket, bracket_quiet, quality = None, candidate_quiet, ((), (), None)
+    if grade.decision is SpeedStageDecision.PASS:
+        bracket, bracket_quiet, _, quality = _boot(
+            executor, plan.baseline, lane, model_mount, prefix="incumbent", deadline=deadline, tokenizer=tokenizer,
+            after=lambda controller, directory: quality_control(
+                controller, candidate, directory, candidate_directory, candidate_quiet))
+        reads = replace(reads, incumbent=stock + bracket.session.replay_reads)
+        grade = reads.grade(plan.policy.goodput)
+        if grade.decision is SpeedStageDecision.NO_DECISION:
+            # The sentinel closed this reference; the next qualification measures a new campaign.
+            pointer = _reference_pointer(plan, evidence_root)
+            pointer.rename(pointer.with_name(f"{pointer.stem}.retired-{time.time_ns()}.json"))
+    pairs, controls, entropy = quality
     evidence = ResidentCrossoverEvidence(
-        plan.digest, plan.selected_delta_digest, plan.policy, first["workload"],
-        _expected_lane_digest(swapped.baseline), _expected_lane_digest(swapped.candidate),
-        *last["executions"], candidate_executor.prove_quiescent(), baseline_executor.prove_quiescent(), (),
-        grade.verdict, grade.verdict, False, grade.decision, "clear_"+grade.decision.value.lower(),
-        first["started"], float(clock()), goodput=last["reads"], prompt_pairs=pairs,
-        reference_inputs=controls, quality_entropy=entropy, prior_executions=tuple(first["executions"]),
+        plan.digest, plan.selected_delta_digest, plan.policy, marginal_workload_digest(plan.baseline.session_plan),
+        lane, lane, bracket, candidate, bracket_quiet, candidate_quiet, (), grade.verdict, grade.verdict, False,
+        grade.decision, "clear_" + grade.decision.value.lower(), started, float(clock()), goodput=reads,
+        prompt_pairs=pairs, reference_inputs=controls, quality_entropy=entropy,
+        prior_executions=(*reference, *(row[0] for row in boots[:-1])),
     )
     evidence.regrade(plan)
     return evidence
 
 
-def _run_orientation(plan, *, baseline_executor, candidate_executor, model_mount, deadline, clock,
-                     quality_control, tokenizers, full_plan, prior=None, orientation=None, on_window=None):
-    """Keep each pair resident through its timed reads and any selected quality controls."""
-    from cacheon.eval.agent_replay import run_replay
-    from cacheon.eval.crossover_runtime import _lane_digest
-    from cacheon.eval.scoring import marginal_workload_digest
-    from cacheon.eval import service_capacity
+def regrade_reference_speed(evidence, plan):
+    """Regrade a stage from its retained lifetimes: reference, candidate boots, then any stock bracket."""
+    from cacheon.eval.crossover_runtime import _expected_lane_digest
 
-    if not callable(getattr(service_capacity, "grade", None)) or not callable(quality_control):
-        raise ValueError("goodput qualification scorer and quality producer must be installed before engine launch")
-
-    started = float(clock())
-    deadline = min(deadline, started + plan.policy.max_stage_seconds)
-    if not math.isfinite(deadline) or deadline <= started:
-        raise ValueError("goodput stage has no remaining execution budget")
-    lanes = (_lane_digest(baseline_executor, plan.baseline),
-             _lane_digest(candidate_executor, plan.candidate))
-    schedule = ReadSchedule()
-    replay = plan.baseline.session_plan.replay
-    (load,) = replay.loads
-    work = replay.slice.expected_work(load)
-    expected = tuple(sorted((root, main, inner) for root, (main, inner) in work.items()))
-    maximum = full_plan.baseline.session_plan.replay.windows
-
-    def read_set(baseline, candidate):
-        return GoodputReadSet(
-            (() if prior is None else prior.incumbent) + tuple(baseline),
-            (() if prior is None else prior.candidate) + tuple(candidate), expected, maximum,
-            (() if orientation is None else
-             (() if prior is None else prior.orientations) + (orientation,) * len(baseline)),
-        )
-
-    def execute(index, executor, arm):
-        prefix, peer = ("incumbent", "candidate") if index == 0 else ("candidate", "incumbent")
-        replay = replace(arm.session_plan.replay, arm=prefix, lane=lanes[index],
-                         output_directory=arm.session_plan.replay.output_directory / prefix)
-        session_plan = replace(arm.session_plan, replay=replay)
-
-        def drive(controller):
-            try:
-                for _ in range(session_plan.warmup_count):
-                    controller.execute_next()
-
-                completed = {"incumbent": [], "candidate": []}
-
-                async def ready(load, window):
-                    # Both lanes publish the finished window's read, then decide identically whether
-                    # the sealed sequential rule wants another; a split decision cannot pair and
-                    # times out at the barrier instead of reading on alone.
-                    proceed = True
-                    if window > 1:
-                        completed[prefix].append(controller.replay_reads[-1])
-                        schedule.put(f"{window}:read:{prefix}", completed[prefix][-1])
-                        completed[peer].append(schedule.get(f"{window}:read:{peer}", deadline=deadline, clock=clock))
-                        if prior is not None:
-                            grade = read_set(completed["incumbent"], completed["candidate"]).grade(
-                                plan.policy.goodput, max_windows=maximum)
-                            proceed = grade.decision is SpeedStageDecision.NO_DECISION
-                        if proceed and on_window is not None:
-                            schedule.put(f"{window}:checkpoint:{prefix}", controller.checkpoint_execution())
-                            peer_snapshot = schedule.get(f"{window}:checkpoint:{peer}", deadline=deadline, clock=clock)
-                            if index == 0:
-                                on_window((schedule.values[f"{window}:checkpoint:{prefix}"], peer_snapshot),
-                                          started, plan, window - 1)
-                    key = f"{load}:{window}:{'ready' if proceed else 'stop'}:"
-                    schedule.put(key + prefix)
-                    schedule.get(key + peer, deadline=deadline, clock=clock)
-                    return proceed
-
-                read_plan = replace(replay, output_directory=replay.output_directory / controller.session_id)
-                async def bounded_replay():
-                    task = run_replay(controller, read_plan, tokenizer=tokenizers[index], before_read=ready)
-                    return await asyncio.wait_for(task, timeout=read_plan.max_work_seconds or None)
-
-                reads = asyncio.run(bounded_replay())
-                schedule.put(prefix, (reads, read_plan.output_directory))
-                peer_reads, peer_directory = schedule.get(peer, deadline=deadline, clock=clock)
-                if index == 0:
-                    retained = read_set(reads, peer_reads)
-                    grade = retained.grade(plan.policy.goodput, max_windows=maximum)
-                    schedule.put("read_set", retained)
-                    schedule.put("grade", grade)
-                    if grade.decision is SpeedStageDecision.PASS:
-                        candidate, quiescence = schedule.get("candidate_closed", deadline=deadline, clock=clock)
-                        schedule.put("quality", quality_control(
-                            controller, candidate, read_plan.output_directory, peer_directory, quiescence,
-                        ))
-                return controller.finish(require_all=False)
-            except BaseException as exc:
-                schedule.fail(exc)
-                raise
-        try:
-            execution = executor.execute_opened(arm.launch, arm.binding, model_mount, session_plan,
-                                                deadline=deadline, driver=drive,
-                                                check_cancelled=schedule.check_failed)
-            if index == 1:
-                schedule.put("candidate_closed", (execution, executor.prove_quiescent()))
-            return execution
-        except BaseException as exc:
-            schedule.fail(exc)
-            raise
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="cacheon-goodput") as pool:
-        futures = [pool.submit(execute, index, executor, arm) for index, (executor, arm) in enumerate((
-            (baseline_executor, plan.baseline), (candidate_executor, plan.candidate),
-        ))]
-        executions, errors = [], []
-        for future in futures:
-            try:
-                executions.append(future.result())
-            except BaseException as exc:
-                errors.append(exc)
-    if errors:
-        raise schedule.failure or errors[0]
-    reads, grade = schedule.values["read_set"], schedule.values["grade"]
-    pairs, controls, entropy = schedule.values.get("quality", ((), (), None))
-    return dict(reads=reads, grade=grade, executions=executions, quality=(pairs, controls, entropy),
-                started=started, workload=marginal_workload_digest(full_plan.baseline.session_plan))
-
-
-def regrade_goodput_execution(evidence, plan):
-    """Verify complete replay records against the sealed workload and host pipe evidence."""
-    replay = plan.baseline.session_plan.replay
-    (load,) = replay.loads
-    expected = tuple(sorted((root, main, inner) for root, (main, inner) in replay.slice.expected_work(load).items()))
-    if evidence.goodput.expected != expected:
-        raise CrossoverRuntimeError("goodput fixed work differs from the sealed slice")
-    sessions = [
-        (evidence.goodput.incumbent, evidence.baseline_execution, plan.baseline, evidence.reference_inputs),
-        (evidence.goodput.candidate, evidence.candidate_execution, plan.candidate, ()),
-    ]
-    if plan.policy.goodput.error_rate:
-        split = replay.windows // 2
-        stopped = not evidence.prior_executions
-        if (evidence.goodput.window_limit != replay.windows
-            or (len(evidence.goodput.incumbent) == split) != stopped or len(evidence.goodput.incumbent) < split):
-            raise CrossoverRuntimeError("statistical replay lacks its sealed budget or swapped reads")
-        first = _orientation_plan(plan, split)
-        if stopped:
-            sessions = [(evidence.goodput.incumbent, evidence.baseline_execution, first.baseline, ()),
-                        (evidence.goodput.candidate, evidence.candidate_execution, first.candidate, ())]
-        else:
-            last = _orientation_plan(plan, replay.windows-split, swapped=True)
-            sessions = [
-                (evidence.goodput.incumbent[:split], evidence.prior_executions[0], first.baseline, ()),
-                (evidence.goodput.candidate[:split], evidence.prior_executions[1], first.candidate, ()),
-                (evidence.goodput.incumbent[split:], evidence.baseline_execution, last.baseline, evidence.reference_inputs),
-                (evidence.goodput.candidate[split:], evidence.candidate_execution, last.candidate, ()),
-            ]
-            completed = max(row.session.session_completed_at for row in evidence.prior_executions)
-            if completed > min(evidence.baseline_execution.session.ready_completed_at,
-                               evidence.candidate_execution.session.ready_completed_at):
-                raise CrossoverRuntimeError("swapped read predates completion of its first orientation")
-    _validate_replay_sessions(sessions, replay)
-    # The lanes stopped where the sealed sequential rule stopped them, replayed from the retained rates.
-    work = replay.slice.expected_work(load)
-    ratios = [fixed_work_rate(cand, work).rate / fixed_work_rate(inc, work).rate
-              for cand, inc in zip(evidence.goodput.candidate, evidence.goodput.incumbent, strict=True)]
-    for read in range(1, len(ratios) + 1):
-        if plan.policy.goodput.error_rate:
-            prefix = replace(evidence.goodput, incumbent=evidence.goodput.incumbent[:read],
-                             candidate=evidence.goodput.candidate[:read])
-            again = prefix.grade(plan.policy.goodput).decision is SpeedStageDecision.NO_DECISION
-        else:
-            again = continue_windows(ratios[:read], required=plan.policy.goodput.required,
-                                     null_noise=plan.policy.goodput.null_noise, max_windows=replay.windows)
-        if again != (read < len(ratios)):
-            raise CrossoverRuntimeError("goodput reads did not stop where the sealed sequential rule stops")
-    if evidence.decision is SpeedStageDecision.PASS:
+    replay = plan.candidate.session_plan.replay
+    lane = _expected_lane_digest(plan.candidate)
+    reference = evidence.prior_executions[:REFERENCE_BOOTS]
+    candidates = (*evidence.prior_executions[REFERENCE_BOOTS:], evidence.candidate_execution)
+    bracket = evidence.baseline_execution
+    quiet = (evidence.candidate_quiescence, *((evidence.baseline_quiescence,) if bracket else ()))
+    if (evidence.plan_digest != plan.digest or evidence.policy != plan.policy
+        or evidence.selected_delta_digest != plan.selected_delta_digest
+        or evidence.workload_digest != marginal_workload_digest(plan.baseline.session_plan)
+        or (evidence.baseline_lane_digest, evidence.candidate_lane_digest) != (lane, lane)
+        or len(reference) != REFERENCE_BOOTS or len(candidates) > CANDIDATE_BOOTS
+        or (bracket is None) != (evidence.baseline_quiescence == evidence.candidate_quiescence)
+        or any(row.namespace_digest != plan.candidate.executor_namespace_digest
+               or (row.container_ids, row.lease_records, row.resource_entries) != ((), (), ()) for row in quiet)):
+        raise CrossoverRuntimeError("reference speed evidence names another sealed plan")
+    _validate_replay_sessions([
+        *((row.session.replay_reads, row, plan.baseline, ()) for row in reference),
+        *((row.session.replay_reads, row, plan.candidate, ()) for row in candidates),
+        *(((bracket.session.replay_reads, bracket, plan.baseline, evidence.reference_inputs),) if bracket else ()),
+    ], replay)
+    stage = (*candidates, *((bracket,) if bracket else ()))
+    marks = [evidence.started_monotonic_s]
+    for row, receipt in zip(stage, (*(None,) * (len(candidates) - 1), *quiet)):
+        marks += [row.session.ready_completed_at, row.session.session_completed_at]
+        marks += [] if receipt is None else [receipt.observed_monotonic_s]
+    if marks + [evidence.completed_monotonic_s] != sorted(marks + [evidence.completed_monotonic_s]):
+        raise CrossoverRuntimeError("reference speed lifetimes overlap or leave the stage clock")
+    stock = tuple(read for row in reference for read in row.session.replay_reads)
+    rebuilt = GoodputReadSet(stock + (bracket.session.replay_reads if bracket else ()),
+                             tuple(read for row in candidates for read in row.session.replay_reads),
+                             _expected(replay), replay.windows, boots=CANDIDATE_BOOTS, reference_boots=REFERENCE_BOOTS)
+    if rebuilt != evidence.goodput:
+        raise CrossoverRuntimeError("reference speed reads differ from their engine sessions")
+    for count in range(1, len(candidates) + 1):
+        prefix = replace(rebuilt, incumbent=stock, candidate=rebuilt.candidate[:count * replay.windows])
+        decision = prefix.grade(plan.policy.goodput).decision
+        if (decision is SpeedStageDecision.NO_DECISION) != (count < len(candidates)):
+            raise CrossoverRuntimeError("reference speed did not stop where its sealed rule stops")
+    if (bracket is not None) != (decision is SpeedStageDecision.PASS):
+        raise CrossoverRuntimeError("a stock bracket follows exactly a passing comparison")
+    grade = rebuilt.grade(plan.policy.goodput)
+    if (grade.verdict != evidence.initial_verdict or grade.verdict != evidence.final_verdict
+        or grade.decision is not evidence.decision):
+        raise CrossoverRuntimeError("reference speed headline does not regrade")
+    if bracket is not None:
         if not evidence.reference_inputs or not evidence.prompt_pairs or evidence.quality_entropy is None:
-            raise CrossoverRuntimeError("passing replay lacks its selected incumbent quality controls")
+            raise CrossoverRuntimeError("stock bracket lacks its selected incumbent quality controls")
         from cacheon.eval.qualification_trajectories import validate_controls
         validate_controls(evidence, plan)
-    return evidence.goodput.grade(plan.policy.goodput)
+    elif evidence.reference_inputs or evidence.prompt_pairs or evidence.quality_entropy is not None:
+        raise CrossoverRuntimeError("quality controls exist only on a stock bracket")
+    return grade.verdict
 
 
-def _validate_replay_sessions(sessions, replay, *, checkpoint=False):
-    """Share raw-request validation between orientation recovery and final regrading."""
+def _validate_replay_sessions(sessions, replay):
+    """Bind every retained read to the host requests of the engine session that produced it."""
     from cacheon.eval.crossover_runtime import _validate_execution_binding, _expected_lane_digest
 
     (load,) = replay.loads
     for reads, execution, arm, controls in sessions:
-        _validate_execution_binding(execution, arm, checkpoint=checkpoint)
+        _validate_execution_binding(execution, arm)
         session = execution.session
-        if reads != session.replay_reads or not 1 <= len(reads) <= arm.session_plan.replay.windows:
+        if reads != session.replay_reads or len(reads) != arm.session_plan.replay.windows:
             raise CrossoverRuntimeError("goodput reads differ from their completed engine session")
         warmup = arm.session_plan.warmup_count
         count = replay.slice.turns(load)
@@ -548,7 +439,7 @@ def _validate_replay_sessions(sessions, replay, *, checkpoint=False):
                     or record.request_end_ns != offset + round(row.response_completed_at * 1e9)
                     or (record.prompt_tokens, record.output_tokens) != (prompt.prompt_tokens, len(prompt.output_ids))
                     or row.token_numerator != record.output_tokens
-                    or row.response_completed_at > (session.checkpointed_at if checkpoint else session.session_completed_at)):
+                    or row.response_completed_at > session.session_completed_at):
                     raise CrossoverRuntimeError("goodput record does not regrade from its host request")
         for control, row in zip(controls, session.batches[warmup + measured:], strict=True):
             if (len(row.evidence.prompts) != 1 or row.audit_receipts

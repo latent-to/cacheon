@@ -103,7 +103,7 @@ def values(operator: dict, arena_inputs: str) -> dict[str, str]:
     width = operator["tensor_parallel_size"]
     return {
         "ARENA_ID": operator["arena_id"], "ARENA_INPUTS": arena_inputs, "SLUG": operator["slug"],
-        "MODEL_PROFILE_KEY": operator["model_profile_key"], "TP": str(width), "GPUS": str(2 * width),
+        "MODEL_PROFILE_KEY": operator["model_profile_key"], "TP": str(width),
         "REPLAY_LOAD": str(operator["replay_load"]), "TOKENIZER_ASSET": operator["tokenizer_asset"],
         "OWNER": operator["owner"], "RAM_MODEL_ARGS": " '--ram-model'," if operator["model_in_ram"] else "",
         "SCHEDULER_STARTS": json.dumps(operator["node"]["scheduler_starts"]),

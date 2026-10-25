@@ -4,7 +4,7 @@ Checks the retained image digest, the exported controller source against its met
 render receipt independently, then runs the
 rendered ``launch_stage.py`` detached in its own session with its whole output in the task
 directory, and records what it started. Arguments after ``--`` go to ``launch_stage`` unchanged:
-``--host``, ``--user``, ``--known-hosts``, ``--shared``, ``--tag``, ``--lane``, ``--baseline``,
+``--host``, ``--user``, ``--known-hosts``, ``--shared``, ``--tag``, ``--lane`` (every GPU the engine owns),
 ``--model-input``, ``--model-token`` and, when used, ``--pod-port`` and ``--runtime-seed``. The
 stage ends with ``COMMISSIONING_ONLY``: connecting the worker to the intake is a separate step
 taken on the owner's order.

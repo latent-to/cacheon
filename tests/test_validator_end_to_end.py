@@ -106,16 +106,14 @@ SCHEMA_2 = (f"DROP INDEX {SINGLETONS[0]}; DROP INDEX {SINGLETONS[1]};"
             f"CREATE UNIQUE INDEX {SINGLETONS[0]} ON evaluation_leases(stage) WHERE state='active' AND stage='qualification';"
             f"CREATE UNIQUE INDEX {SINGLETONS[1]} ON evaluation_recoveries(resolution) WHERE resolution='';"
             f"UPDATE metadata SET value='2' WHERE key IN {STAMPS}")
-LANE_PAIR = "provisioned GPU set differs from the commissioned lane pair"
+LANE = "provisioned GPU set differs from the commissioned lane"
 COMMISSION_REFUSALS = (  # (label, READY edits as (*keys, value), provisioned devices, reason) on the 8-device B300 host
-    ("single-tp4-pair", (), lambda gpus, selected: gpus[:4], LANE_PAIR),
-    ("device-id-drift", (), lambda gpus, selected: gpus[:7] + (gpu(9),), LANE_PAIR),
-    ("device-model-drift", (), lambda gpus, selected: gpus[:7] + (replace(gpus[7], name="NVIDIA H100 SXM5"),),
+    ("short-lane", (), lambda gpus, selected: gpus[:3], LANE),
+    ("device-id-drift", (), lambda gpus, selected: gpus[:3] + (gpu(9),), LANE),
+    ("device-model-drift", (), lambda gpus, selected: gpus[:3] + (replace(gpus[3], name="NVIDIA H100 SXM5"),),
      "provisioned GPU configuration differs from READY inventory"),
     ("lane-outside-inventory", (("lane", "devices", [8, 9, 10, 11]),), None,
-     "READY requires equal disjoint lanes within its inventory"),
-    ("baseline-outside-inventory", (("lane", "baseline_devices", [8, 9, 10, 11]),), None,
-     "READY requires equal disjoint lanes within its inventory"),
+     "READY lane lies outside its inventory"),
     ("ready-count", (("gpu", "count", 7),), None, "READY GPU count differs from its inventory"),
     ("ready-duplicate-index", (("gpu", "inventory", 7, "index", 6),), None, "ordered unique GPU indices"),
     ("ready-unordered-indices", (("gpu", "inventory", 0, "index", 1), ("gpu", "inventory", 1, "index", 0)), None,
@@ -306,8 +304,8 @@ def test_commission_refuses_each_drift_from_its_sealed_inputs(tmp_path, monkeypa
     e2e.chain(root, {}, ())  # the registration's scope
     materialized, ready_path, ready = e2e.commission(root, profile)
     pod, deployed = root / "pod", lambda result: json.loads(Path(result["deployment"]).read_text())
-    pair = deployed(materialized)["declared_qualification"]["lane_pair"]
-    assert (pair["lane_a"]["physical_gpu_ids"], pair["lane_b"]["physical_gpu_ids"]) == ([0, 1, 2, 3], [4, 5, 6, 7])
+    lane = deployed(materialized)["declared_qualification"]["lane"]
+    assert lane["physical_gpu_ids"] == [0, 1, 2, 3]
     for label, edits, devices, reason in COMMISSION_REFUSALS:
         drifted = json.loads(json.dumps({key: value for key, value in ready.items() if key != "receipt_digest"}))
         for *keys, last, value in edits:
