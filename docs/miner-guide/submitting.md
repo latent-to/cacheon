@@ -377,8 +377,8 @@ The authoritative path is staged:
 4. The proposal waits in the registered arena's qualification queue in finalized
    order. Admission runs at its first claim; there is no separate screen.
 5. The claimed candidate receives a complete isolated version-3 qualification
-   attempt: a paired replay of the incumbent and the candidate,
-   registered eager audit A, then pristine T.
+   attempt: fresh candidate boots against the retained stock reference on one
+   lane, registered eager audit A, then pristine T.
 6. One complete audited PASS moves the proposal to `qualified` and retains its
    speedup and evidence for settlement. No second qualification is scheduled.
 7. Transactional settlement may crown, neutralize, or hold the qualified
@@ -389,7 +389,7 @@ The authoritative path is staged:
 !!! info "When a reward begins"
     A distinct retained qualified contribution earns V1 credit when it beats the
     best earlier rewarded PASS against the same arena and incumbent by the
-    required margin (1.5% under V17). Settlement separately selects the crown. The validator later combines
+    required margin (1.5% under V17, V18 and V19). Settlement separately selects the crown. The validator later combines
     eligible claims into a weight vector and publishes it on-chain. See
     [How miners earn rewards](incentives.md).
 
@@ -408,7 +408,7 @@ Suppose the revealed content hash is `H` and its target is `forward_pass`:
    candidate problem because the bytes at the URL are not `H`.
 3. `published` means an immutable worker tree and selected-delta identity exist and the
    proposal is waiting in the qualification queue. Candidate Python has not run.
-4. `qualifying` means the sealed paired replay, registered eager audit A,
+4. `qualifying` means the sealed replay speed stage, registered eager audit A,
    then pristine T are running. If the candidate fails, changing a local file cannot
    repair `H`; fix the source, package a new hash, and submit it as a new proposal. A
    validator storage fault should instead produce uncertainty for operator retry, not a

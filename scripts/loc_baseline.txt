@@ -86,13 +86,16 @@
 # without it keep the per-window rule and their bytes): +17 runtime, +7 docs, +2 notes. Supersedes nothing.
 # A sealed attainment tolerance of 1 with margin 0 reports attainment without failing (owner ruling 2026-10-25):
 # +2 runtime notes, +1 docs, +2 notes. Supersedes nothing; no deletion was available.
+# Speed policy 19 (one full-node engine against a retained stock reference) deletes the second lane, lane pair, role
+# swap, reproduction commission and replay checkpoints: -935 runtime, -6 docs, -4 tests, -4 scripts; +11 dashboard
+# lists per-boot rows for a reference read set, the one raise; +3 notes.
 (root) 1155
 .github 338
 bundles 2398
-cacheon 92420
+cacheon 91485
 cacheon_kernels 936
-dashboard 4281
-docs 12999
+dashboard 4292
+docs 12993
 examples 582
-scripts 4352
-tests 13867
+scripts 4350
+tests 13863

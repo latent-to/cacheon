@@ -95,15 +95,16 @@ fails on speed. That is the subnet working as intended. The baseline is a tuned
 production stack; see [Finding an improvement](finding-a-win.md) before choosing
 a target, and [Choose a target](slots.md) for what is registered.
 
-The speed grade pools elapsed serving cost over paired windows in two lane
-orientations and requires a statistical lower bound on the gain above one. There
+The speed grade compares the candidate's per-boot elapsed serving cost with a
+retained stock reference on the same lane and requires a statistical lower bound
+on the gain above one. There
 is no fixed minimum margin; the bar is the sealed noise of the arena. A speed
 FAIL states which of two things was measured. `speed_threshold_not_met` means the
-gain did not clear that bound by the last sealed window, and the candidate was not
+gain did not clear that bound by the last sealed boot, and the candidate was not
 measurably slower either — an ordinary competitive miss, not a regression.
-`candidate_slower` means the estimate fell below the mirrored bound. A first lane
-orientation that reads slower than the arena's sealed futility margin fails
-without the swapped orientation, and its detail names that margin. A candidate
+`candidate_slower` means the estimate fell below the mirrored bound. A first
+candidate boot that reads slower than the arena's sealed futility margin fails
+without the second boot, and its detail names that margin. A candidate
 that clears the speed bound but misses service attainment fails with
 `service_contract_not_met`. Verdicts settled under older policies may carry the
 combined code `speed_regression`.

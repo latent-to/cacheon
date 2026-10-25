@@ -9,7 +9,7 @@ the CLI has no local qualification command.
 | `scan` | Does the declared bundle tree satisfy the static intake policy? | Local admission diagnostic |
 | `verify` | Does the bundle scan clean, resolve to a registered target, import, and match each entry signature? | Local interface diagnostic |
 | `check` | In the published arena image, does every bound address pass the audit against stock and complete inside CUDA graphs on every rank? | Local engine diagnostic |
-| Qualification | Does the exact delta clear execution, paired-replay speed (policy 17), audit, and pristine-quality gates? | One decision; one complete audited PASS qualifies for settlement |
+| Qualification | Does the exact delta clear execution, replay speed (policy 19), audit, and pristine-quality gates? | One decision; one complete audited PASS qualifies for settlement |
 
 Unknown bundles still execute code during verification. Run them only inside the minimum
 [hostile-code isolation boundary](../security/isolation.md#operator-requirements) used for
@@ -73,24 +73,25 @@ Freeze these inputs first:
 | Workload | Request corpus identity, concurrency and release schedule, warmup, window count, work accounting, and timing boundary |
 | Activation | Evidence that the candidate engine activates only the selected target delta and the incumbent engine runs the identical stack without it |
 
-Then mirror the production comparison rather than timing one engine at a time:
+Then mirror the production comparison: one engine at a time on the whole device set,
+each boot fresh.
 
 ```text
-two disjoint, equally sized device sets, A and B
-orientation 1: incumbent on B, candidate on A; replay the same work concurrently in paired windows
-orientation 2: boot both engines fresh on the opposite sets; replay again
-ratio(o) = pooled incumbent elapsed time / pooled candidate elapsed time in orientation o
-speedup  = geometric mean of ratio(1) and ratio(2)
+stock:     4 fresh boots, N windows each, on the same device set
+candidate: 2 fresh boots, N windows each, on that device set
+cost(b)  = log(mean elapsed time over boot b's N windows)
+speedup  = exp(mean stock boot cost - mean candidate boot cost)
 ```
 
-Swapping the device sets cancels a stable per-set speed difference. Keep CUDA graphs
+Boot-to-boot spread, about 1% on the production arenas, is the floor; more windows
+within one boot buy little. Keep CUDA graphs
 and the prefix cache as the arena configures them: cache hits, MTP acceptance and
 output generation are part of the measured cost. A gain no larger than the spread
 between windows is unresolved. A profiler range may explain a mechanism, but the
 speed claim uses end-to-end elapsed time for the fixed work.
 
-Record every frozen identity; raw per-window elapsed time and completed work for both
-engines in both orientations; warmup, ordering and failure history; the formula; the
+Record every frozen identity; raw per-window elapsed time and completed work for every
+boot of both engines; warmup, ordering and failure history; the formula; the
 activation evidence on every expected rank; and tool versions with an immutable location
 for raw logs. Without these, label the result a profiling observation. Do not
 substitute guesses for the validator's private workload, calibration or incumbent
@@ -105,13 +106,14 @@ products that a qualification attempt retains.
 
 - `PASS` means one complete attempt cleared every registered gate.
 - `FAIL` requires complete evidence of a candidate-attributable violation. A speed
-  grade that has not established a gain by the last sealed window is `FAIL`, as is a sealed futility stop after the
-  first orientation, or a measurably slower or attainment-missing read once both orientations exist.
+  grade that has not established a gain by the last sealed boot is `FAIL`, as is a sealed
+  futility stop after the first candidate boot, or a slower or attainment-missing read
+  once both boots exist; a stock bracket faster than its reference is `NO_DECISION`.
 - `NO_DECISION` covers infrastructure faults, missing authority, or incomplete evidence
   and is eligible only for bounded retry.
 - `qualified` means one complete audited PASS is retained; settlement reopens that
   exact contribution and its evidence.
-- A qualified V17 or V18 PASS earns reward only when it beats the best earlier rewarded PASS
+- A qualified V17, V18 or V19 PASS earns reward only when it beats the best earlier rewarded PASS
   against the same arena and incumbent stack by 1.5%; see
   [Settlement and weights](settlement-and-weights.md).
 
@@ -124,8 +126,8 @@ state, not the validator's private lifecycle database.
 |---|---|---|
 | Clean scan | Static policy accepted the declared tree | Safety or correctness |
 | `verify` | Target resolution, imports, and entry signatures | Numerical correctness, graph behavior, or speed |
-| `check` | Audit against stock and captured execution on the public requests | Hidden workload behavior, paired speed, or pristine quality |
-| Local paired replay | A development performance hypothesis | Registered arena identity or quality authority |
+| `check` | Audit against stock and captured execution on the public requests | Hidden workload behavior, arena speed, or pristine quality |
+| Local replay | A development performance hypothesis | Registered arena identity or quality authority |
 | One complete audited arena PASS | Qualification and settlement eligibility for that exact context | Reward eligibility, integration, or release readiness |
 
 See [Qualification](qualification.md), [Fidelity](fidelity.md), and

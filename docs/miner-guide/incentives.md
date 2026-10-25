@@ -83,15 +83,15 @@ is one arena and one incumbent stack, so kernel and cache PASSes against the sam
 baseline compete with each other. Bundles committed before a baseline's first crown
 still run against it; later ones are returned until a new baseline is commissioned.
 
-The speedup used for settlement is the paired replay's point estimate:
+The speedup used for settlement is the policy-19 point estimate:
 
 ```text
-settled speedup = exp(mean over both lane orientations of
-                      log(pooled incumbent cost / pooled candidate cost))
+settled speedup = exp(mean log cost of the 4 stock reference boots
+                      - mean log cost of the candidate boots)
 ```
 
-Each cost is the elapsed serving time of one complete pass over the sealed
-agent workload. Qualification passes only when the one-sided lower bound on
+Each boot's cost is the mean elapsed serving time of its N complete passes over
+the sealed agent workload. Qualification passes only when the one-sided lower bound on
 that speedup exceeds 1 and service attainment holds, but credit uses the point
 estimate, not the bound. Historical qualifications keep the speedup their own
 policy recorded.
@@ -162,7 +162,7 @@ V1 is relative rather than fixed:
 
 1. A distinct contribution with a complete audited PASS earns V1 credit when it
    beats the best earlier rewarded PASS on the same arena and commissioned baseline by
-   at least 1.5% (V17). An unpaid result does not raise the next miner's hurdle.
+   at least 1.5% (V17, V18 and V19). An unpaid result does not raise the next miner's hurdle.
    Historical policies retain their minimum-margin rule. Finalized queue order determines precedence; completion order does not.
 2. The claim's starting credit uses its settled speedup divided by that
    best preceding speedup. The first PASS uses a denominator of one. After a baseline's first crown,
@@ -214,8 +214,8 @@ publication pending or held.
 ### A simplified V1 example
 
 Suppose a candidate records a complete audited PASS with a settled speedup of
-`1.034x`: over both lane orientations, the incumbent's pooled elapsed cost for the
-sealed workload is 1.034 times the candidate's. If it is the first PASS against
+`1.034x`: the stock reference's per-boot elapsed cost for the sealed workload is,
+in geometric mean, 1.034 times the candidate's. If it is the first PASS against
 that baseline, it is eligible and settlement uses `1.034x`.
 
 Under V1, the `3.4%` marginal improvement becomes the input to the claim's

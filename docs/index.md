@@ -60,9 +60,10 @@ registered target is not a valid proposal.
 ## Why the architecture is composable
 
 Every candidate runs as a complete isolated engine but is rewarded only for the smallest
-validator-controlled delta it contributes: the incumbent evaluation stack and the same
-stack with one registered target replaced replay the same sealed agent workload
-concurrently on two isolated lanes, swap lanes and boot fresh, and a candidate-free
+validator-controlled delta it contributes: the same stack with one registered target
+replaced replays the sealed agent workload in fresh engine boots on the whole
+commissioned lane, against a retained stock reference of the incumbent evaluation
+stack measured on that lane, and a candidate-free
 pristine reference grades the sealed trajectories afterwards. The execution unit is a
 disposable engine; the economic unit is one registered target, so a new optimization
 builds on previous wins without copying them.

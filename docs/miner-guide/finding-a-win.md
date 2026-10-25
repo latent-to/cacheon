@@ -120,16 +120,16 @@ products, model assets, and launch controls.
 The authoritative comparison is:
 
 ```text
-incumbent = exact incumbent engine on the assigned baseline lane
-candidate = same stack with exactly the selected target delta on the disjoint lane
-v17 = incumbent and candidate replay the sealed agent workload concurrently in
-      paired windows; halfway through, the lanes swap and both engines boot fresh
+incumbent = exact incumbent engine, retained as a four-boot stock reference on the lane
+candidate = same stack with exactly the selected target delta, up to two fresh boots on that lane
+v19 = one engine at a time owns the whole lane; every boot replays the sealed
+      agent workload for the same N windows
 A = registered eager, untimed candidate audit
 T = candidate-free pristine quality reference after candidate teardown
 ```
 
-The V17 score is the geometric mean, over the two lane orientations, of the
-incumbent's pooled elapsed cost divided by the candidate's. A PASS needs the
+The V19 score is the mean log elapsed cost of the reference boots less that of
+the candidate boots, each boot's cost being its mean over N windows. A PASS needs the
 statistical lower bound on that gain above one; there is no fixed percentage
 floor, but a gain inside the arena's run-to-run noise does not clear the bound.
 
@@ -143,7 +143,7 @@ The repository implementations are
 [`stack_plan.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/stack_plan.py)
 for incumbent/candidate stack construction,
 [`goodput_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/goodput_runtime.py)
-for the two lane orientations, and
+for the engine boots and the retained stock reference, and
 [`service_capacity.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/service_capacity.py)
 for the statistical grade.
 
@@ -168,7 +168,7 @@ Write a small target worksheet before implementation:
 | exact domain | BF16, `sm90`; decode-only paths selected inside the entry |
 | fallback | stock for every non-matching descriptor |
 | local correctness proof needed | `cacheon check` audit windows on every claimed address and rank, captured execution |
-| end-to-end falsifier | no elapsed-cost change, a gain that reverses when lanes swap, fallback on material calls, or quality regression |
+| end-to-end falsifier | no elapsed-cost change, a gain smaller than the boot-to-boot spread, fallback on material calls, or quality regression |
 
 This worksheet requires a causal chain from the measured bottleneck to a selectable
 variant. “My kernel is 30% faster” is incomplete until the replaced fraction of the arena
@@ -183,10 +183,11 @@ path and the domain's routing frequency are specified.
 4. Microbenchmark the exact callable to understand the mechanism, not to claim
    end-to-end speedup.
 5. Trace the complete incumbent and candidate developer launches.
-6. Run a matched graphs-on whole-engine comparison on the arena workload, pairing
-   windows and swapping lanes with a fresh engine boot, as qualification does.
-7. Repeat across fresh processes until the effect is larger than the window and
-   lane-swap variance.
+6. Run a matched graphs-on whole-engine comparison on the arena workload, one
+   engine at a time on the same devices with a fresh boot per measurement, as
+   qualification does.
+7. Repeat across fresh boots until the effect is larger than the boot-to-boot
+   spread, about 1% on the production arenas.
 
 Steps 1–7 are miner-side diagnostics. Only finalized, isolated, identity-bound,
 complete audited validator qualification can crown the proposal.
@@ -195,7 +196,7 @@ complete audited validator qualification can crown the proposal.
 
 - A faster microkernel with flat end-to-end throughput is not a win; the slot
   was not critical or the gain moved elsewhere.
-- A faster candidate in one lane orientation only is lane variance, not a pass.
+- A faster candidate in one boot only is boot variance, not a pass.
 - A speed gain with failed quality is a failed candidate, not a tradeoff score.
 - A graph-off gain is evidence about debugging mode, not the arena.
 - A pass on one topology is not evidence for an undeclared topology.

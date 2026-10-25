@@ -20,21 +20,17 @@ be an invalid referee.
 sequenceDiagram
     participant H as Trusted controller
     participant P as Native prebuild OCI
-    participant L0 as Resident baseline TP lane
-    participant L1 as Resident candidate TP lane
+    participant L as Commissioned TP lane
     participant A as Eager audit role
     participant T as Pristine reference OCI
 
     H->>P: Read-only engine tree + lease-scoped staging
     P-->>H: Sealed native publication + inventory
-    par each paired window
-        H->>L0: launch/replay B
-        H->>L1: launch/replay C
-    end
-    L0-->>H: Incumbent turn records
-    L1-->>H: Candidate turn records + sealed trajectory
-    H->>L0: On PASS, generate selected stock-drift controls
-    H->>H: Prove resident speed lanes quiescent
+    H->>L: Reuse or measure the stock reference boots (B)
+    H->>L: Fresh candidate boots replay C
+    L-->>H: Candidate turn records + sealed trajectory
+    H->>L: On PASS, stock bracket boot generates selected stock-drift controls
+    H->>H: Prove the speed lane quiescent
     H->>A: Run registered eager, untimed audit
     A-->>H: Sampled slot × rank evidence
     H->>H: Destroy candidate lifetimes and prove cleanup
@@ -116,10 +112,10 @@ bounded private tmpfs that permits execution for just-in-time kernel compilation
 Mount roots are required to be pairwise disjoint and cannot expose the controller's
 working directory, referee source, wallet, or other ambient host data.
 
-Production speed qualification uses two isolated physical TP lanes under one
-frozen authority. The incumbent and candidate replay the sealed workload
-concurrently, one per lane, and policy 17 exchanges their lanes between its two
-orientations. Qualification launches separate engine processes for the request.
+Production speed qualification uses one physical TP lane under one frozen
+authority. One engine at a time owns the lane: the stock reference boots, the
+candidate boots and any stock bracket boot. Qualification launches a separate
+engine process for every boot.
 A request-local launch does not relax containment: mount, protocol, device,
 deadline, and evidence identities remain exact.
 

@@ -76,7 +76,7 @@ runtime, base engine, arena, catalog, controller/worker distributions, exact
 model bytes, logical hardware, workload, tokenizer, hidden corpus commitment,
 hidden judge, and selection policy.
 
-T is untimed. It grades trajectories sealed by the paired replay only after
+T is untimed. It grades trajectories sealed by the replay speed stage only after
 any registered eager audit A has completed and
 candidate engines have been destroyed. Neither the incumbent evaluation stack nor a
 candidate's self-reported scores can substitute for this authority. Its teacher scoring

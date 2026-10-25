@@ -317,8 +317,8 @@ private operations tree.
 
 New qualification requests bind `incumbent_stack_digest` and
 `incumbent_tree_digest` from the CPU's commissioned authority. The worker checks
-both against the requested primary or reproduction commission before resolving
-publications or marking resident entry. A returned product
+both against its one commission before resolving publications or marking
+resident entry; a request for the `reproduction` screen lane is refused. A returned product
 must match that authenticated request pin. Retained requests keep their original
 bytes and grammar when reopened; an older unbound request remains readable for
 completed-result recovery but cannot start execution on the new worker.

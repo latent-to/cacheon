@@ -27,7 +27,7 @@ This check is not remote attestation.
 
 The scored workload is a sealed agent-replay slice. The commission's
 `session.replay` names the slice manifest and its digest, the operating load and
-the number of paired windows; see
+the number of windows each engine boot replays; see
 [Finite agent replay](qualification.md#finite-agent-replay). The arena's declared
 workload cells set the input-token geometry and batch routing of the
 engine-conditioning and audit batches; their output-token and timed-read fields are
@@ -84,8 +84,9 @@ checks these identities before importing retained outcomes.
 `B300ArenaServiceProvider` is the shared implementation. Historical names and
 signed digest domains remain stable; hardware comes from commissioned inputs.
 Commissioning seals only `B300DeclaredAuthorities` (runtime identity plus the
-declared qualification) into the manifest; executors, judge, entropy and
-deadline exist only inside the qualification worker. Private capabilities remain
+declared qualification, which binds one `lane` and one `executor_policy_digest`
+under provider schema `cacheon.eval.b300-arena-provider.v4`) into the manifest;
+the executor, judge, entropy and deadline exist only inside the qualification worker. Private capabilities remain
 validator-owned.
 
 ## Deployment composition
@@ -93,19 +94,19 @@ validator-owned.
 The deployment materializer (`python -m cacheon.eval.b300_deployment
 materialize`), qualification commissioner and worker consume one sealed
 definition per arena. The materializer writes `deployment.json` (schema
-`cacheon-b300-deployment-v3`), `arena-service-manifest.json` and
+`cacheon-b300-deployment-v4`), `arena-service-manifest.json` and
 `worker-readiness.json` under its output root. READY's `gpu.inventory` describes
-the host; `lane.devices` selects the commissioned TP lane and
-`lane.tensor_parallel_size` must equal its width. Optional
-`lane.baseline_devices` selects an equal-width, disjoint baseline lane of the same GPU model and memory capacity. If omitted,
-the complete host complement must have exactly that width.
+the host; `lane.devices` selects the commissioned TP lane, which must lie inside
+that inventory, and `lane.tensor_parallel_size` must equal its width. One engine
+at a time owns every GPU of the lane; a READY lane carrying `baseline_devices` is
+rejected.
 
-TP1 therefore needs two GPUs, including an explicit pair within an eight-GPU
-host. TP4 uses two four-GPU lanes. Spare devices are never allocated implicitly.
+TP1 therefore needs one GPU, TP4 one four-GPU lane, and TP8 a whole eight-GPU
+node. Spare devices are never allocated implicitly.
 Pass the materializer's output as `--commissioned-root` to the remote adapter
 (or `commissioned_root` to its Python builders). Omission preserves the
 historical GLM path. The operator that runs the materializer, the commissioner
-and the registration for one pair is rendered per arena from
+and the registration for one worker is rendered per arena from
 `scripts/arena/`; see [Commissioning a new arena](new-arena.md).
 
 Optional sealed `resources.runtime` and `resources.prebuild` objects override
@@ -119,9 +120,8 @@ pin, or an engine whose scheduler ranks do not match the plan, fails the launch.
 Use it on hosts whose vCPUs differ in speed. The engine boots on the NUMA node(s)
 of the lane's scheduler vCPUs, so host memory each rank allocates during boot
 (DeepSeek-V4.1's Engram tables) is local to its GPUs; the per-process pins apply
-once the engine is up. Both lanes share one native
-publication store under the commissioned root, so the swapped orientation reuses
-the first build; lanes take turns building and reopening it.
+once the engine is up. Every boot shares one native
+publication store under the commissioned root, so later boots reuse the first build.
 UID/GID, executable and deadlines retain their existing authorities. Absent
 resource objects preserve prior policy. Both authority and measurement inputs
 must agree; every qualification executor consumes the same values.
@@ -131,7 +131,7 @@ production entrypoint, with graphs, audit/T roles, retained evidence and restart
 recovery. CPU composition and compatibility checks do not establish GPU success.
 The broken control must be faster than stock, so that it clears the speed gate
 and the correctness audit is what rejects it; a control that only corrupts its
-answer at stock speed fails the paired speed test first and proves nothing about
+answer at stock speed fails the speed test first and proves nothing about
 the audit.
 The exception is a control listed by selected delta digest in the sealed
 `qualification.policy.audit_control_delta_digests`, a sorted list of distinct
@@ -179,13 +179,13 @@ known at publication; fetch and pre-publication admission remain shared.
 Queues, baselines, target admission, lineage and qualification recovery are
 scoped to the logical arena. Service epochs retain that arena's lineage.
 Commissioning a second arena cannot retire the first arena's baseline. Two arenas can qualify
-concurrently. Within one arena, commission disjoint pairs with the same model,
+concurrently. Within one arena, commission disjoint workers with the same model,
 runtime, workload, incumbent and GPU execution policy. Physical GPU addresses
-belong to each worker's READY, registration and launch binding; equivalent pairs
-share the arena service identity. Calibration and complete speed, audit and T
-evidence remain specific to each job and physical pair.
+belong to each worker's READY, registration and launch binding; equivalent workers
+share the arena service identity. Calibration, the retained stock reference and
+complete speed, audit and T evidence remain specific to each physical lane.
 
-Run one supervisor and relay per pair with distinct `owner`, registration, spool,
+Run one supervisor and relay per worker with distinct `owner`, registration, spool,
 evidence and runtime paths. Each supervisor uses the existing qualification
 entrypoint, with `enable_settlement=false` and `enable_weights=false`. A
 separate supervisor runs economics with `enable_qualification=false`, so long
@@ -209,36 +209,36 @@ For systemd, use `KillMode=process`, `TimeoutStopSec=infinity`, and
 `systemctl start UNIT` resumes. Disable the unit as well to keep it off across a
 host reboot. Its stop hook must refuse GPU teardown while its owner still holds
 an active lease. Resume starts the pod service and relay before the supervisor.
-These controls act on the complete commissioned allocation: a TP1 pair has two
-GPUs, while a TP4 pair has eight. Capacity is a ceiling, so stopping a worker does
+These controls act on the complete commissioned allocation: a TP1 worker has one
+GPU, a TP4 worker four. Capacity is a ceiling, so stopping a worker does
 not require changing the arena manifest or affect other workers.
 
 ### Reserving GPUs for inference
 
 For the Qwen TP1 arena, keep an explicit mapping from each physical GPU to its
-pair's supervisor, relay and pod service, derived from READY and registration.
-An eight-GPU host can commission only devices 0 and 1 for evaluation and leave
-2 through 7 for serving. Spare devices must remain outside every worker's lane
+worker's supervisor, relay and pod service, derived from READY and registration.
+An eight-GPU host can commission only device 0 for evaluation and leave
+1 through 7 for serving. Spare devices must remain outside every worker's lane
 bindings; the evaluation runtime does not expand into unused devices.
 
 To reserve a GPU already assigned to evaluation, request a stop on the owning
-pair's supervisor using the drain procedure above. It stops accepting new
+worker's supervisor using the drain procedure above. It stops accepting new
 evaluations and finishes the active one before releasing the allocation. Wait
 for result import and GPU teardown before starting inference, and keep that
 supervisor stopped for the whole serving reservation. Other disjoint workers
 can continue evaluating. Stopping only the relay or pod service does not pause
 new claims and can strand an active evaluation.
 
-For example, reserving GPU 0 pauses the worker bound to GPUs 0 and 1; GPU 1
-cannot continue that paired evaluation alone. Use either released GPU for
-serving, or recommission a different disjoint pair to recover evaluation
+For example, reserving GPU 0 of a TP4 worker bound to GPUs 0–3 pauses that
+worker; its other GPUs cannot continue the evaluation alone. Use the released
+GPUs for serving, or recommission a different disjoint lane to recover evaluation
 capacity. Do not edit the physical bindings of an active or retained job.
-To resume the original pair, stop inference on its devices, confirm both are
+To resume the original worker, stop inference on its devices, confirm they are
 idle, then start its pod service, relay and supervisor in that order. A stopped
 supervisor is the reservation control; it is not a host-wide GPU access lock.
 
-Completed jobs release their pair immediately. An authenticated terminal
-infrastructure HOLD also releases its pair while retaining the unresolved
+Completed jobs release their lane immediately. An authenticated terminal
+infrastructure HOLD also releases its lane while retaining the unresolved
 submission; it is not a candidate FAIL. Later jobs continue, but their final
 ranking and reward eligibility wait for every preceding submission in that arena
 to finish or receive an existing terminal disposition. `settlement_candidates`
@@ -249,9 +249,9 @@ and weight producer consume this same eligibility.
 Lease and recovery schemas migrate to version 3 without replacing retained
 requests or evidence. Stop old database consumers before opening with the new
 version, and restart every writer on the new source. Keep the database backup,
-all worker spools and evidence together for recovery. Start with two pairs and
+all worker spools and evidence together for recovery. Start with two workers and
 verify concurrent completion, ordered economics and restart without duplicate
-evaluation before commissioning the remaining pairs. Raising capacity alone does
+evaluation before commissioning the remaining workers. Raising capacity alone does
 not commission GPU workers.
 
 Schema version 2 preserves existing signed lease, request and event bytes.
