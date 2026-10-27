@@ -108,13 +108,15 @@
 # idle failed the first stock reference read, "Server disconnected", 2026-10-27): +3 runtime, +2 notes.
 # The replay bridge templates chat turns in a process pool (on its event loop, 0.21 s per 135k-token turn capped the
 # PD arena at 3.4 turns/s and a 47 s TTFT median, 2026-10-27); the Lium client gets 32 cores: +27 runtime, +1 examples, +3 notes.
+# The node audit puts SGLang's layer-boundary residual stream back after each stock reference (a model.layers.* identity
+# bundle failed every call on the PD arena, 2026-10-27): +35 runtime, +2 notes.
 (root) 1156
 .github 338
 bundles 2398
-cacheon 91868
+cacheon 91903
 cacheon_kernels 936
 dashboard 4292
 docs 13261
 examples 737
-scripts 4372
+scripts 4374
 tests 13863

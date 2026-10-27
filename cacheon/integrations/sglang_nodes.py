@@ -127,6 +127,36 @@ def _tensors(value: object, found: list[torch.Tensor], *, fields: bool = False) 
     return found
 
 
+def _residual_stream(call: tuple):
+    """The batch's layer-boundary residual stream, held as everything a replay must put back.
+
+    SGLang main's layer boundaries keep the residual between decoder layers on the batch as
+    a Python object, not in the call's tensors: a layer consumes the contribution it was
+    handed and the residual it read, releasing both in place, and leaves its own. Unrestored,
+    the twin's input no longer belonged to the stream the first reference left, and with
+    the stream alone put back DeepSeek-V4's released mHC residual had no streams left; an
+    identity bundle at ``model.layers.*`` failed the audit either way (dsv41pd, 2026-10-27).
+    """
+
+    batch = next((v for v in call if getattr(v, "residual_stream", None) is not None), None)
+    if batch is None:
+        return None
+    stream = batch.residual_stream
+    held = [(value, {name: getattr(value, name) for name in type(value).__struct_fields__})
+            for value in (stream.residual, stream.pending) if hasattr(type(value), "__struct_fields__")]
+    return batch, stream, (stream.residual, stream.pending, stream.transport), held
+
+
+def _put_back_stream(saved) -> None:
+    batch, stream, (residual, pending, transport), held = saved
+    batch.residual_stream = stream
+    stream.residual, stream.pending, stream.transport = residual, pending, transport
+    for value, fields in held:
+        for name, field in fields.items():
+            if getattr(value, name) is not field:
+                setattr(value, name, field)
+
+
 def _state_rows(
     runner, call: tuple, layer: int | None = None,
 ) -> list[tuple[torch.Tensor, int, torch.Tensor, StateFormat]]:
@@ -308,7 +338,10 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
     the twin's and the candidate's rows are compared a piece at a time.
     """
 
-    handed = _tensors((args, kwargs), [])
+    stream = _residual_stream((*args, *kwargs.values()))
+    # The stream's residual and released fields are restored by value too, once each.
+    handed = list({id(t): t for t in _tensors(
+        (args, kwargs, stream and (stream[2][0], [fields for _, fields in stream[3]])), [])}.values())
     rows = _state_rows(runner, (*args, *kwargs.values()), layer)
     before = [t.clone() for t in handed]
     state = []
@@ -336,6 +369,8 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
         for (buffer, dim, index, _), saved in zip(rows, state):
             for (_, piece), part in zip(_pieces(buffer, dim, index), saved):
                 buffer.index_copy_(dim, piece, part.to(buffer.device))
+        if stream is not None:
+            _put_back_stream(stream)
         return kept
 
     expected = run(lambda outputs: outputs + [
