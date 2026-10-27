@@ -113,13 +113,15 @@
 # The node audit grades the residual stream a call leaves when it moves the stream (a model.layers.* candidate could
 # rewrite the residual after its result and pass, 2026-10-27): +27 runtime, +2 notes. The slot contract and the slot
 # guide say so: +8 docs, +1 note.
+# The session codec checks an all-int list (a 135k-token turn's IDs) at C speed instead of an element at a time
+# (it held the PD session worker's loop at ~98% and TTFT near 7 s, 2026-10-27): +7 runtime, +2 notes.
 (root) 1156
 .github 338
 bundles 2398
-cacheon 91930
+cacheon 91937
 cacheon_kernels 936
 dashboard 4292
 docs 13269
 examples 737
-scripts 4377
+scripts 4379
 tests 13863

@@ -84,7 +84,7 @@ class BatchRequest:
         if self.input_ids:
             if not 1 <= len(self.input_ids) <= MAX_PROMPTS_PER_BATCH or any(
                 not isinstance(row, (list, tuple)) or not 1 <= len(row) <= MAX_PROMPT_TOKENS
-                or any(type(token) is not int or not 0 <= token <= 2_147_483_647 for token in row)
+                or set(map(type, row)) != {int} or min(row) < 0 or max(row) > 2_147_483_647
                 for row in self.input_ids
             ):
                 raise SessionProtocolError("request input token IDs are malformed")
