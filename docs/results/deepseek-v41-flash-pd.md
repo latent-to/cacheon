@@ -66,7 +66,12 @@ on its first candidate boot against the reference's 16,000 to 16,400, then
 stopped without a verdict: the worker checkpoint that lets a replacement worker
 resume the run keeps every turn's output IDs for each engine lifetime, and four
 stock boots plus one candidate boot came to 516 MB against a 128 MiB bound. The
-bound is now 1 GiB.
+bound is now 1 GiB. The rerun on `aca86a85` published that checkpoint (72 MB
+compressed) and stopped the identity after one candidate boot (15,704, 15,776
+and 15,748 tokens/s), then failed to ship its evidence: the attempt record keeps
+every window's read, about 17 MB over 15 windows, against a 16 MiB limit per
+artifact. The limits are now 32 MiB an artifact and 44 MiB in all, under the
+64 MiB response that carries them.
 
 | Control | Expected | Result |
 |---|---|---|

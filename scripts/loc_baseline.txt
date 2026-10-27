@@ -128,13 +128,16 @@
 # came to 516 MB and voided an identity run at the 128 MiB bound, now 1 GiB (2026-10-27): +2 runtime. The PD
 # arena's results page and README report the production stock read at 192 sessions: +74 docs, +3 examples, +1
 # root (nav), +4 notes.
+# The remote qualification evidence limits lived twice (coordinator and evidence capture); the evidence module now
+# imports the coordinator's, raised to 32 MiB an artifact and 44 MiB in all: the attempt record keeps every window's
+# read and voided the PD arena's identity at ~17 MB (2026-10-27): +4 runtime, +5 docs, +3 notes.
 (root) 1157
 .github 338
 bundles 2398
-cacheon 91967
+cacheon 91971
 cacheon_kernels 936
 dashboard 4292
-docs 13344
+docs 13349
 examples 743
-scripts 4391
+scripts 4394
 tests 13863
