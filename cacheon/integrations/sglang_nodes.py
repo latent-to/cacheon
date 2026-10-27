@@ -157,6 +157,33 @@ def _put_back_stream(saved) -> None:
                 setattr(value, name, field)
 
 
+def _stream_left(saved) -> list[torch.Tensor]:
+    """The residual and contribution a call left on the stream, when it moved the stream.
+
+    A decoder layer hands the next one its residual through the stream, not its result.
+    Ungraded, a ``model.layers.*`` candidate could rewrite the residual after computing its
+    result and pass every window, since each next layer's stock reference reads the same
+    rewritten stream (dsv41pd, 2026-10-27). A node that leaves the stream as it found it
+    (an MLP, an attention block) adds nothing.
+    """
+
+    if saved is None:
+        return []
+    batch, stream, slots, _ = saved
+    now = batch.residual_stream
+    if now is None or (now is stream and all(
+            a is b for a, b in zip((now.residual, now.pending, now.transport), slots))):
+        return []
+    residual = now.residual
+    fields = ([getattr(residual, name) for name in type(residual).__struct_fields__]
+              if hasattr(type(residual), "__struct_fields__") else [residual])
+    return _tensors((fields, None if now.pending is None else now.pending.value), [])
+
+
+def _once(tensors: list[torch.Tensor]) -> list[torch.Tensor]:
+    return list({id(t): t for t in tensors}.values())
+
+
 def _state_rows(
     runner, call: tuple, layer: int | None = None,
 ) -> list[tuple[torch.Tensor, int, torch.Tensor, StateFormat]]:
@@ -340,8 +367,7 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
 
     stream = _residual_stream((*args, *kwargs.values()))
     # The stream's residual and released fields are restored by value too, once each.
-    handed = list({id(t): t for t in _tensors(
-        (args, kwargs, stream and (stream[2][0], [fields for _, fields in stream[3]])), [])}.values())
+    handed = _once(_tensors((args, kwargs, stream and (stream[2][0], [fields for _, fields in stream[3]])), []))
     rows = _state_rows(runner, (*args, *kwargs.values()), layer)
     before = [t.clone() for t in handed]
     state = []
@@ -358,7 +384,7 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
 
     def run(keep):
         outputs = _audit.capture_reference(
-            slot, lambda: _tensors(stock(*args, **kwargs), [], fields=True)
+            slot, lambda: _once(_tensors(stock(*args, **kwargs), [], fields=True) + _stream_left(stream))
         )
         kept = None if outputs is None else keep([(t, 0) for t in outputs])
         # Write back only what stock changed: an untouched input may be an expanded
@@ -660,12 +686,13 @@ def make_node_dispatcher(
                 if impl.prepare is not None
                 else module
             )
+        stream = _residual_stream((*args, *kwargs.values())) if expected is not None else None
         result = _receipts.invoke(
             slot, impl.entry, prepared[id(impl)], *args, kwargs=kwargs
         )
         if expected is not None and twin is not None:
             try:
-                outputs = _tensors(result, [], fields=True)
+                outputs = _once(_tensors(result, [], fields=True) + _stream_left(stream))
                 actual = _errors(
                     [(t, 0) for t in outputs],
                     _state_rows(runner, (*args, *kwargs.values()), layer), expected, module=module,
