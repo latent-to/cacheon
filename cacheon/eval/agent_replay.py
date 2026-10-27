@@ -68,6 +68,14 @@ class AgentReplayPlan:
             raise ValueError("replay work deadline is outside its bound")
         object.__setattr__(self, "slice", manifest)
 
+    @property
+    def sessions(self) -> int:
+        """Sessions one window replays. Closed loop keeps the sealed load in flight over the whole slice, each
+        finished session handing its slot to the next: replaying only ``load`` sessions drained the window to its
+        longest one (output per session spans 4.5x on the Weka slice, so mean concurrency fell to ~N/4.5)."""
+        (load,) = self.loads
+        return self.slice.max_load if self.closed_loop else load
+
     def workload_identity(self) -> dict:
         """Bind the consumed bytes, root accounting and replay policy, not local paths."""
         return {
@@ -76,7 +84,7 @@ class AgentReplayPlan:
             "slice": self.slice.digest, "dataset": self.slice.dataset,
             "revision": self.slice.revision,
             "rules_json": json.dumps(self.slice.rules, sort_keys=True, separators=(",", ":"), allow_nan=False),
-            "expected_work": {str(load): self.slice.expected_work(load) for load in self.loads},
+            "expected_work": {str(load): self.slice.expected_work(self.sessions) for load in self.loads},
             "loads": list(self.loads),
             "windows": self.windows,
             "arrival": "closed-loop-after-cold-round" if self.closed_loop else "lockstep-rounds",
@@ -389,7 +397,7 @@ def collect_read(plan: AgentReplayPlan, bridge: ReplayBridge) -> LoadRead:
         raise ServiceEvidenceError("bridge has requests absent from the retained AIPerf export")
     (load,) = plan.loads
     read = LoadRead(plan.arm, plan.window, plan.lane, load, tuple(records))
-    rate = fixed_work_rate(read, plan.slice.expected_work(load), wall_time=plan.elapsed_cost)
+    rate = fixed_work_rate(read, plan.slice.expected_work(plan.sessions), wall_time=plan.elapsed_cost)
     output = plan.output_directory
     with (output / "turns.jsonl").open("x") as f:
         for record in records:
@@ -414,7 +422,7 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRe
     pool = output / "slice"
     pool.mkdir()
     (load,) = plan.loads
-    for source in sorted(current.directory.glob("*.json"))[:load]:
+    for source in sorted(current.directory.glob("*.json"))[:plan.sessions]:
         (pool / source.name).symlink_to(source.resolve())
     async with session.exchange() as exchange:
         bridge = ReplayBridge(session, exchange, tokenizer, output, load, plan.closed_loop)
@@ -439,7 +447,7 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRe
                     "--tokenizer", str(plan.tokenizer_path), "--tokenizer-trust-remote-code",
                     "--url", f"http://127.0.0.1:{port}", "--endpoint-type", "chat", "--streaming",
                     "--no-fixed-schedule", "--input-file", str(pool),
-                    "--custom-dataset-type", "weka_trace", "--num-conversations", str(load),
+                    "--custom-dataset-type", "weka_trace", "--num-conversations", str(plan.sessions),
                     "--concurrency", str(load), "--dataset-sampling-strategy", "sequential",
                     "--cache-bust", "first_turn_prefix", "--ignore-trace-delays", "--use-server-token-count",
                     "--random-seed", str(current.rules["seed"]), "--ui", "none",

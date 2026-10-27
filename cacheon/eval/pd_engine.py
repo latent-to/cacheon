@@ -58,6 +58,9 @@ def split(kwargs: dict[str, Any], env: dict[str, str]):
     prefill.update(disaggregation_mode="prefill", disaggregation_transfer_backend=backend, base_gpu_id=0,
                    disaggregation_bootstrap_port=_free_port(), host=HOST, port=int(decode.get("port", 30000)) + 1000)
     decode.update(disaggregation_mode="decode", disaggregation_transfer_backend=backend, base_gpu_id=tp)
+    # One coverage roster over both process groups: prefill ranks 0..tp-1, decode ranks tp..2tp-1 (cacheon.receipts).
+    prefill_env.update(CACHEON_RECEIPT_RANK_OFFSET="0", CACHEON_RECEIPT_WORLD_SIZE=str(2 * tp))
+    decode_env.update(CACHEON_RECEIPT_RANK_OFFSET=str(tp), CACHEON_RECEIPT_WORLD_SIZE=str(2 * tp))
     return prefill, prefill_env, decode, decode_env
 
 
@@ -116,8 +119,10 @@ class _PairTokenizerManager:
 class PrefillDecodePair:
     """The decode engine with every generation routed through the prefill server first."""
 
-    def __init__(self, decode: Any, prefill_url: str, bootstrap_port: int, process: subprocess.Popen):
+    def __init__(self, decode: Any, prefill_url: str, bootstrap_port: int, process: subprocess.Popen,
+                 prefill_ranks: int = 1, decode_ranks: int = 1):
         self.decode, self.prefill_url, self.bootstrap_port, self.process = decode, prefill_url, bootstrap_port, process
+        self.prefill_ranks, self.decode_ranks = prefill_ranks, decode_ranks
         self.tokenizer_manager = _PairTokenizerManager(self)
         self._client = None
 
@@ -137,16 +142,22 @@ class PrefillDecodePair:
     async def async_generate(self, **kwargs):
         key = "input_ids" if "input_ids" in kwargs else "prompt"
         count = len(kwargs[key])
-        rank = kwargs.get("routed_dp_rank")
-        route = {"bootstrap_host": [HOST] * count, "bootstrap_port": [self.bootstrap_port] * count,
-                 "bootstrap_room": [secrets.randbits(62) for _ in range(count)]}
+        rank = kwargs.pop("routed_dp_rank", None)
+        rooms = [secrets.randbits(62) for _ in range(count)]
+        if rank is not None:
+            # The prefill server places a room on DP rank room % dp_size and refuses a routed rank that disagrees
+            # ("follow_bootstrap_room conflict", 8xB300 2026-10-27), so each room carries the session's prefill rank.
+            prefill_rank, decode_rank = rank % self.prefill_ranks, rank % self.decode_ranks
+            rooms = [room - room % self.prefill_ranks + prefill_rank for room in rooms]
+        route = {"bootstrap_host": [HOST] * count, "bootstrap_port": [self.bootstrap_port] * count, "bootstrap_room": rooms}
         prefill = asyncio.ensure_future(self.post("/generate", {
             "input_ids" if key == "input_ids" else "text": kwargs[key],
             "sampling_params": kwargs["sampling_params"], **route,
-            **({"routed_dp_rank": rank} if rank is not None else {}),
+            **({"routed_dp_rank": prefill_rank} if rank is not None else {}),
         }))
         result = await _unless_failed(prefill, self.decode.async_generate(
-            **kwargs, **route, **({"disagg_prefill_dp_rank": rank} if rank is not None else {})))
+            **kwargs, **route, **({"routed_dp_rank": decode_rank, "disagg_prefill_dp_rank": prefill_rank}
+                                  if rank is not None else {})))
         if not kwargs.get("stream"):
             await prefill
             return result

@@ -181,6 +181,8 @@ its measured speedup falls below the mirrored bound 1 − u; that failure is
 `candidate_slower`. A miss inside the band is `speed_threshold_not_met`: the bar was
 not cleared, and the candidate was not measurably slower either. A candidate that
 clears the bar but fails the service-attainment gate is `service_contract_not_met`.
+Under policy 20 a candidate whose pooled per-user decode p50 falls below the sealed
+floor fails with `service_floor_not_met`, at any speedup.
 Reports settled before this split carry the retained coarse code `speed_regression`,
 which remains valid for them and is never recorded on a new verdict.
 
@@ -679,7 +681,12 @@ that quantity is not wall-time throughput and is not the v19 score.
 
 Policy v20 keeps only the cold round in lockstep: every later request leaves the
 moment its session's previous turn completes, so the sealed load is the
-concurrency the engine is offered, as a serving fleet sees it. Cold/warm
+concurrency the engine is offered, as a serving fleet sees it. A window replays
+the whole sealed slice with the load in flight: the first `load` sessions open
+the cold round and each finished session hands its slot to the next in filename
+order. Replaying only `load` sessions would end the window on its longest one
+(output per session spans about 4.5× on the Weka slice), so a v20 slice is sealed
+longest session first and the drain at the end is made of the shortest. Cold/warm
 membership is still a function of the slice, and each root's turns are numbered
 by conversation coordinate alone, because closed-loop release stamps every warm
 turn apart. The workload identity records `closed-loop-after-cold-round`. Each

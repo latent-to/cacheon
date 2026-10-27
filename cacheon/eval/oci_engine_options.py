@@ -66,7 +66,10 @@ ENGINE_ENV_KINDS: Mapping[str, str] = dict.fromkeys(
      "NCCL_NVLS_ENABLE", "TORCH_SYMM_MEM_DISABLE_MULTICAST", "SGLANG_OPT_DSV41_ENGRAM_PEER_SHARDS",
      "SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK", "SGLANG_OPT_DSV41_BF16_INDEX_LOGITS",
      "SGLANG_ENABLE_PREFILL_WAR_READ_DONE", "SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT",
-     "SGLANG_DISAGGREGATION_WAITING_TIMEOUT"), "token")
+     "SGLANG_DISAGGREGATION_WAITING_TIMEOUT",
+     # The prefill role's eight UCX workers took 41 s alone and missed SGLang's 60 s NIXL deadline beside
+     # seven other ranks (8xB300 spot, 2026-10-27).
+     "SGLANG_DISAGGREGATION_ENGINE_INIT_TIMEOUT"), "token")
 _ROLE_FIELDS = frozenset({"engine_kwargs", "engine_env"})
 
 _TOKEN = re.compile(r"[A-Za-z0-9_.:+/@-]{1,256}\Z")

@@ -106,7 +106,9 @@ measurably slower either — an ordinary competitive miss, not a regression.
 candidate boot that reads slower than the arena's sealed futility margin fails
 without the second boot, and its detail names that margin. A candidate
 that clears the speed bound but misses service attainment fails with
-`service_contract_not_met`. Verdicts settled under older policies may carry the
+`service_contract_not_met`. On a policy-20 arena, a candidate whose median per-user
+decode rate falls below the sealed floor fails with `service_floor_not_met`, however
+much it raises served throughput. Verdicts settled under older policies may carry the
 combined code `speed_regression`.
 
 ## CUDA graphs are part of the contract

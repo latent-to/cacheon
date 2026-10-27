@@ -804,7 +804,7 @@ class OpenedOuterSession:
             raise OuterSessionInfrastructureError("session finish order is invalid")
         minimum = self.plan.warmup_count + 1
         expected = (len(self.plan.prompt_batches) if self.plan.replay is None else
-                    self.plan.warmup_count + sum(self.plan.replay.slice.turns(load) for load in self.plan.replay.loads))
+                    self.plan.warmup_count + self.plan.replay.slice.turns(self.plan.replay.sessions))
         if len(self.batch_rows) < minimum or (require_all and len(self.batch_rows) != expected):
             raise OuterSessionInfrastructureError(
                 "session lacks the required planned batch coverage"

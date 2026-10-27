@@ -735,8 +735,6 @@ class ResidentSpeedWitness:
         except (CrossoverRuntimeError, RawSpeedEvidenceError) as exc:
             raise QualificationRunnerError(str(exc)) from None
         grade = QualificationDecision(result.decision.value)
-        if grade is QualificationDecision.FAIL and result.verdict.speedup >= result.verdict.required:
-            return grade, result.settled_speedup, "service_contract_not_met"
         return grade, result.settled_speedup, _speed_reason(grade, result.verdict)
 
     def regrade(

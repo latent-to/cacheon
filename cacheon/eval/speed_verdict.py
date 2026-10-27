@@ -18,7 +18,8 @@ class SpeedStageDecision(str, Enum):
     NO_DECISION = "NO_DECISION"
 
 
-SPEED_FAIL_REASONS = frozenset({"candidate_slower", "speed_threshold_not_met", "service_contract_not_met"})
+SPEED_FAIL_REASONS = frozenset({"candidate_slower", "speed_threshold_not_met", "service_contract_not_met",
+                                "service_floor_not_met"})
 
 
 def fail_reason(verdict: SpeedupVerdict) -> str:
@@ -27,8 +28,14 @@ def fail_reason(verdict: SpeedupVerdict) -> str:
     A bar of ``1 + u`` can only call a candidate slower once its speedup falls
     below the mirrored bound ``1 - u``. Anything else inside the band proved only
     that the bar was not cleared -- an ordinary competitive miss, not a regression.
+    Clearing the bar and still failing names the service gate that failed: the
+    policy-20 decode floor, otherwise attainment.
     """
 
+    if verdict.detail.startswith("service_floor_not_met"):
+        return "service_floor_not_met"
+    if verdict.speedup >= verdict.required:
+        return "service_contract_not_met"
     if verdict.speedup < 2.0 - verdict.required:
         return "candidate_slower"
     return "speed_threshold_not_met"

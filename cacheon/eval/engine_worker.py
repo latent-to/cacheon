@@ -657,7 +657,8 @@ def isolated_engine_session(
                 if prefill is not None:
                     url = pd_engine.wait_ready(companion, prefill, time.monotonic() + 1800)
                     engine = pd_engine.PrefillDecodePair(
-                        engine, url, prefill["disaggregation_bootstrap_port"], companion)
+                        engine, url, prefill["disaggregation_bootstrap_port"], companion,
+                        int(prefill.get("dp_size") or 1), int(kwargs.get("dp_size") or 1))
                     eager_members = frozenset(_process_tree(companion.pid))
                 _pin_engine_processes(plan, schedulers=tp, pinned=pinned,
                                       companion=companion.pid if companion else None)

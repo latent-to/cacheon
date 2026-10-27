@@ -230,6 +230,8 @@ Speed problems:
   checks: authority/infrastructure uncertainty, never a candidate pass;
 - C clears the speed bound but misses service attainment: candidate FAIL
   (`service_contract_not_met`);
+- under policy 20, C's pooled per-user decode p50 falls below the sealed floor: candidate
+  FAIL (`service_floor_not_met`);
 - arm identities/resources differ: authority mismatch, never a valid speedup;
 - candidate falls back for material calls: no positive marginal effect.
 

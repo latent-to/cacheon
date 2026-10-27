@@ -430,7 +430,8 @@ def reference_grade(
 
     ``decode_floor`` (version 20) also holds the pooled per-user decode p50 to the contract's floor at
     every look: a candidate below it fails, since served tokens bought by slowing every user are not
-    revenue at the sealed price. A stock reference below it is a mis-sealed load, never a candidate FAIL.
+    revenue at the sealed price. A stock reference below it is a mis-sealed load that ``open_reference``
+    refuses before any candidate boot, never a candidate FAIL.
     """
     if (not candidate or len(reference) < 2 or not 0 < error_rate < 0.5 or type(boots) is not int
         or not 2 <= boots <= 4 or any(not math.isfinite(v) or v < 0 for v in (window_noise, boot_noise))
@@ -458,10 +459,7 @@ def reference_grade(
     a_cand, a_ref = (sum(r.meets(contract) for read in arm for r in read.records)
                      / sum(len(read.records) for read in arm) for arm in (candidate, reference))
     floor = contract.decode_floor_tps
-    if decode_floor and decode_p50(reference) < floor:
-        decision, detail = SpeedStageDecision.NO_DECISION, (
-            f"stock reference decode p50 {decode_p50(reference):.1f} tok/s is below the sealed floor {floor:.4g}")
-    elif decode_floor and decode_p50(candidate) < floor:
+    if decode_floor and decode_p50(candidate) < floor:
         decision, detail = SpeedStageDecision.FAIL, (
             f"service_floor_not_met: candidate decode p50 {decode_p50(candidate):.1f} tok/s is below the sealed "
             f"floor {floor:.4g}")

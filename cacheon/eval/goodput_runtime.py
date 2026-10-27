@@ -292,12 +292,21 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
             handle.write(json.dumps(reference.to_dict(), sort_keys=True) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
+    goodput = plan.policy.goodput
+    if goodput.decode_floor:
+        from cacheon.eval.service_capacity import decode_p50
+
+        stock = decode_p50(tuple(read for row in executions for read in row.session.replay_reads))
+        if stock < goodput.contract.decode_floor_tps:
+            # Stock under the floor means the arena sealed too many sessions; no candidate can be graded against it,
+            # so the stage ends before spending candidate boots, and every later reopen fails the same way.
+            raise CrossoverRuntimeError(f"stock reference decode p50 {stock:.1f} tok/s is below the sealed floor "
+                                        f"{goodput.contract.decode_floor_tps:.4g}: the arena's session count is mis-sealed")
     return executions
 
 
 def _expected(replay):
-    (load,) = replay.loads
-    return tuple(sorted((root, main, inner) for root, (main, inner) in replay.slice.expected_work(load).items()))
+    return tuple(sorted((root, main, inner) for root, (main, inner) in replay.slice.expected_work(replay.sessions).items()))
 
 
 def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root, deadline, clock,
@@ -419,7 +428,7 @@ def _validate_replay_sessions(sessions, replay):
         if reads != session.replay_reads or len(reads) != arm.session_plan.replay.windows:
             raise CrossoverRuntimeError("goodput reads differ from their completed engine session")
         warmup = arm.session_plan.warmup_count
-        count = replay.slice.turns(load)
+        count = replay.slice.turns(replay.sessions)
         measured = count * len(reads)
         if (len(session.batches) != warmup + measured + len(controls)
             or tuple(row.batch_index for row in session.batches) != tuple(range(len(session.batches)))
