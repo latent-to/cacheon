@@ -120,13 +120,17 @@
 # The PD arena seals 192 sessions again: production stock read 130 there only because the prefix-cache check also
 # ran on stock's cache and held the decode schedulers (2026-10-27); the check now guards only a candidate's cache:
 # -7 runtime, +1 docs, +1 note.
+# The PD session worker's one event loop ran at 70-94% of a core in steady state, its token-ID JSON (decode the
+# controller's frame, encode the prefill POST) ~30% of it, and time to first token read 3.4 s against the HTTP
+# harness's 1.1 s (2026-10-27); both now go through orjson: +25 runtime, +4 notes. No deletion here; the
+# prefix-cache change before it deleted 7.
 (root) 1156
 .github 338
 bundles 2398
-cacheon 91940
+cacheon 91965
 cacheon_kernels 936
 dashboard 4292
 docs 13270
 examples 740
-scripts 4383
+scripts 4387
 tests 13863

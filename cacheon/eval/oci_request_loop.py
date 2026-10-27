@@ -22,8 +22,9 @@ from cacheon.eval.oci_session_protocol import (
     BatchRequest,
     SessionProtocolError,
     SlotAuditPolicy,
+    _JSONBudget,
+    _walk_json,
     audit_evidence_message,
-    decode_message,
     evidence_frame,
     frame_message,
     validate_batch_request,
@@ -38,6 +39,26 @@ class RequestFailure(Exception):
     def __init__(self, request: BatchRequest, cause: BaseException):
         self.request, self.cause = request, cause
         super().__init__()
+
+
+def _decode_request(payload: bytes) -> dict:
+    """Parse the controller's request frame at C speed under the protocol's bounds.
+
+    The stdlib decoder spent ~14% of the PD session worker's event loop on 135k-token prompts, which with the
+    prefill POST saturated the loop and doubled time to first token (2026-10-27). The bounds walk still runs, and an
+    integer past 64 bits, which orjson reads as a float, fails the request's typed fields. Duplicate keys are not
+    refused here: this side is the candidate's container, and the controller never writes them.
+    """
+    import orjson
+
+    try:
+        message = orjson.loads(payload)
+    except orjson.JSONDecodeError as exc:
+        raise SessionProtocolError(f"session message is not valid JSON: {exc}") from None
+    if not isinstance(message, dict):
+        raise SessionProtocolError("session message must decode to an object")
+    _walk_json(message, depth=0, budget=_JSONBudget())
+    return message
 
 
 async def serve_requests(
@@ -105,7 +126,7 @@ async def serve_requests(
         if header[:4] != CONTROL_MAGIC or size > MAX_BATCH_REQUEST_BYTES:
             raise SessionProtocolError("controller sent an invalid request frame")
         payload = await reader.readexactly(size)
-        message = decode_message(payload, max_bytes=MAX_BATCH_REQUEST_BYTES)
+        message = _decode_request(payload)
         return message if message.get("type") == "cache_flush" else validate_batch_request(message)
 
     async def execute(request: BatchRequest) -> None:

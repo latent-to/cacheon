@@ -132,13 +132,17 @@ class PrefillDecodePair:
 
     async def post(self, path: str, body: dict | None) -> None:
         import aiohttp
+        import orjson
 
         if self._client is None:
             # SGLang's server drops a connection idle 5 s; aiohttp pooled it 15 s and sent the POST into the close
             # ("Server disconnected", first PD twin 2026-10-27). Its default 100-connection cap also queued prefills.
             self._client = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=0, force_close=True),
                                                  timeout=aiohttp.ClientTimeout(total=None))
-        async with self._client.post(self.prefill_url + path, json=body) as response:
+        # aiohttp's stdlib encode of a 135k-token prompt held ~16% of the session worker's loop (2026-10-27).
+        data = None if body is None else orjson.dumps(body)
+        async with self._client.post(self.prefill_url + path, data=data,
+                                     headers={"Content-Type": "application/json"} if data else None) as response:
             if response.status != 200:
                 raise RuntimeError(f"prefill server {path} returned {response.status}: {(await response.text())[:512]}")
             await response.read()
