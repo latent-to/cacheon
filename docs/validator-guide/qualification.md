@@ -676,6 +676,21 @@ generation, MTP acceptance costs, and prefix-cache behavior remain in this cost.
 The first opening group must fill within 120 seconds of its last arrival.
 V16 reads retain lockstep rounds and inverse mean request latency;
 that quantity is not wall-time throughput and is not the v19 score.
+
+Policy v20 keeps only the cold round in lockstep: every later request leaves the
+moment its session's previous turn completes, so the sealed load is the
+concurrency the engine is offered, as a serving fleet sees it. Cold/warm
+membership is still a function of the slice, and each root's turns are numbered
+by conversation coordinate alone, because closed-loop release stamps every warm
+turn apart. The workload identity records `closed-loop-after-cold-round`. Each
+lifetime is a prefill server on the first half of the lane and a decode engine
+on the second (`engine_config.engine_kwargs.pd_prefill`/`pd_decode` with the
+sealed `disaggregation_transfer_backend`): the worker posts every turn to the
+prefill server and hands it to the decode engine with the same bootstrap room
+and DP rank, flushes both caches before each window, and requires execution
+coverage from both engines' ranks. The prefill server captures no decode graph,
+so its completions count without one. The eager audit and the pristine reference
+run one colocated engine with the prefill role's settings.
 The driver uses the executable's sibling Python interpreter to call AIPerf's
 single-run API. The sealed slice digest supplies its benchmark identity, keeping
 cache-buster tokens identical between arms and windows. Each

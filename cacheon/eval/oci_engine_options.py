@@ -16,20 +16,25 @@ ENGINE_KWARG_KINDS: Mapping[str, str] = {
         chunked_prefill_size context_length dp_size ep_size max_prefill_tokens page_size
         speculative_num_steps speculative_eagle_topk speculative_num_draft_tokens hicache_size
         speculative_dspark_block_size cuda_graph_max_bs_decode swa_prefix_tails prefill_decode_interval
-        cuda_graph_max_bs_prefill random_seed
+        cuda_graph_max_bs_prefill random_seed stream_interval
+        disaggregation_decode_extra_slots disaggregation_decode_polling_interval
     """.split(), "positive_int"),
     **dict.fromkeys("""
         cuda_graph_backend_prefill kv_cache_dtype quantization speculative_algorithm
         hicache_mem_layout hicache_io_backend dsv4_attn_backend mm_feature_transport
         reasoning_parser tool_call_parser speculative_draft_attention_backend
-        speculative_draft_model_path
+        speculative_draft_model_path moe_a2a_backend disaggregation_transfer_backend
     """.split(), "token"),
     **dict.fromkeys("""
         disable_radix_cache enable_dp_attention enable_flashinfer_allreduce_fusion
         trust_remote_code enable_hierarchical_cache enable_decoder_swa_bounded_replay
         weight_loader_prefetch_checkpoints enable_layernorm_sp enable_megamoe_for_layernorm_sp
-        speculative_use_block_verification
+        speculative_use_block_verification enable_dp_lm_head enable_dp_attention_local_control_broadcast
+        disaggregation_decode_enable_radix_cache
     """.split(), "bool"),
+    # Speed policy 20's prefill/decode pair: each role's kwargs and environment over the shared ones
+    # (cacheon.eval.pd_engine). GPU placement and the bootstrap port are derived, never sealed.
+    **dict.fromkeys(("pd_prefill", "pd_decode"), "role"),
     **dict.fromkeys(("cuda_graph_bs", "cuda_graph_bs_decode"), "int_list"),
     # Resident sessions recapture CUDA graphs on a LIVE scheduler loop; the
     # default 300s watchdog kills the rank mid-capture (measured 2026-07-20).
@@ -47,12 +52,22 @@ ENGINE_KWARG_KINDS: Mapping[str, str] = {
 # cache's out-of-window sliding-window KV release off; with it off the SWA pool
 # holds about three sessions of cached context, the prefix hit rate at 24
 # sessions fell to 0.34 and per-user decode to 15.7 tok/s (Verda, 2026-10-18).
+#
+# The prefill/decode arena is TEE-shaped: confidential computing has no multicast, so NVLS and
+# symmetric-memory multicast are sealed off, and Engram peer shards (CUDA VMM fabric handles) are
+# unproven there. MegaMoE's per-rank token cap differs by role: set wrong, it passes startup and
+# asserts at the first long prefill (upstream #46198).
 ENGINE_ENV_KINDS: Mapping[str, str] = dict.fromkeys(
     ("SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE", "SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT",
      "SGLANG_OPT_DSV41_MEGA_MHC_PREFILL", "SGLANG_SPEC_TP_SYNC",
      "SGLANG_DEFAULT_THINKING", "SGLANG_DSV41_REASONING_EFFORT",
      "SGLANG_DFLASH_EAGER_DRAFT_SAMPLER", "TVM_FFI_CUDA_ARCH_LIST",
-     "SGLANG_OPT_UNIFIED_CACHE_FREE_OUT_OF_WINDOW_SLOTS"), "token")
+     "SGLANG_OPT_UNIFIED_CACHE_FREE_OUT_OF_WINDOW_SLOTS",
+     "NCCL_NVLS_ENABLE", "TORCH_SYMM_MEM_DISABLE_MULTICAST", "SGLANG_OPT_DSV41_ENGRAM_PEER_SHARDS",
+     "SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK", "SGLANG_OPT_DSV41_BF16_INDEX_LOGITS",
+     "SGLANG_ENABLE_PREFILL_WAR_READ_DONE", "SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT",
+     "SGLANG_DISAGGREGATION_WAITING_TIMEOUT"), "token")
+_ROLE_FIELDS = frozenset({"engine_kwargs", "engine_env"})
 
 _TOKEN = re.compile(r"[A-Za-z0-9_.:+/@-]{1,256}\Z")
 _MODEL_SUBDIR = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}\Z")
@@ -130,8 +145,24 @@ def _validate_options(value: object, kinds: Mapping[str, str], *, label: str,
             ):
                 raise error(f"{field_name} must be a strictly increasing bounded int array")
             result[key] = list(item)
+        elif kind == "role":
+            if not isinstance(item, Mapping) or not item or set(item) - _ROLE_FIELDS:
+                raise error(f"{field_name} must hold engine_kwargs and/or engine_env")
+            # A role overrides only scalar options, its own running-request cap among them; it
+            # never nests another role or carries a float.
+            scalar = {**{name: k for name, k in kinds.items() if k not in ("role", "unit_float")},
+                      "max_running_requests": "positive_int"}
+            result[key] = {
+                **({"engine_kwargs": _validate_options(item["engine_kwargs"], scalar, label=f"{field_name}.engine_kwargs",
+                                                       error=error)} if "engine_kwargs" in item else {}),
+                **({"engine_env": _validate_options(item["engine_env"], ENGINE_ENV_KINDS, label=f"{field_name}.engine_env",
+                                                    error=error)} if "engine_env" in item else {}),
+            }
         else:  # pragma: no cover - validator-owned table invariant
             raise AssertionError(f"unknown engine kwarg kind {kind!r}")
+    roles = {"pd_prefill", "pd_decode"} & set(result)
+    if roles and (len(roles) != 2 or "disaggregation_transfer_backend" not in result):
+        raise error(f"{label} seals both prefill/decode roles and their KV transfer backend, or neither")
     return result
 
 

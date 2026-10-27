@@ -2,7 +2,8 @@
 
 The validator owns this loopback HTTP adapter, chat template and timestamps.
 The candidate still sees only disclosed generation inputs over its OCI pipes.
-AIPerf owns trajectory order; the bridge owns arrival timing as lockstep rounds.
+AIPerf owns trajectory order; the bridge owns arrival timing as lockstep rounds, or (version 20) one
+lockstep cold round followed by closed-loop arrival at the sealed session count.
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ class AgentReplayPlan:
     windows: int = 1
     elapsed_cost: bool = field(default=False, metadata={"wire_optional": True})
     max_work_seconds: int = field(default=0, metadata={"wire_optional": True})
+    closed_loop: bool = field(default=False, metadata={"wire_optional": True})
     slice: SliceManifest = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -60,8 +62,8 @@ class AgentReplayPlan:
             raise ValueError("agent replay read identity is invalid")
         if type(self.windows) is not int or self.windows < 1:
             raise ValueError("agent replay needs at least one sealed window")
-        if type(self.elapsed_cost) is not bool:
-            raise ValueError("replay cost accounting must be boolean")
+        if type(self.elapsed_cost) is not bool or type(self.closed_loop) is not bool:
+            raise ValueError("replay cost accounting and arrival must be boolean")
         if type(self.max_work_seconds) is not int or not 0 <= self.max_work_seconds <= 7200:
             raise ValueError("replay work deadline is outside its bound")
         object.__setattr__(self, "slice", manifest)
@@ -77,7 +79,7 @@ class AgentReplayPlan:
             "expected_work": {str(load): self.slice.expected_work(load) for load in self.loads},
             "loads": list(self.loads),
             "windows": self.windows,
-            "arrival": "lockstep-rounds",
+            "arrival": "closed-loop-after-cold-round" if self.closed_loop else "lockstep-rounds",
             "contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
             "client": "aiperf-0.13.0", "scenario": None, "ignore_trace_delays": True,
             "cache_bust_identity": "sealed-slice-digest",
@@ -163,11 +165,17 @@ class _Rounds:
     order so rank placement is the same in every read, and each release is
     numbered in that order: the engine requires batch indices in dispatch
     order, which arrival order no longer is.
+
+    ``closed_loop`` keeps only the first round: every later request leaves on
+    arrival, so the sealed session count is the engine's offered concurrency,
+    as a serving fleet sees it. Cold/warm membership stays a function of the
+    slice because the cold round is still one release.
     """
 
     def __init__(self, openings: int, clock, settle_s: float = _ROUND_SETTLE_S,
-                 first_wait_s: float = _FIRST_ROUND_WAIT_S):
+                 first_wait_s: float = _FIRST_ROUND_WAIT_S, closed_loop: bool = False):
         self.openings, self.clock, self.settle_s, self.first_wait_s = openings, clock, settle_s, first_wait_s
+        self.closed_loop = closed_loop
         self.pending: dict[str, tuple[str, asyncio.Future]] = {}
         self.inflight: set[str] = set()
         self.first_released = False
@@ -176,6 +184,10 @@ class _Rounds:
 
     async def hold(self, request_id: str, key: str) -> tuple[float, int]:
         """Wait for the round this request joins; return its release time on the session clock and dispatch ordinal."""
+        if self.closed_loop and self.first_released:
+            self.inflight.add(request_id)
+            self.released += 1
+            return self.clock(), self.released - 1
         future = asyncio.get_running_loop().create_future()
         self.pending[request_id] = (key, future)
         self._arm()
@@ -227,12 +239,12 @@ class _Rounds:
 class ReplayBridge:
     """Adapt trusted chat requests to canonical IDs and retain their actual token evidence."""
 
-    def __init__(self, session, exchange, tokenizer, output: Path, load: int):
+    def __init__(self, session, exchange, tokenizer, output: Path, load: int, closed_loop: bool = False):
         self.session, self.exchange, self.tokenizer = session, exchange, tokenizer
         self.first_batch_index = session.next_batch_index
         self.rows, self.failure = {}, None
         self.stamps: dict[str, int] = {}
-        self.rounds = _Rounds(load, session.clock)
+        self.rounds = _Rounds(load, session.clock, closed_loop=closed_loop)
         self.placement = _Placement(session.plan.engine_config.engine_kwargs.get("dp_size", 1))
         self.failed = asyncio.Event()
         self.offset_ns = time.time_ns() - round(session.clock() * 1e9)
@@ -346,12 +358,13 @@ def collect_read(plan: AgentReplayPlan, bridge: ReplayBridge) -> LoadRead:
 
     Ordinals follow the round and the client's conversation coordinate, not its send time: two
     conversations of one root leave 1 ms apart in either order, which swapped ordinals on one lane
-    and voided a complete read as different work (2026-10-01, off-chain request 959338a5).
+    and voided a complete read as different work (2026-10-01, off-chain request 959338a5). Closed-loop
+    arrival stamps every warm turn apart, so its ordinals follow the conversation coordinate alone.
     """
     records, seen, ordinals = [], set(), defaultdict(int)
     metadata = [json.loads(line)["metadata"] for line in
                 (plan.output_directory / "aiperf" / "profile_export.jsonl").read_text().splitlines()]
-    for meta in sorted(metadata, key=lambda r: (bridge.stamps.get(r["x_request_id"], 0),
+    for meta in sorted(metadata, key=lambda r: (0 if plan.closed_loop else bridge.stamps.get(r["x_request_id"], 0),
                                                 r["conversation_id"], r["turn_index"])):
         external_id = meta["x_request_id"]
         if external_id in seen or external_id not in bridge.rows:
@@ -404,7 +417,7 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRe
     for source in sorted(current.directory.glob("*.json"))[:load]:
         (pool / source.name).symlink_to(source.resolve())
     async with session.exchange() as exchange:
-        bridge = ReplayBridge(session, exchange, tokenizer, output, load)
+        bridge = ReplayBridge(session, exchange, tokenizer, output, load, plan.closed_loop)
         app = web.Application(client_max_size=MAX_BATCH_REQUEST_BYTES)
         app.router.add_post("/v1/chat/completions", bridge.chat)
         runner = web.AppRunner(app, access_log=None, shutdown_timeout=1)

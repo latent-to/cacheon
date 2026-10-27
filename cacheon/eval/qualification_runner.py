@@ -670,7 +670,7 @@ class ResidentSpeedWitness:
         rates = tuple(self.rates)
         if (rates or type(self.goodput) is not GoodputReadSet
                 or bool(self.goodput.orientations) != (self.resident_policy.version == 18)
-                or bool(self.goodput.boots) != (self.resident_policy.version == 19)):
+                or bool(self.goodput.boots) != (self.resident_policy.version >= 19)):
             raise QualificationRunnerError("resident speed witness read order differs")
         object.__setattr__(self, "rates", rates)
         expected = _resident_speed_projection_digest(**{

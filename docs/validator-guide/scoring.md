@@ -45,6 +45,18 @@ sealed `futility_margin` (FAIL); a PASS needs both boots and the pooled
 attainment bound. A stock bracket that reads faster than the reference beyond a
 one-sided 1% test turns the PASS into `NO_DECISION` and retires the reference.
 
+Policy 20 keeps this arithmetic for a prefill/decode engine pair replaying the
+slice closed-loop at a sealed session count (see
+[Finite agent replay](qualification.md#finite-agent-replay)). With identical
+token work the speedup is the ratio of served output tokens per second. A gate
+holds the pooled per-user decode rate (the median over every turn with at least
+two output tokens) to the contract's `decode_floor_tps` at every look: a
+candidate below it fails with `service_floor_not_met`, because tokens bought by
+slowing every user below the price floor are not revenue; a stock reference
+below it is a mis-sealed load and yields `NO_DECISION`. A sealed goodput policy
+with `decode_floor` 1 selects policy 20; its digest names the pair topology, the
+closed-loop arrival and the gate.
+
 The exact thresholds come from a frozen `CalibrationManifest` bound to the
 measured reference, arena, runtime, model, hardware, workload, and verifier.
 Provenance still records the exact controller, but measurement reuse is not

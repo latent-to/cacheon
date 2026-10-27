@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass, field as dataclass_field
 from typing import Callable
 
+from cacheon.eval import pd_engine
 from cacheon.eval.resident_speed_policy import ResidentSpeedPolicy
 from cacheon.eval.goodput_runtime import (
     REFERENCE_BOOTS, GoodputPolicy as GoodputPolicy, GoodputReadSet, regrade_reference_speed,
@@ -108,14 +109,15 @@ class ResidentCrossoverPlan:
             type(self.baseline) is not ResidentArmPlan
             or type(self.candidate) is not ResidentArmPlan
             or type(self.policy) is not ResidentSpeedPolicy
-            or self.policy.version != 19
+            or self.policy.version < 19
             or _workload(self.baseline.session_plan)
             != _workload(self.candidate.session_plan)
         ):
             raise CrossoverRuntimeError("resident crossover plan is inconsistent")
         replay = self.baseline.session_plan.replay
         if (replay is None or len(replay.loads) != 1 or replay.contract != self.policy.goodput.contract
-                or replay.elapsed_cost != bool(self.policy.goodput.error_rate)):
+                or replay.elapsed_cost != bool(self.policy.goodput.error_rate)
+                or replay.closed_loop != (self.policy.version == 20)):
             raise CrossoverRuntimeError("goodput plan requires one sealed load and its service contract")
         allowed_differences = {
             "stack_digest",
@@ -131,7 +133,10 @@ class ResidentCrossoverPlan:
         ):
             raise CrossoverRuntimeError("resident arms differ outside contribution identity")
         hardware = self.candidate.launch.hardware
-        if (hardware.visible_gpu_count != hardware.tp_size
+        # Version 20 times a prefill/decode pair, each engine on half the lane; nothing else may.
+        pair = pd_engine.is_pair(dict(self.candidate.session_plan.engine_config.engine_kwargs))
+        if (pair != (self.policy.version == 20)
+                or hardware.visible_gpu_count != hardware.tp_size * (2 if pair else 1)
                 or _expected_lane_digest(self.baseline) != _expected_lane_digest(self.candidate)):
             raise CrossoverRuntimeError("stock and candidate do not share one whole lane")
 
@@ -308,7 +313,7 @@ class ResidentCrossoverEvidence:
     replay_windows: tuple[str, ...] = dataclass_field(default=(), metadata={"wire_optional": True})
 
     def __post_init__(self) -> None:
-        if (type(self.policy) is not ResidentSpeedPolicy or self.policy.version != 19 or self.replay_windows
+        if (type(self.policy) is not ResidentSpeedPolicy or self.policy.version < 19 or self.replay_windows
             or len(self.prior_executions) < REFERENCE_BOOTS
             or any(type(v) is not EngineExecutionEvidence for v in self.prior_executions)
             or type(self.goodput) is not GoodputReadSet or not self.goodput.boots):

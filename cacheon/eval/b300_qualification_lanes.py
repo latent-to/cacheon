@@ -2,7 +2,8 @@
 
 Version-19 qualification runs one engine at a time on the whole commissioned
 allocation: the retained stock reference, the candidate boots, and the stock
-bracket all execute on this one lane.  ``b300_arena_provider`` composes and
+bracket all execute on this one lane. Version 20 runs a prefill/decode pair
+there instead, each engine on half of it.  ``b300_arena_provider`` composes and
 re-exports these names, so import paths are unchanged.
 """
 
@@ -90,7 +91,8 @@ class B300QualificationLanePolicy:
         if (
             type(runtime) is not ArenaRuntimeIdentity
             or runtime.gpu_count != len(self.physical_gpu_ids)
-            or runtime.tensor_parallel_size != runtime.gpu_count
+            # One engine, or a prefill/decode pair; the crossover plan binds the pair to policy 20.
+            or runtime.gpu_count not in (runtime.tensor_parallel_size, 2 * runtime.tensor_parallel_size)
         ):
             raise B300ArenaProviderError(
                 "qualification lane differs from the commissioned TP runtime"

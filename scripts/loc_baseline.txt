@@ -89,13 +89,16 @@
 # Speed policy 19 (one full-node engine against a retained stock reference) deletes the second lane, lane pair, role
 # swap, reproduction commission and replay checkpoints: -935 runtime, -6 docs, -4 tests, -4 scripts; +11 dashboard
 # lists per-boot rows for a reference read set, the one raise; +3 notes. TP8 results page: +229 docs, +1 root.
+# Speed policy 20 (DeepSeek PD arena: a prefill/decode pair in one worker fence, closed-loop replay, a pooled decode-p50
+# floor gate; owner order 2026-10-27, LOC ceiling raised by owner waiver): +128 runtime (pd_engine is the pair's consumer
+# in engine_worker), +27 docs, +3 notes. Supersedes nothing; no deletion was available in this change.
 (root) 1156
 .github 338
 bundles 2398
-cacheon 91466
+cacheon 91594
 cacheon_kernels 936
 dashboard 4292
-docs 13222
+docs 13249
 examples 582
-scripts 4350
+scripts 4353
 tests 13863

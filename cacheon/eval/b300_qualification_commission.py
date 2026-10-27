@@ -402,6 +402,7 @@ def _compose_locked(
         goodput.contract, "incumbent", 1, screen_lane, windows=settings["windows"],
         elapsed_cost=True,
         max_work_seconds=settings.get("max_work_seconds", 0),
+        closed_loop=bool(goodput.decode_floor),
     )
     if replay.slice.digest != settings["slice_digest"]:
         raise B300QualificationCommissionError("replay slice differs from its sealed authority")
@@ -491,8 +492,9 @@ def _compose_locked(
         calibration=calibration_manifest,
         context=calibration_context,
         # New commissions run one engine on the whole lane against a retained
-        # stock reference (v19); v16-v18 evidence keeps its paired arithmetic.
-        version=19,
+        # stock reference (v19); a sealed decode floor makes it the PD pair at a
+        # closed-loop session count (v20). v16-v18 evidence keeps its paired arithmetic.
+        version=20 if goodput.decode_floor else 19,
         min_windows=speed_block["min_windows"],
         max_window_scatter=float(speed_block["max_window_scatter"]),
         max_conditioning_slowdown=float(speed_block["max_conditioning_slowdown"]),

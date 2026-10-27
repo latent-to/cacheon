@@ -176,6 +176,15 @@ def attainment(read: LoadRead, contract: ServiceContract) -> float:
     return sum(1 for r in read.records if r.meets(contract)) / len(read.records)
 
 
+def decode_p50(reads: Sequence[LoadRead]) -> float:
+    """Median per-user decode rate over every turn of ``reads`` that has one (version 20's service floor)."""
+    rates = sorted(rate for read in reads for r in read.records if (rate := r.decode_tps) is not None)
+    if not rates:
+        raise ServiceEvidenceError("reads hold no turn with a per-user decode rate")
+    middle = len(rates) // 2
+    return rates[middle] if len(rates) % 2 else (rates[middle - 1] + rates[middle]) / 2
+
+
 def _work_shapes(read: LoadRead):
     cold = min(r.credit_issued_ns for r in read.records)
     shapes = {(r.root_session_id, r.kind, r.ordinal):
@@ -405,7 +414,7 @@ def reference_grade(
     contract: ServiceContract, expected: dict[str, tuple[int, int]], *,
     window_noise: float, boot_noise: float, error_rate: float, boots: int,
     attainment_tolerance: float, attainment_margin: float, futility_margin: float = 0.0,
-    sentinel: Sequence[LoadRead] = (),
+    sentinel: Sequence[LoadRead] = (), decode_floor: bool = False,
 ) -> ServiceVerdict:
     """Grade candidate engine lifetimes against a retained stock reference campaign on the same lane.
 
@@ -418,6 +427,10 @@ def reference_grade(
     A PASS carries one fresh stock lifetime read after it. Stock reading faster than its reference
     beyond one-sided 1% would inflate every gain measured against that reference, so the PASS becomes
     an infrastructure NO_DECISION, never a candidate FAIL.
+
+    ``decode_floor`` (version 20) also holds the pooled per-user decode p50 to the contract's floor at
+    every look: a candidate below it fails, since served tokens bought by slowing every user are not
+    revenue at the sealed price. A stock reference below it is a mis-sealed load, never a candidate FAIL.
     """
     if (not candidate or len(reference) < 2 or not 0 < error_rate < 0.5 or type(boots) is not int
         or not 2 <= boots <= 4 or any(not math.isfinite(v) or v < 0 for v in (window_noise, boot_noise))
@@ -444,7 +457,15 @@ def reference_grade(
     ratio, required, lower = math.exp(estimate), math.exp(z * se), math.exp(estimate - z * se)
     a_cand, a_ref = (sum(r.meets(contract) for read in arm for r in read.records)
                      / sum(len(read.records) for read in arm) for arm in (candidate, reference))
-    if look >= 2 and a_cand - a_ref - attainment_margin < -attainment_tolerance:
+    floor = contract.decode_floor_tps
+    if decode_floor and decode_p50(reference) < floor:
+        decision, detail = SpeedStageDecision.NO_DECISION, (
+            f"stock reference decode p50 {decode_p50(reference):.1f} tok/s is below the sealed floor {floor:.4g}")
+    elif decode_floor and decode_p50(candidate) < floor:
+        decision, detail = SpeedStageDecision.FAIL, (
+            f"service_floor_not_met: candidate decode p50 {decode_p50(candidate):.1f} tok/s is below the sealed "
+            f"floor {floor:.4g}")
+    elif look >= 2 and a_cand - a_ref - attainment_margin < -attainment_tolerance:
         decision, detail = SpeedStageDecision.FAIL, (
             f"service_contract_not_met: pooled attainment {a_cand:.4f} against the reference's {a_ref:.4f} "
             f"is below the non-inferiority bound (tolerance {attainment_tolerance:.4g}, margin {attainment_margin:.4g})")

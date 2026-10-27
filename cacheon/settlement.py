@@ -205,7 +205,7 @@ class ResidentLaneOrientation:
     """Physical TP-lane roles retained by one resident crossover PASS.
 
     ``control_digest`` identifies the validator-owned rule used to derive the
-    physical lane digests.  Paired policies name two lanes; version 19 runs
+    physical lane digests.  Paired policies name two lanes; versions 19 and 20 run
     stock and candidate on one lane, so both roles name it.
     """
 
@@ -242,7 +242,7 @@ class ResidentLaneOrientation:
 
         if type(value) is not ResidentSpeedWitness:
             raise SettlementError("resident lane orientation lacks its exact speed witness")
-        if (value.baseline_lane_digest == value.candidate_lane_digest) != (value.resident_policy.version == 19):
+        if (value.baseline_lane_digest == value.candidate_lane_digest) != (value.resident_policy.version >= 19):
             raise SettlementError("resident crossover lanes differ from its speed policy topology")
         policy_digest = value.policy.digest
         control_digest = canonical_digest(

@@ -1,7 +1,9 @@
 """Frozen qualification speed policy, retaining the historical wire identity.
 
 Only the replay policies remain: version 16 (fixed cutoff), 17 (statistical) and 18 (portable paired
-windows) are historical evidence; version 19 runs one engine per node against a retained stock reference.
+windows) are historical evidence; version 19 runs one engine per node against a retained stock reference,
+and version 20 runs version 19's arithmetic over a prefill/decode engine pair at a sealed closed-loop
+concurrency, failing a candidate whose pooled per-user decode p50 falls under the contract's floor.
 The batch-cell fields stay on the wire at zero so sealed replay witnesses decode byte for byte.
 """
 
@@ -36,7 +38,7 @@ class ResidentSpeedPolicy:
     def __post_init__(self) -> None:
         if (
             type(self.version) is not int
-            or self.version not in (16, 17, 18, 19)
+            or self.version not in (16, 17, 18, 19, 20)
             or type(self.max_stage_seconds) is not int
             or not 60 <= self.max_stage_seconds <= 7_200
             or type(self.max_qualification_seconds) is not int
@@ -74,8 +76,10 @@ class ResidentSpeedPolicy:
                 or self.goodput.required != 1 + max(self.min_margin, self.noise_multiplier * self.goodput.null_noise)))
             # Owner ruling 2026-10-01: 0.125 (90% at the final look); 0.01 stays readable for stages sealed before it.
             or (self.version >= 17 and (self.goodput.error_rate not in (0.01, 0.125) or self.goodput.required != 1))
-            # Version 19 always pools attainment over the reference and the candidate's lifetimes.
-            or (self.version == 19 and (self.goodput.error_rate != 0.125 or not self.goodput.attainment_pooled))
+            # Versions 19 and 20 always pool attainment over the reference and the candidate's lifetimes.
+            or (self.version >= 19 and (self.goodput.error_rate != 0.125 or not self.goodput.attainment_pooled))
+            # Only version 20 holds the decode p50 to the contract's floor.
+            or bool(self.goodput.decode_floor) != (self.version == 20)
             or self.goodput.null_noise > self.max_noise
             or self.goodput.boot_noise > self.max_noise
             # The batch-cell thresholds are wire fields only; replay seals them at zero.
@@ -90,13 +94,15 @@ class ResidentSpeedPolicy:
 
     @property
     def digest(self) -> str:
-        if self.version == 19:
+        if self.version >= 19:
             return canonical_digest("cacheon.qualification.goodput-speed-policy.v1", {
                 **self.to_dict(), "timing": "fixed_work_host_time", "repeat_limit": 0,
                 "topology": "one_engine_owns_the_lane", "reference_boots": REFERENCE_BOOTS,
                 "candidate_boots": CANDIDATE_BOOTS, "aggregation": "log_mean_elapsed_serving_time_per_boot",
                 "eligibility": "alpha_spending_0.05_0.05_0.10_0.80_at_boot_boundaries",
                 "sentinel": "stock_bracket_after_pass_one_sided_0.01", "continuation": "completed_stage",
+                **({"topology": "pd_prefill_decode_on_one_node", "arrival": "closed_loop_after_cold_round",
+                    "gate": "pooled_decode_p50_at_every_look"} if self.version == 20 else {}),
             })
         return canonical_digest("cacheon.qualification.goodput-speed-policy.v1", {
             **self.to_dict(), "read_order": ["B", "C"],

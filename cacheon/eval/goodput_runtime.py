@@ -55,10 +55,13 @@ class GoodputPolicy:
     futility_margin: float = field(default=0.0, metadata={"wire_optional": True})
     # 1 grades service attainment once over all paired windows, 0 in every window; sealed only when set.
     attainment_pooled: float = field(default=0.0, metadata={"wire_optional": True})
+    # 1 holds the pooled per-user decode p50 to the contract's decode floor (version 20); sealed only when set.
+    decode_floor: float = field(default=0.0, metadata={"wire_optional": True})
 
     def __post_init__(self):
         values = (self.required, self.null_noise, self.attainment_tolerance, self.attainment_margin,
-                  self.error_rate, self.boot_noise, self.futility_margin, self.attainment_pooled)
+                  self.error_rate, self.boot_noise, self.futility_margin, self.attainment_pooled,
+                  self.decode_floor)
         if (type(self.contract) is not ServiceContract
             or any(type(v) not in (int, float) or not math.isfinite(v) for v in values)
             or not (self.required == 1.0 if self.error_rate else 1 < self.required < 2)
@@ -67,7 +70,7 @@ class GoodputPolicy:
             or (self.error_rate > 0 and self.null_noise == self.boot_noise == 0)
             or (self.error_rate == 0 and (self.boot_noise or self.futility_margin)) or not 0 <= self.futility_margin < 1
             or not 0 <= self.attainment_tolerance <= 1 or not 0 <= self.attainment_margin < 1
-            or self.attainment_pooled not in (0, 1)):
+            or self.attainment_pooled not in (0, 1) or self.decode_floor not in (0, 1)):
             raise ValueError("goodput calibration inputs are invalid")
         object.__setattr__(self, "contract", ServiceContract(**{
             name: float(value) for name, value in asdict(self.contract).items()
@@ -81,7 +84,7 @@ class GoodputPolicy:
         return {"contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
                 **{key: format(getattr(self, key), ".17g") for key in self.__dataclass_fields__
                    if key != "contract" and (self.error_rate or key not in ("error_rate", "boot_noise"))
-                   and (key not in ("futility_margin", "attainment_pooled") or getattr(self, key))}}
+                   and (key not in ("futility_margin", "attainment_pooled", "decode_floor") or getattr(self, key))}}
 
     @classmethod
     def from_dict(cls, value):
@@ -89,10 +92,9 @@ class GoodputPolicy:
         fields = set(cls.__dataclass_fields__)
         if type(value) is dict and "error_rate" not in value:
             fields -= {"error_rate", "boot_noise"}
-        if type(value) is dict and "futility_margin" not in value:
-            fields -= {"futility_margin"}
-        if type(value) is dict and "attainment_pooled" not in value:
-            fields -= {"attainment_pooled"}
+        for optional in ("futility_margin", "attainment_pooled", "decode_floor"):
+            if type(value) is dict and optional not in value:
+                fields -= {optional}
         if type(value) is not dict or set(value) != fields or type(value["contract"]) is not dict:
             raise ValueError("goodput policy fields differ")
         result = cls(ServiceContract(**{key: float(v) for key, v in value["contract"].items()}),
@@ -168,7 +170,8 @@ class GoodputReadSet:
             result = service_capacity.reference_grade(
                 self.candidate, self.incumbent[:split], policy.contract, work, window_noise=policy.null_noise,
                 boot_noise=policy.boot_noise, error_rate=policy.error_rate, boots=self.boots,
-                futility_margin=policy.futility_margin, sentinel=self.incumbent[split:], **service,
+                futility_margin=policy.futility_margin, sentinel=self.incumbent[split:],
+                decode_floor=bool(policy.decode_floor), **service,
             )
         elif policy.error_rate:
             result = service_capacity.statistical_grade(
