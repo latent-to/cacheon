@@ -104,13 +104,15 @@
 # A pair's worker preflight counts both roles' GPUs and seals a loopback host address for SGLang's KV managers (the
 # first PD twin's preflight refused the 8-GPU lane; no-network fence, 2026-10-27): +1 runtime, +2 notes.
 # The PD arena registers the repository's broken node control for its audit: +2 examples, +1 note.
+# The pair's prefill client opens a connection per request with no cap (a pooled connection SGLang had closed after 5 s
+# idle failed the first stock reference read, "Server disconnected", 2026-10-27): +3 runtime, +2 notes.
 (root) 1156
 .github 338
 bundles 2398
-cacheon 91838
+cacheon 91841
 cacheon_kernels 936
 dashboard 4292
 docs 13261
 examples 736
-scripts 4367
+scripts 4369
 tests 13863

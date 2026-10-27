@@ -134,7 +134,10 @@ class PrefillDecodePair:
         import aiohttp
 
         if self._client is None:
-            self._client = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None))
+            # SGLang's server drops a connection idle 5 s; aiohttp pooled it 15 s and sent the POST into the close
+            # ("Server disconnected", first PD twin 2026-10-27). Its default 100-connection cap also queued prefills.
+            self._client = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=0, force_close=True),
+                                                 timeout=aiohttp.ClientTimeout(total=None))
         async with self._client.post(self.prefill_url + path, json=body) as response:
             if response.status != 200:
                 raise RuntimeError(f"prefill server {path} returned {response.status}: {(await response.text())[:512]}")

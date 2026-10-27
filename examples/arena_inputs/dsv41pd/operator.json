@@ -13,8 +13,8 @@
     "4c253998e53d898caaebbff3bc7aeca2ab687f3d3eec507cc9257defc474d184"
   ],
   "node": {
-    "name": "8-GPU Verda",
-    "scheduler_starts": [4, 34, 64, 94, 124, 154, 184, 214],
+    "name": "8-GPU Lium pod",
+    "scheduler_starts": [5, 25, 45, 65, 101, 125, 145, 165],
     "client_cpus": {
       "0,1,2,3,4,5,6,7": [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
     }
