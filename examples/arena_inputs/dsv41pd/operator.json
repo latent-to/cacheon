@@ -9,7 +9,9 @@
   "tokenizer_asset": "tokenizer-official",
   "model_in_ram": true,
   "owner": "dsv41pd-verda",
-  "audit_control_delta_digests": [],
+  "audit_control_delta_digests": [
+    "4c253998e53d898caaebbff3bc7aeca2ab687f3d3eec507cc9257defc474d184"
+  ],
   "node": {
     "name": "8-GPU Verda",
     "scheduler_starts": [4, 34, 64, 94, 124, 154, 184, 214],
