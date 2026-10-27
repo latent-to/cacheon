@@ -1,6 +1,10 @@
 {
+  "attention_backend": null,
+  "disable_custom_all_reduce": false,
   "dtype": "bfloat16",
+  "max_running_requests": null,
   "mem_fraction_static": 0.85,
+  "moe_runner_backend": "auto",
   "random_seed": 7,
   "log_level": "error",
   "tp_size": 4,
@@ -20,7 +24,7 @@
   "swa_prefix_tails": 2048,
   "weight_loader_prefetch_checkpoints": true,
   "enable_hierarchical_cache": false,
-  "disaggregation_transfer_backend": "nixl",
+  "disaggregation_transfer_backend": "mooncake",
   "pd_prefill": {
     "engine_kwargs": {"chunked_prefill_size": 131072, "max_running_requests": 128, "disable_radix_cache": false},
     "engine_env": {"SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK": "32768"}
@@ -28,7 +32,7 @@
   "pd_decode": {
     "engine_kwargs": {"max_running_requests": 192, "cuda_graph_max_bs_decode": 48,
                       "disaggregation_decode_extra_slots": 36, "disaggregation_decode_polling_interval": 8,
-                      "stream_interval": 32},
+                      "disaggregation_decode_enable_radix_cache": true, "stream_interval": 32},
     "engine_env": {"SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK": "16384"}
   },
   "engine_env": {
@@ -43,6 +47,9 @@
     "SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT": "3600",
     "SGLANG_DISAGGREGATION_WAITING_TIMEOUT": "3600",
     "SGLANG_ENABLE_PREFILL_WAR_READ_DONE": "1",
-    "SGLANG_DISAGGREGATION_ENGINE_INIT_TIMEOUT": "300"
+    "SGLANG_DISAGGREGATION_ENGINE_INIT_TIMEOUT": "300",
+    "MC_INTRANODE_NVLINK": "true",
+    "MC_TCP_ENABLE_CONNECTION_POOL": "true",
+    "SGLANG_MOONCAKE_CUSTOM_MEM_POOL": "INTRA_NODE_NVLINK"
   }
 }

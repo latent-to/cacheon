@@ -99,13 +99,15 @@
 # lane validator's half-wired pair allowance is deleted. The PD arena inputs (examples/arena_inputs/dsv41pd): +136 examples.
 # The reference token maximum the commission checks against the replay slice becomes an operator parameter (the two
 # templates hard-coded the 48-session slice's 9238; the PD slice's is 22484): +2 scripts, +3 examples, +1 docs, +2 notes.
+# PD arena seals Mooncake's NVLink KV transport (NIXL cost ~500 s of each boot's first window) and the decode radix cache
+# (+11.7% stock), measured 8xB300 2026-10-27: +4 runtime (three env keys), +13 examples, +2 notes. Supersedes NIXL.
 (root) 1156
 .github 338
 bundles 2398
-cacheon 91833
+cacheon 91837
 cacheon_kernels 936
 dashboard 4292
 docs 13261
-examples 721
-scripts 4362
+examples 734
+scripts 4364
 tests 13863

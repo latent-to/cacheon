@@ -13,25 +13,31 @@ at that head.
 
 The arena serves one prefill/decode pair on the whole node: prefill on GPUs 0-3
 and decode on GPUs 4-7, each TP4 with expert parallelism 4, DP attention 4,
-MegaMoE and DSpark, with KV moving between them over NIXL on NVLink. The roles
-differ only where `engine-config.json` says so under `pd_prefill` and `pd_decode`:
-128K prefill chunks and 128 running requests on prefill; 192 running requests,
-48-row decode graphs per DP rank and a 32-token stream interval on decode; and
-MegaMoE's per-rank token cap (32768 on prefill, 16384 on decode). The
+MegaMoE and DSpark, with KV moving between them over Mooncake's intra-node NVLink
+transport. The roles differ only where `engine-config.json` says so under
+`pd_prefill` and `pd_decode`: 128K prefill chunks and 128 running requests on
+prefill; 192 running requests, 48-row decode graphs per DP rank, a 32-token stream
+interval and a decode-side radix cache on decode; and MegaMoE's per-rank token cap
+(32768 on prefill, 16384 on decode). The replay places each session on one DP
+rank of each role for all its turns, which is what both radix caches need. The
 configuration is TEE-shaped: the Engram tables stay in GPU memory, and NVLS,
 symmetric-memory multicast and Engram peer shards are off. Two parts of the pair
-are still unmeasured under confidential computing: NIXL's CUDA IPC KV transfer and
-MegaMoE's symmetric memory.
+are still unmeasured under confidential computing: the KV transfer (legacy CUDA IPC
+handles, as SGLang's custom all-reduce uses) and MegaMoE's symmetric memory.
 
 Speed policy 20 replays 192 sessions in a closed loop from a 247-session pool of
 agent traces, each session capped at 16,000 output tokens, and scores served output
 tokens per second against the retained stock reference, gated on a pooled
 per-user decode median of at least 150 tokens per second. Measured on the stock
-configuration (8xB300, 2026-10-27): 16,020 output tokens/s at a decode median of
-164.5 tokens/s per user, prefill cache hit 0.91, time to first token median 1.8 s.
-Each turn spends about half its time waiting for prefill and half decoding, so
-prefill and decode kernels earn about equally. A seeded boot of the pair takes
-about seven minutes, three of them NIXL setup.
+configuration (8xB300, 2026-10-27): 17,920 output tokens/s at a decode median of
+163.4 tokens/s per user, prefill cache hit 0.91, time to first token median 1.1 s.
+The decode radix cache is worth 11.7 percent of that (16,040 tokens/s without it).
+A session spends about 40 percent of its time waiting for prefill and 60 percent
+decoding (93 served tokens/s per session against the 163 tokens/s decode median), so
+both roles' kernels earn. A seeded boot of the pair takes
+about four and a half minutes. Mooncake replaced NIXL: the same steady throughput,
+a 165 s faster boot, and none of the whole-pool descriptor registration NIXL pays the
+first time each decode rank meets a prefill rank (about 500 s of every boot's first window).
 
 `cacheon check` runs the pair's one-engine form on four GPUs: the shared options
 with the prefill role's settings, as the eager audit runs it. Mount this folder

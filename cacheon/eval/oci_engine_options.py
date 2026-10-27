@@ -69,7 +69,11 @@ ENGINE_ENV_KINDS: Mapping[str, str] = dict.fromkeys(
      "SGLANG_DISAGGREGATION_WAITING_TIMEOUT",
      # The prefill role's eight UCX workers took 41 s alone and missed SGLang's 60 s NIXL deadline beside
      # seven other ranks (8xB300 spot, 2026-10-27).
-     "SGLANG_DISAGGREGATION_ENGINE_INIT_TIMEOUT"), "token")
+     "SGLANG_DISAGGREGATION_ENGINE_INIT_TIMEOUT",
+     # Mooncake's intra-node NVLink KV transport (legacy CUDA IPC handles, as NIXL's cuda_ipc): the same steady
+     # throughput as NIXL, a 165 s faster boot, and no whole-pool descriptor registration the first time a decode
+     # rank meets a prefill rank, which cost NIXL ~500 s of every boot's first window (8xB300, 2026-10-27).
+     "MC_INTRANODE_NVLINK", "MC_TCP_ENABLE_CONNECTION_POOL", "SGLANG_MOONCAKE_CUSTOM_MEM_POOL"), "token")
 _ROLE_FIELDS = frozenset({"engine_kwargs", "engine_env"})
 
 _TOKEN = re.compile(r"[A-Za-z0-9_.:+/@-]{1,256}\Z")
