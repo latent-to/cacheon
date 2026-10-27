@@ -59,8 +59,9 @@ def split(kwargs: dict[str, Any], env: dict[str, str]):
                    disaggregation_bootstrap_port=_free_port(), host=HOST, port=int(decode.get("port", 30000)) + 1000)
     decode.update(disaggregation_mode="decode", disaggregation_transfer_backend=backend, base_gpu_id=tp)
     # One coverage roster over both process groups: prefill ranks 0..tp-1, decode ranks tp..2tp-1 (cacheon.receipts).
-    prefill_env.update(CACHEON_RECEIPT_RANK_OFFSET="0", CACHEON_RECEIPT_WORLD_SIZE=str(2 * tp))
-    decode_env.update(CACHEON_RECEIPT_RANK_OFFSET=str(tp), CACHEON_RECEIPT_WORLD_SIZE=str(2 * tp))
+    # The fence has only loopback, where SGLang's KV managers find no routable address and raise "Can not get local ip".
+    prefill_env.update(CACHEON_RECEIPT_RANK_OFFSET="0", CACHEON_RECEIPT_WORLD_SIZE=str(2 * tp), SGLANG_HOST_IP=HOST)
+    decode_env.update(CACHEON_RECEIPT_RANK_OFFSET=str(tp), CACHEON_RECEIPT_WORLD_SIZE=str(2 * tp), SGLANG_HOST_IP=HOST)
     return prefill, prefill_env, decode, decode_env
 
 

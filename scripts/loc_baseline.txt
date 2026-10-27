@@ -101,13 +101,15 @@
 # templates hard-coded the 48-session slice's 9238; the PD slice's is 22484): +2 scripts, +3 examples, +1 docs, +2 notes.
 # PD arena seals Mooncake's NVLink KV transport (NIXL cost ~500 s of each boot's first window) and the decode radix cache
 # (+11.7% stock), measured 8xB300 2026-10-27: +4 runtime (three env keys), +13 examples, +2 notes. Supersedes NIXL.
+# A pair's worker preflight counts both roles' GPUs and seals a loopback host address for SGLang's KV managers (the
+# first PD twin's preflight refused the 8-GPU lane; no-network fence, 2026-10-27): +1 runtime, +2 notes.
 (root) 1156
 .github 338
 bundles 2398
-cacheon 91837
+cacheon 91838
 cacheon_kernels 936
 dashboard 4292
 docs 13261
 examples 734
-scripts 4364
+scripts 4366
 tests 13863
