@@ -115,13 +115,15 @@
 # guide say so: +8 docs, +1 note.
 # The session codec checks an all-int list (a 135k-token turn's IDs) at C speed instead of an element at a time
 # (it held the PD session worker's loop at ~98% and TTFT near 7 s, 2026-10-27): +7 runtime, +2 notes.
+# AIPerf 0.13.0 closed a stock window one root turn early (3,571 of 3,572 returned, the join refused the read,
+# 2026-10-27); the replay client completes a phase only when every sent request returns: +9 runtime, +2 notes.
 (root) 1156
 .github 338
 bundles 2398
-cacheon 91937
+cacheon 91947
 cacheon_kernels 936
 dashboard 4292
 docs 13269
 examples 737
-scripts 4379
+scripts 4380
 tests 13863
