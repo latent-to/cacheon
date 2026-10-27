@@ -111,14 +111,15 @@
 # The node audit puts SGLang's layer-boundary residual stream back after each stock reference (a model.layers.* identity
 # bundle failed every call on the PD arena, 2026-10-27): +35 runtime, +2 notes.
 # The node audit grades the residual stream a call leaves when it moves the stream (a model.layers.* candidate could
-# rewrite the residual after its result and pass, 2026-10-27): +27 runtime, +2 notes.
+# rewrite the residual after its result and pass, 2026-10-27): +27 runtime, +2 notes. The slot contract and the slot
+# guide say so: +8 docs, +1 note.
 (root) 1156
 .github 338
 bundles 2398
 cacheon 91930
 cacheon_kernels 936
 dashboard 4292
-docs 13261
+docs 13269
 examples 737
-scripts 4376
+scripts 4377
 tests 13863
