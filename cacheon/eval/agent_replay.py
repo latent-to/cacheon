@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import multiprocessing
 import os
 import secrets
 import shutil
@@ -18,6 +19,7 @@ import signal
 import tempfile
 import time
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from uuid import UUID
@@ -153,6 +155,27 @@ def _chat_input_ids(tokenizer, body):
     )
 
 
+# Templating a 135k-token agent turn costs ~0.21 s of CPU. On the bridge's event loop it capped the PD arena at
+# 3.4 turns/s against the engines' ~16 and held every first-token frame behind it (TTFT median 47 s, 2026-10-27).
+_TOKENIZE_WORKERS = 8
+_pool_tokenizer = None
+
+
+def _load_pool_tokenizer(path: str) -> None:
+    global _pool_tokenizer
+    from transformers import AutoTokenizer
+    _pool_tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True, local_files_only=True)
+
+
+def _pool_chat_input_ids(body: dict) -> list[int]:
+    return _chat_input_ids(_pool_tokenizer, body)
+
+
+def _pool_started() -> None:
+    # Busy for a second, so each concurrent call starts its own worker (and loads its tokenizer) before any read.
+    time.sleep(1)
+
+
 _ROUND_SETTLE_S = 0.5
 _FIRST_ROUND_WAIT_S = 120.0
 
@@ -247,8 +270,9 @@ class _Rounds:
 class ReplayBridge:
     """Adapt trusted chat requests to canonical IDs and retain their actual token evidence."""
 
-    def __init__(self, session, exchange, tokenizer, output: Path, load: int, closed_loop: bool = False):
-        self.session, self.exchange, self.tokenizer = session, exchange, tokenizer
+    def __init__(self, session, exchange, tokenizer, output: Path, load: int, closed_loop: bool,
+                 pool: ProcessPoolExecutor):
+        self.session, self.exchange, self.tokenizer, self.pool = session, exchange, tokenizer, pool
         self.first_batch_index = session.next_batch_index
         self.rows, self.failure = {}, None
         self.stamps: dict[str, int] = {}
@@ -277,7 +301,7 @@ class ReplayBridge:
                 raise ValueError("AIPerf repeated an X-Request-ID")
             if body.get("stream") is not True:
                 raise ValueError("agent replay requires streaming requests")
-            ids = _chat_input_ids(self.tokenizer, body)
+            ids = await asyncio.get_running_loop().run_in_executor(self.pool, _pool_chat_input_ids, body)
             count = body.get("max_tokens", body.get("max_completion_tokens"))
             self.rows[external_id] = None
             stamp, ordinal = await self.rounds.hold(external_id, _session_key(body["messages"]))
@@ -410,7 +434,7 @@ def collect_read(plan: AgentReplayPlan, bridge: ReplayBridge) -> LoadRead:
     return read
 
 
-async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRead:
+async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer, tokenize_pool: ProcessPoolExecutor) -> LoadRead:
     """Drain one sealed load on the opened engine and retain the scorer's input."""
     from aiohttp import web
 
@@ -425,7 +449,7 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRe
     for source in sorted(current.directory.glob("*.json"))[:plan.sessions]:
         (pool / source.name).symlink_to(source.resolve())
     async with session.exchange() as exchange:
-        bridge = ReplayBridge(session, exchange, tokenizer, output, load, plan.closed_loop)
+        bridge = ReplayBridge(session, exchange, tokenizer, output, load, plan.closed_loop, tokenize_pool)
         app = web.Application(client_max_size=MAX_BATCH_REQUEST_BYTES)
         app.router.add_post("/v1/chat/completions", bridge.chat)
         runner = web.AppRunner(app, access_log=None, shutdown_timeout=1)
@@ -510,14 +534,18 @@ async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None, before_r
         tokenizer = AutoTokenizer.from_pretrained(plan.tokenizer_path, trust_remote_code=True, local_files_only=True)
     reads = []
     (load,) = plan.loads
-    for window in range(1, plan.windows + 1):
-        await flush_cache(session)
-        if before_read is not None and not await before_read(load, window):
-            break
-        read_plan = replace(plan, window=window, output_directory=plan.output_directory / f"window{window}")
-        read = await _run_load_read(session, read_plan, tokenizer=tokenizer)
-        session.replay_reads.append(read)
-        reads.append(read)
+    with ProcessPoolExecutor(_TOKENIZE_WORKERS, mp_context=multiprocessing.get_context("spawn"),
+                             initializer=_load_pool_tokenizer, initargs=(str(plan.tokenizer_path),)) as pool:
+        loop = asyncio.get_running_loop()
+        await asyncio.gather(*(loop.run_in_executor(pool, _pool_started) for _ in range(_TOKENIZE_WORKERS)))
+        for window in range(1, plan.windows + 1):
+            await flush_cache(session)
+            if before_read is not None and not await before_read(load, window):
+                break
+            read_plan = replace(plan, window=window, output_directory=plan.output_directory / f"window{window}")
+            read = await _run_load_read(session, read_plan, tokenizer=tokenizer, tokenize_pool=pool)
+            session.replay_reads.append(read)
+            reads.append(read)
     result = {"workload": plan.workload_identity(), "reads": [asdict(read) for read in reads]}
     (plan.output_directory / "window.json").write_text(json.dumps(result, indent=2) + "\n")
     return tuple(reads)

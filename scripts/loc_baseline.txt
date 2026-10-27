@@ -106,13 +106,15 @@
 # The PD arena registers the repository's broken node control for its audit: +2 examples, +1 note.
 # The pair's prefill client opens a connection per request with no cap (a pooled connection SGLang had closed after 5 s
 # idle failed the first stock reference read, "Server disconnected", 2026-10-27): +3 runtime, +2 notes.
+# The replay bridge templates chat turns in a process pool (on its event loop, 0.21 s per 135k-token turn capped the
+# PD arena at 3.4 turns/s and a 47 s TTFT median, 2026-10-27); the Lium client gets 32 cores: +27 runtime, +1 examples, +3 notes.
 (root) 1156
 .github 338
 bundles 2398
-cacheon 91841
+cacheon 91868
 cacheon_kernels 936
 dashboard 4292
 docs 13261
-examples 736
-scripts 4369
+examples 737
+scripts 4372
 tests 13863
