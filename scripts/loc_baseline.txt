@@ -124,13 +124,17 @@
 # controller's frame, encode the prefill POST) ~30% of it, and time to first token read 3.4 s against the HTTP
 # harness's 1.1 s (2026-10-27); both now go through orjson: +25 runtime, +4 notes. No deletion here; the
 # prefix-cache change before it deleted 7.
-(root) 1156
+# The PD worker checkpoint keeps every turn's output IDs per engine lifetime; four stock boots and a candidate boot
+# came to 516 MB and voided an identity run at the 128 MiB bound, now 1 GiB (2026-10-27): +2 runtime. The PD
+# arena's results page and README report the production stock read at 192 sessions: +74 docs, +3 examples, +1
+# root (nav), +4 notes.
+(root) 1157
 .github 338
 bundles 2398
-cacheon 91965
+cacheon 91967
 cacheon_kernels 936
 dashboard 4292
-docs 13270
-examples 740
-scripts 4387
+docs 13344
+examples 743
+scripts 4391
 tests 13863

@@ -27,7 +27,9 @@ from cacheon.stack_identity import canonical_digest, canonical_json_bytes
 SCHEMA = "cacheon.qualification.worker-checkpoint.v1"
 RECOVERY_DOMAIN = "qualification.worker-recovery"
 RECOVERY_SCHEMA = "cacheon.qualification.worker-recovery.v1"
-MAX_CHECKPOINT_BYTES = 128 << 20
+# Each engine lifetime keeps every turn's output IDs. Policy 20 on the DeepSeek-V4.1 PD slice (four stock boots and a
+# candidate boot, 3.9M output tokens a window) reached 516 MB and voided an identity run at 128 MiB (2026-10-27).
+MAX_CHECKPOINT_BYTES = 1 << 30
 _COMPLETE = {
     "speed": ("speed",),
     "audit": ("audit_armed", "audit_completed"),
