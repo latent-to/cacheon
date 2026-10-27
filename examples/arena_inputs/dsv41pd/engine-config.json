@@ -1,0 +1,48 @@
+{
+  "dtype": "bfloat16",
+  "mem_fraction_static": 0.85,
+  "random_seed": 7,
+  "log_level": "error",
+  "tp_size": 4,
+  "dp_size": 4,
+  "ep_size": 4,
+  "enable_dp_attention": true,
+  "enable_dp_lm_head": true,
+  "enable_dp_attention_local_control_broadcast": true,
+  "moe_a2a_backend": "megamoe",
+  "dsv4_attn_backend": "flashmla_mega",
+  "context_length": 262144,
+  "trust_remote_code": true,
+  "speculative_algorithm": "DSPARK",
+  "speculative_dspark_block_size": 5,
+  "speculative_num_steps": 5,
+  "enable_decoder_swa_bounded_replay": true,
+  "swa_prefix_tails": 2048,
+  "weight_loader_prefetch_checkpoints": true,
+  "enable_hierarchical_cache": false,
+  "disaggregation_transfer_backend": "nixl",
+  "pd_prefill": {
+    "engine_kwargs": {"chunked_prefill_size": 131072, "max_running_requests": 128, "disable_radix_cache": false},
+    "engine_env": {"SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK": "32768"}
+  },
+  "pd_decode": {
+    "engine_kwargs": {"max_running_requests": 192, "cuda_graph_max_bs_decode": 48,
+                      "disaggregation_decode_extra_slots": 36, "disaggregation_decode_polling_interval": 8,
+                      "stream_interval": 32},
+    "engine_env": {"SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK": "16384"}
+  },
+  "engine_env": {
+    "SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE": "0",
+    "SGLANG_OPT_DSV41_ENGRAM_PEER_SHARDS": "0",
+    "NCCL_NVLS_ENABLE": "0",
+    "TORCH_SYMM_MEM_DISABLE_MULTICAST": "1",
+    "SGLANG_OPT_DSV41_MEGA_MHC_PREFILL": "1",
+    "SGLANG_OPT_DSV41_BF16_INDEX_LOGITS": "1",
+    "SGLANG_DEFAULT_THINKING": "1",
+    "SGLANG_DSV41_REASONING_EFFORT": "high",
+    "SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT": "3600",
+    "SGLANG_DISAGGREGATION_WAITING_TIMEOUT": "3600",
+    "SGLANG_ENABLE_PREFILL_WAR_READ_DONE": "1",
+    "SGLANG_DISAGGREGATION_ENGINE_INIT_TIMEOUT": "300"
+  }
+}

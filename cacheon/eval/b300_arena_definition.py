@@ -119,14 +119,18 @@ def resource_policy(policy, overrides: object):
 
 
 def hardware_bindings(
-    runtime: ArenaRuntimeIdentity, policy: DeviceStatePolicy, *, dp_size: int
+    runtime: ArenaRuntimeIdentity, policy: DeviceStatePolicy, *, dp_size: int, tp_size: int
 ) -> tuple[LogicalHardwareSpec, PhysicalHardwareBinding]:
-    """Project both launch views from the same commissioned runtime and lane."""
+    """Project both launch views from the same commissioned runtime and lane.
+
+    The lane is commissioned at its full width; ``tp_size`` is the engine's degree, half the lane when a
+    prefill/decode pair splits it (speed policy 20).
+    """
     common = dict(
         architecture=runtime.target_architecture,
         topology_class=runtime.topology_class,
         topology_digest=runtime.topology_digest,
-        tp_size=runtime.tensor_parallel_size,
+        tp_size=tp_size,
         ep_size=1,
         dp_size=dp_size,
         device_policy_digest=policy.policy_sha256,

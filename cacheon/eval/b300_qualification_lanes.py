@@ -91,8 +91,8 @@ class B300QualificationLanePolicy:
         if (
             type(runtime) is not ArenaRuntimeIdentity
             or runtime.gpu_count != len(self.physical_gpu_ids)
-            # One engine, or a prefill/decode pair; the crossover plan binds the pair to policy 20.
-            or runtime.gpu_count not in (runtime.tensor_parallel_size, 2 * runtime.tensor_parallel_size)
+            # The lane's commissioned width; a prefill/decode pair splits it between its engines.
+            or runtime.gpu_count != runtime.tensor_parallel_size
         ):
             raise B300ArenaProviderError(
                 "qualification lane differs from the commissioned TP runtime"
@@ -164,7 +164,7 @@ def commissioned_incumbent_arm(inputs, manifest, executor, *, entries, resolver,
     engine_config = replace(inputs.engine_template, disable_cuda_graph=False)
     dp_size = _data_parallel_size(engine_config)
     baseline_hardware, baseline_physical = _hardware_bindings(
-        inputs.runtime, executor.device_policy, dp_size=dp_size,
+        inputs.runtime, executor.device_policy, dp_size=dp_size, tp_size=engine_config.tp_size,
     )
     incumbent_native = b300_deployment._native_build(
         incumbent_tree.tree_digest,

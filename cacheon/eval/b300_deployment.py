@@ -61,6 +61,7 @@ from cacheon.eval.oci_backend import (
     OCIRuntimeResourcePolicy,
     runtime_identity_from_preflight,
 )
+from cacheon.eval import pd_engine
 from cacheon.eval.oci_prebuild import OCIPrebuildConfig, OCIPrebuildPolicy
 from cacheon.eval.oci_process import OCIProcessManager
 from cacheon.eval.oci_session_protocol import EngineSessionConfig
@@ -808,7 +809,9 @@ def _derive_inputs(
     prompt_batch_cells = _prompt_batch_cells(prompt, batches, workload)
     model_profile_key = _text(prompt.get("model_profile_key"), "model profile key")
     engine_template = _engine_template(prompt)
-    if engine_template.tp_size != runtime.tensor_parallel_size:
+    # A prefill/decode pair runs two engines of half the commissioned lane each (speed policy 20).
+    engines = 2 if pd_engine.is_pair(dict(engine_template.engine_kwargs)) else 1
+    if engine_template.tp_size * engines != runtime.tensor_parallel_size:
         raise B300DeploymentError(
             "arena engine tensor parallel size differs from READY runtime"
         )

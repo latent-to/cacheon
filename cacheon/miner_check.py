@@ -147,6 +147,7 @@ def _engine(config: dict, bundle: str, requests: list[dict], root: Path,
             *, phase: str, seed: int) -> None:
     """The exp_cell procedure, using the same scheduler binder as qualification."""
     from cacheon import bootstrap, receipts, seam
+    from cacheon.eval import pd_engine
     from cacheon.eval.engine_worker import (
         _active_execution_members, _candidate_receipt_failure, _eager_audit_engine,
         _engine_child_failed, _report_running_engine_failures, _require_execution_completion,
@@ -164,6 +165,8 @@ def _engine(config: dict, bundle: str, requests: list[dict], root: Path,
     # validator's ranks: the DeepSeek-V4.1 Engram host tables are switched on here.
     options = dict(config)
     environment = options.pop("engine_env", {})
+    # A prefill/decode arena checks on one engine with the prefill role's settings, as its eager audit runs.
+    options, environment = pd_engine.colocated(options, environment)
     os.environ.update(environment)
     seam.mark_driver()
     bootstrap.install()

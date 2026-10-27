@@ -12,7 +12,7 @@ cacheon/chain/remote_worker_spool.py 991
 cacheon/chain/weight_share.py 1523
 cacheon/cli.py 2849
 cacheon/engine_tree.py 1555
-cacheon/eval/b300_deployment.py 1265
+cacheon/eval/b300_deployment.py 1268
 cacheon/eval/b300_qualification_deployment.py 918
 cacheon/eval/calibration.py 921
 cacheon/eval/device_state.py 1461

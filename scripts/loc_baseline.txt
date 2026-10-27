@@ -94,13 +94,16 @@
 # pair's consumer in engine_worker), +27 docs, +5 notes. The first raise counted only +128 runtime. Review fixes (PD
 # receipt roster, closed-loop prompt pool, stock floor refused at open_reference, service_floor_not_met): +42 runtime
 # (+72/-30), +11 docs. Supersedes nothing; no deletion was available in this change.
+# PD commissioning (owner waiver): the lane stays commissioned at its full width and a pair's engines each take
+# half (b300_deployment, hardware_bindings); cacheon check runs a pair in its one-engine form: +17/-7 runtime. The
+# lane validator's half-wired pair allowance is deleted. The PD arena inputs (examples/arena_inputs/dsv41pd): +136 examples.
 (root) 1156
 .github 338
 bundles 2398
-cacheon 91823
+cacheon 91833
 cacheon_kernels 936
 dashboard 4292
 docs 13260
-examples 582
-scripts 4355
+examples 718
+scripts 4358
 tests 13863
