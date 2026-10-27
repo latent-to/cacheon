@@ -83,7 +83,7 @@ step 6-seal-calibration
 $PY -B "$A" --seal-calibration-from-durable > "$STAGE/calibration-capture.json" 2> "$L/6-seal.err"
 $PY -c 'import json,sys; d=json.load(open(sys.argv[1])); print("SEALED_INCUMBENT", {k: v.get("artifact_digest", "")[:12] for k, v in d["incumbent_stack"]["entries"].items()})' "$STAGE/calibration-capture.json"
 step 7-finalize
-$PY -B "$QA/finalize-authority.py" "$STAGE/bootstrap-authority/authority-config.json" "$STAGE/bootstrap-authority/measurement-config.json" "$STAGE/calibration-capture.json" "$STAGE/final-authority" "$QA/calibration-v3-width0/calibration-pair.json" "$QA/calibration-v3-width0/primary/projection.json" "$QA/calibration-v3-width0/reproduction/projection.json" > "$L/7-finalize.log" 2>&1
+$PY -B "$QA/finalize-authority.py" "$STAGE/bootstrap-authority/authority-config.json" "$STAGE/bootstrap-authority/measurement-config.json" "$STAGE/calibration-capture.json" "$STAGE/final-authority" "$QA/calibration-v3-width0/calibration-pair.json" "$QA/calibration-v3-width0/primary/projection.json" > "$L/7-finalize.log" 2>&1
 mv "$STAGE/commissioned" "$STAGE/commissioned-bootstrap"
 step 8-materialize-final
 materialize "$STAGE/final-authority" "$QA/calibration-v3-width0/calibration-pair.json" "$QA/calibration-v3-width0/primary/projection.json" > "$L/8-materialize-final.log" 2>&1
