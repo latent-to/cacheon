@@ -108,6 +108,7 @@ the pod transport. One directory holds them:
 | `model_profile_key` | the model profile key the deployment profile seals |
 | `tensor_parallel_size` | the lane width; one engine at a time owns every GPU of the lane |
 | `replay_load` | the sealed replay sessions per window |
+| `tokens_per_prompt` | the largest recorded output budget of one turn in the sessions the replay serves; the commission refuses any other value |
 | `tokenizer_asset` | the tokenizer directory name inside the replay inputs archive |
 | `model_in_ram` | whether the checkpoint is served from a RAM mount or from its storage path |
 | `owner` | the dispatcher owner name of the commissioned pair |

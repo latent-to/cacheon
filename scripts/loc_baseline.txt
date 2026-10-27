@@ -97,13 +97,15 @@
 # PD commissioning (owner waiver): the lane stays commissioned at its full width and a pair's engines each take
 # half (b300_deployment, hardware_bindings); cacheon check runs a pair in its one-engine form: +17/-7 runtime. The
 # lane validator's half-wired pair allowance is deleted. The PD arena inputs (examples/arena_inputs/dsv41pd): +136 examples.
+# The reference token maximum the commission checks against the replay slice becomes an operator parameter (the two
+# templates hard-coded the 48-session slice's 9238; the PD slice's is 22484): +2 scripts, +3 examples, +1 docs, +2 notes.
 (root) 1156
 .github 338
 bundles 2398
 cacheon 91833
 cacheon_kernels 936
 dashboard 4292
-docs 13260
-examples 718
-scripts 4358
+docs 13261
+examples 721
+scripts 4362
 tests 13863

@@ -5,6 +5,7 @@
   "model_profile_key": "DeepSeek-V4.1-Flash",
   "tensor_parallel_size": 8,
   "replay_load": 192,
+  "tokens_per_prompt": 22484,
   "tokenizer_asset": "tokenizer-official",
   "model_in_ram": true,
   "owner": "dsv41pd-verda",

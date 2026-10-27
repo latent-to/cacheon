@@ -5,6 +5,7 @@
   "model_profile_key": "Muse-Spark-Open",
   "tensor_parallel_size": 4,
   "replay_load": 16,
+  "tokens_per_prompt": 9238,
   "tokenizer_asset": "tokenizer-muse",
   "model_in_ram": false,
   "owner": "musespark-node",
