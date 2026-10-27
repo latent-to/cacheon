@@ -25,16 +25,19 @@ symmetric-memory multicast and Engram peer shards are off. Two parts of the pair
 are still unmeasured under confidential computing: the KV transfer (legacy CUDA IPC
 handles, as SGLang's custom all-reduce uses) and MegaMoE's symmetric memory.
 
-Speed policy 20 replays 192 sessions in a closed loop from a 247-session pool of
+Speed policy 20 replays 60 sessions in a closed loop from a 247-session pool of
 agent traces, each session capped at 16,000 output tokens, and scores served output
 tokens per second against the retained stock reference, gated on a pooled
-per-user decode median of at least 150 tokens per second. Measured on the stock
-configuration (8xB300, 2026-10-27): 17,920 output tokens/s at a decode median of
-163.4 tokens/s per user, prefill cache hit 0.91, time to first token median 1.1 s.
-The decode radix cache is worth 11.7 percent of that (16,040 tokens/s without it).
-A session spends about 40 percent of its time waiting for prefill and 60 percent
-decoding (93 served tokens/s per session against the 163 tokens/s decode median), so
-both roles' kernels earn. A seeded boot of the pair takes
+per-user decode median of at least 150 tokens per second. The session count is where
+stock holds that floor on the production replay path. Per-user decode falls with the
+number of turns decoding at once: 273 tokens/s below 10, about 155 at 50 to 59, 150 at
+60 to 69 and 125 to 131 from 90 to 165 (two stock boots on 8xB300, 2026-10-27, with
+schedulers pinned and unpinned alike); 60 sessions keep about 53 decoding. At 192
+sessions stock served 19,800 output tokens/s at a decode median of 130 tokens/s and a
+1.6 s time-to-first-token median. A development harness sending HTTP straight to the
+engines measured 17,920 tokens/s at a 163.4 decode median at 192 sessions; the gap to
+the production path is not explained. The decode radix cache is worth 11.7 percent of
+that harness's throughput (16,040 tokens/s without it). A seeded boot of the pair takes
 about four and a half minutes. Mooncake replaced NIXL: the same steady throughput,
 a 165 s faster boot, and none of the whole-pool descriptor registration NIXL pays the
 first time each decode rank meets a prefill rank (about 500 s of every boot's first window).
