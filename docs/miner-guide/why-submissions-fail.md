@@ -144,7 +144,7 @@ registered tolerance.
 
 The exact rule is in [Audit outcomes](../validator-guide/fidelity.md#audit-outcomes).
 
-A prefix-cache bundle is judged by content instead. On both arms, the validator
+A prefix-cache bundle is judged by content instead. In the candidate's arm, the validator
 checks that every page a served prefix points to holds the bytes the engine
 computed for that prefix. Serving other bytes, keeping pages across a flush,
 moving a request's own slots or claiming more tokens than the key stops the

@@ -25,19 +25,19 @@ symmetric-memory multicast and Engram peer shards are off. Two parts of the pair
 are still unmeasured under confidential computing: the KV transfer (legacy CUDA IPC
 handles, as SGLang's custom all-reduce uses) and MegaMoE's symmetric memory.
 
-Speed policy 20 replays 60 sessions in a closed loop from a 247-session pool of
+Speed policy 20 replays 192 sessions in a closed loop from a 247-session pool of
 agent traces, each session capped at 16,000 output tokens, and scores served output
 tokens per second against the retained stock reference, gated on a pooled
 per-user decode median of at least 150 tokens per second. The session count is where
-stock holds that floor on the production replay path. Per-user decode falls with the
-number of turns decoding at once: 273 tokens/s below 10, about 155 at 50 to 59, 150 at
-60 to 69 and 125 to 131 from 90 to 165 (two stock boots on 8xB300, 2026-10-27, with
-schedulers pinned and unpinned alike); 60 sessions keep about 53 decoding. At 192
-sessions stock served 19,800 output tokens/s at a decode median of 130 tokens/s and a
-1.6 s time-to-first-token median. A development harness sending HTTP straight to the
-engines measured 17,920 tokens/s at a 163.4 decode median at 192 sessions; the gap to
-the production path is not explained. The decode radix cache is worth 11.7 percent of
-that harness's throughput (16,040 tokens/s without it). A seeded boot of the pair takes
+stock holds that floor: a development harness sending HTTP straight to the engines
+measured 17,920 tokens/s at a 163.4 decode median at 192 sessions, and 160.8 and 164.4
+on a re-run (8xB300, 2026-10-27). The production replay first read 130 there because
+the prefix-cache content check also ran on stock's cache: on each finished request it
+held a decode scheduler's loop, and the other DP ranks waited for it at the batch
+sync (16% of decode rank 0's samples, 18% fewer tokens per decode-second at the same
+mean concurrency). The check now runs only around a candidate's cache. The decode
+radix cache is worth 11.7 percent of the harness's throughput (16,040 tokens/s
+without it). A seeded boot of the pair takes
 about four and a half minutes. Mooncake replaced NIXL: the same steady throughput,
 a 165 s faster boot, and none of the whole-pool descriptor registration NIXL pays the
 first time each decode rank meets a prefill rank (about 500 s of every boot's first window).

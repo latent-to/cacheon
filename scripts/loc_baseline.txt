@@ -117,15 +117,16 @@
 # (it held the PD session worker's loop at ~98% and TTFT near 7 s, 2026-10-27): +7 runtime, +2 notes.
 # AIPerf 0.13.0 closed a stock window one root turn early (3,571 of 3,572 returned, the join refused the read,
 # 2026-10-27); the replay client completes a phase only when every sent request returns: +9 runtime, +2 notes.
-# The PD arena seals 60 sessions, where production stock holds the 150 tokens/s decode floor (192 read 130, which
-# policy 20 refuses as mis-sealed, 2026-10-27); its README says how the count was chosen: +3 examples, +2 notes.
+# The PD arena seals 192 sessions again: production stock read 130 there only because the prefix-cache check also
+# ran on stock's cache and held the decode schedulers (2026-10-27); the check now guards only a candidate's cache:
+# -7 runtime, +1 docs, +1 note.
 (root) 1156
 .github 338
 bundles 2398
-cacheon 91947
+cacheon 91940
 cacheon_kernels 936
 dashboard 4292
-docs 13269
+docs 13270
 examples 740
-scripts 4382
+scripts 4383
 tests 13863

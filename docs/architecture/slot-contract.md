@@ -260,8 +260,9 @@ interfaces and state guarantees; returning a subclass is not correctness proof.
 The choice is made once, at engine start, with an empty call descriptor: an op declaring
 dtypes, architectures or eligibility never matches, and the run fails as `candidate_never_executed`.
 
-The same content checks run for stock and candidate. Stock checking failures are
-infrastructure failures; they are not attributed to a miner's cache. Storage
+The content checks run only around a candidate's cache. Stock's cache is trusted
+and runs unchecked: checking it cost the DeepSeek-V4.1 PD decode schedulers 18% of
+their decode speed, so a cache candidate carries the check's cost in its own arm. Storage
 validation is adapter work under this common contract. It recognizes full-attention
 KV, sliding-window KV and its index state (by slot, or by page where the window pool
 stores whole pages), compressed KV and index pages, per-request sliding-window rings,
