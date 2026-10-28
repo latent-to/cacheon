@@ -5,8 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from copy import deepcopy
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
+from threading import RLock
 
 from cacheon.chain.baseline_band import qualification_speed, qualification_speed_from_payload
 from cacheon.chain.remote_qualification_evidence import RemoteEvidenceArtifact
@@ -36,11 +39,19 @@ class ForensicsLog:
     retention: str
 
 
+_REPORT_LOCK = RLock()
+
+
 def submission_forensics(
     spool_root: Path, reservation_id: str, *, target_id: str = ""
 ) -> list[dict[str, object]]:
     """Render the same request explanation as ``chain-miner-report`` for the UI."""
+    # Cold concurrent reads of PD reports exceeded the dashboard's 1 GB cap (2026-10-28).
+    with _REPORT_LOCK:
+        return _submission_forensics(spool_root, reservation_id, target_id=target_id)
 
+
+def _submission_forensics(spool_root, reservation_id, *, target_id):
     try:
         runs = remote_runs((Path(spool_root),), reservation_id, set())
     except RemoteRunForensicsError as exc:
@@ -89,7 +100,15 @@ def _retained_qualification(
     root = result_dir_for_request(spool_root, request_id)
     if root is None:
         return None
-    result = json.loads((root / "result.json").read_bytes())
+    # Disclosure removes source-bearing fields from its copy, not from the cached report.
+    return deepcopy(_qualification_summary(root, (root / "result.json").read_text(),
+                                           reservation_id, target_id))
+
+
+@lru_cache(maxsize=128)
+def _qualification_summary(root: Path, result_json: str, reservation_id: str, target_id: str):
+    """Cache the compact verified report; new result bytes invalidate pending or replaced results."""
+    result = json.loads(result_json)
     if result.get("state") != "completed" or not result.get("response_sha256"):
         return None
     artifact = next((row for row in result["artifacts"] if row["role"] == "adapter_result"), None)
@@ -123,7 +142,7 @@ def _retained_qualification(
         raise DashboardForensicsError("qualification result lacks its retained attempt")
     evidence = RemoteEvidenceArtifact.from_dict(retained)
     return {
-        "request_id": request_id,
+        "request_id": root.name,
         "artifact_sha256": evidence.reference.sha256,
         "decision": outcome["decision"],
         "reason": outcome["reason"],
@@ -141,12 +160,13 @@ def retained_speed(attempt_ref_json: object, roots: tuple[Path, ...], target_id:
     refresh. It is content-addressed, so a hit never goes stale; a miss is read again,
     so an artifact that lands after its row is still found.
     """
-    key = (attempt_ref_json, roots, target_id)
-    if key not in _SPEEDS and (speed := qualification_speed(*key)) is not None:
-        if len(_SPEEDS) >= 2048:
-            _SPEEDS.pop(next(iter(_SPEEDS)), None)
-        _SPEEDS[key] = speed
-    return _SPEEDS.get(key)
+    with _REPORT_LOCK:
+        key = (attempt_ref_json, roots, target_id)
+        if key not in _SPEEDS and (speed := qualification_speed(*key)) is not None:
+            if len(_SPEEDS) >= 2048:
+                _SPEEDS.pop(next(iter(_SPEEDS)), None)
+            _SPEEDS[key] = speed
+        return _SPEEDS.get(key)
 
 
 def submission_qualifications(

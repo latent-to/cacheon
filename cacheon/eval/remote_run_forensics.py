@@ -10,8 +10,9 @@ import os
 import time
 import traceback
 from collections.abc import Iterator, Mapping
-from functools import wraps
+from functools import lru_cache, wraps
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 
@@ -407,12 +408,28 @@ def result_dir_for_request(root: Path, request_id: str) -> Path | None:
     return None if epoch is None else epoch / request_id
 
 
+_SUMMARY_LOCK = Lock()
+
+
+@lru_cache(maxsize=128)
+def _worker_log_summary(result_root: Path, result_json: str) -> dict[str, Any] | None:
+    """Retain only the explanation of an immutable result, never its large raw log."""
+    from cacheon.eval.explain import worker_log_lines
+
+    result = json.loads(result_json)
+    worker_log = reopen_worker_log(result_root, result)
+    if worker_log is None:
+        return None
+    artifact = next(row for row in result["artifacts"] if row["role"] == "worker_log")
+    return {"explanation": worker_log_lines(worker_log),
+            "retention": worker_log_retention(worker_log),
+            "sha256": artifact["sha256"], "size": artifact["size"]}
+
+
 def remote_runs(
     spool_roots: tuple[Path, ...], reservation_id: str, request_ids: set[str]
 ) -> list[dict[str, Any]]:
     """Join retained request carriers, transport events, results, and worker logs."""
-
-    from cacheon.eval.explain import worker_log_lines
 
     runs: dict[str, dict[str, Any]] = {}
     for root in spool_roots:
@@ -448,7 +465,8 @@ def remote_runs(
             if result_root is None:
                 continue
             try:
-                result = json.loads((result_root / "result.json").read_text())
+                result_json = (result_root / "result.json").read_text()
+                result = json.loads(result_json)
             except (OSError, ValueError):
                 continue
             entry.update(
@@ -457,7 +475,10 @@ def remote_runs(
             if result_root.parent.name != "results":
                 entry["epoch"] = result_root.parent.name
             try:
-                worker_log = reopen_worker_log(result_root, result)
+                # Concurrent dashboard reads expanded the same 44 MB log repeatedly and
+                # crossed the process memory limit (2026-10-28). A result change is a new key.
+                with _SUMMARY_LOCK:
+                    worker_log = _worker_log_summary(result_root, result_json)
             except (OSError, ValueError, RemoteRunForensicsError) as exc:
                 entry["worker_log_error"] = str(exc)
             else:
@@ -466,15 +487,7 @@ def remote_runs(
                         "not retained by the worker generation that ran this request"
                     )
                 else:
-                    artifact = next(
-                        row for row in result["artifacts"] if row["role"] == "worker_log"
-                    )
-                    entry["worker_log"] = {
-                        "explanation": worker_log_lines(worker_log),
-                        "retention": worker_log_retention(worker_log),
-                        "sha256": artifact["sha256"],
-                        "size": artifact["size"],
-                    }
+                    entry["worker_log"] = {**worker_log, "explanation": list(worker_log["explanation"])}
     for entry in runs.values():
         entry["events"].sort(key=lambda row: (row.get("time_unix", 0), row.get("event", "")))
     return list(runs.values())

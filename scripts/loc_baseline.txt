@@ -136,13 +136,16 @@
 # (device_state.py and oci_backend.py ceilings raised), +2 docs, +3 notes.
 # The PD arena's results page records both go-live controls: identity FAIL at 0.985 and the wrong MLP's audit FAIL
 # (2026-10-28): +10 docs, +2 notes.
+# Dashboard outage: compact completed-report caches and request-scoped process reads replace repeated parsing
+# and scans; include the deployed frontend's independent refresh and explicit health states. Production
+# +154/-49, tests +122/-0, dashboard docs +9, and these +3 notes (2026-10-28).
 (root) 1157
 .github 338
 bundles 2398
-cacheon 91995
+cacheon 92008
 cacheon_kernels 936
-dashboard 4292
+dashboard 4393
 docs 13361
 examples 743
-scripts 4399
-tests 13863
+scripts 4402
+tests 13985
