@@ -134,13 +134,15 @@
 # The PD eager audit runs one engine on half the lane; its final-warmup device check now covers only the engine's
 # GPUs, after requiring a process on the empty half voided the first broken-control audit (2026-10-28): +24 runtime
 # (device_state.py and oci_backend.py ceilings raised), +2 docs, +3 notes.
+# The PD arena's results page records both go-live controls: identity FAIL at 0.985 and the wrong MLP's audit FAIL
+# (2026-10-28): +10 docs, +2 notes.
 (root) 1157
 .github 338
 bundles 2398
 cacheon 91995
 cacheon_kernels 936
 dashboard 4292
-docs 13351
+docs 13361
 examples 743
-scripts 4397
+scripts 4399
 tests 13863

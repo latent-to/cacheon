@@ -73,7 +73,17 @@ every window's read, about 17 MB over 15 windows, against a 16 MiB limit per
 artifact. The limits are now 32 MiB an artifact and 44 MiB in all, under the
 64 MiB response that carries them.
 
+On `c0c31952` the identity completed. The wrong-MLP control's audit then
+reported every layer wrong on all four ranks, but the run ended without a
+decision: the audit's single colocated engine occupies the first four GPUs, and
+the final-warmup device check required an active process on all eight. The
+check now covers only the GPUs the audit engine occupies (`ebda4441`).
+
 | Control | Expected | Result |
 |---|---|---|
-| Faithful identity on `model.layers.*.mlp` | `FAIL`, every window within noise of 1.00 | pending |
-| Wrong MLP under the registered-control audit policy | Speed non-`PASS`, then audit `FAIL` with violations | pending |
+| Faithful identity on `model.layers.*.mlp` (`c0c31952`) | `FAIL`, every window within noise of 1.00 | `FAIL` `speed_threshold_not_met`: ratio 0.985 (standard error 0.012, required 1.027), stopped after one candidate boot by the futility margin; candidate windows 15,693 / 15,883 / 15,871 against a stock reference mean of 16,058 |
+| Wrong MLP under the registered-control audit policy (`ebda4441`) | Speed non-`PASS`, then audit `FAIL` with violations | Speed non-`PASS` over two candidate boots (15,688 to 15,935 tokens/s), then `FAIL` `slot_audit_failed`: passing fraction 0.0 against 0.75 on all 40 layers and 4 ranks; attempt record 20.3 MB |
+
+A faithful identity reads about 0.985 of stock on pairs `n`, `o` and `p`, so a
+candidate's arm carries about 1.5 percent the stock arm does not; the cause is
+not yet measured.
