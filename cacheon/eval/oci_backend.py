@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, Protocol
 
+from cacheon.eval import pd_engine
 from cacheon.eval.device_state import (
     CommandRunner as DeviceCommandRunner,
     DeviceStateActiveReceipt,
@@ -907,8 +908,10 @@ class _FinalWarmupConditioner:
         first_timed_index: int,
         deadline: float,
         clock: Callable[[], float],
+        engine_gpu_ids: tuple[int, ...] | None = None,
     ) -> None:
         self.guard = guard
+        self.engine_gpu_ids = engine_gpu_ids
         self.launch_id = launch_id
         self.final_warmup_index = final_warmup_index
         self.first_timed_index = first_timed_index
@@ -931,6 +934,7 @@ class _FinalWarmupConditioner:
                 release=self.release.is_set,
                 wait_for_release=self.release.wait,
                 cancel=self.cancelled.is_set,
+                engine_gpu_ids=self.engine_gpu_ids,
             )
         except BaseException as exc:
             self.error = exc
@@ -1408,6 +1412,10 @@ class OCIEngineExecutor:
                 session_deadline: float,
                 launch_id: str,
             ) -> tuple[SessionExecutionEvidence, DeviceStateActiveReceipt]:
+                # The eager audit runs a PD pair's prefill role alone on the lane's first TP GPUs
+                # (pd_engine.colocated); requiring a process on the decode role's empty GPUs voided the PD
+                # arena's first audit (2026-10-28).
+                colocated = plan.audit_policy is not None and pd_engine.is_pair(plan.engine_config.engine_kwargs)
                 conditioner = _FinalWarmupConditioner(
                     self.device_guard,
                     launch_id=launch_id,
@@ -1415,6 +1423,8 @@ class OCIEngineExecutor:
                     first_timed_index=plan.warmup_count,
                     deadline=session_deadline,
                     clock=self.manager.clock,
+                    engine_gpu_ids=(self.device_guard.policy.physical_gpu_ids[:plan.engine_config.tp_size]
+                                    if colocated else None),
                 )
                 try:
                     kwargs = {

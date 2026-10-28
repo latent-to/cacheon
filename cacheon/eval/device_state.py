@@ -992,11 +992,13 @@ class DeviceStateGuard:
         self,
         telemetry: tuple[GPUTelemetry, ...],
         processes: tuple[GPUProcess, ...],
+        engine_gpu_ids: tuple[int, ...] | None = None,
     ) -> tuple[bool, str]:
         violations: list[str] = []
+        occupied = set(engine_gpu_ids or self.policy.physical_gpu_ids)
         process_gpu_ids = {item.physical_id for item in processes}
         if self.policy.active_require_process_on_every_gpu:
-            missing = set(self.policy.physical_gpu_ids) - process_gpu_ids
+            missing = occupied - process_gpu_ids
             if missing:
                 violations.append(f"missing active process on GPUs {sorted(missing)}")
         graphics_only = [
@@ -1007,6 +1009,8 @@ class DeviceStateGuard:
         if graphics_only:
             violations.append(f"unexpected graphics-only processes {graphics_only[:16]}")
         for item in telemetry:
+            if item.physical_id not in occupied:
+                continue
             prefix = f"gpu{item.physical_id}"
             if item.pstate not in self.policy.allowed_active_pstates:
                 violations.append(f"{prefix} pstate={item.pstate}")
@@ -1037,6 +1041,7 @@ class DeviceStateGuard:
         self,
         telemetry: tuple[GPUTelemetry, ...],
         processes: tuple[GPUProcess, ...],
+        engine_gpu_ids: tuple[int, ...] | None = None,
     ) -> tuple[bool, str]:
         """Post-response quiescence without pretending processes have exited.
 
@@ -1047,7 +1052,7 @@ class DeviceStateGuard:
         warmup rate is separately charged as a throughput lower bound.
         """
 
-        passed, reason = self._active_envelope_verdict(telemetry, processes)
+        passed, reason = self._active_envelope_verdict(telemetry, processes, engine_gpu_ids)
         violations: list[str] = [] if passed else [reason]
         for item in telemetry:
             prefix = f"gpu{item.physical_id}"
@@ -1177,6 +1182,7 @@ class DeviceStateGuard:
         release: Callable[[], bool] | None = None,
         wait_for_release: Callable[[float], bool] | None = None,
         cancel: Callable[[], bool] | None = None,
+        engine_gpu_ids: tuple[int, ...] | None = None,
     ) -> DeviceStateActiveReceipt:
         """Poll until consecutive active-envelope samples permit timed work.
 
@@ -1193,12 +1199,20 @@ class DeviceStateGuard:
         interval. It changes no authority: the loop still performs a post-response
         query before returning, but does not insert an artificial full polling
         sleep between the final warmup and the first timed request.
+
+        ``engine_gpu_ids`` names the selected GPUs a lifetime's engine occupies when
+        it runs on fewer than all of them; the active envelope covers only those.
         """
 
         if not isinstance(launch_id, str) or _LABEL.fullmatch(launch_id) is None:
             raise DeviceStatePolicyError("launch_id must be a simple 1..128 character identifier")
         if not isinstance(event, str) or _LABEL.fullmatch(event) is None:
             raise DeviceStatePolicyError("event must be a simple 1..128 character identifier")
+        if engine_gpu_ids is not None and (
+            type(engine_gpu_ids) is not tuple or not engine_gpu_ids
+            or not set(engine_gpu_ids) <= set(self.policy.physical_gpu_ids)
+        ):
+            raise DeviceStatePolicyError("engine GPUs must be a nonempty subset of the selected GPUs")
         if release is not None and not callable(release):
             raise DeviceStatePolicyError("release must be callable or null")
         if wait_for_release is not None and (
@@ -1405,11 +1419,11 @@ class DeviceStateGuard:
                 continue
             idle, idle_reason = self._idle_verdict(telemetry, processes)
             active_passed, active_reason = self._active_envelope_verdict(
-                telemetry, processes
+                telemetry, processes, engine_gpu_ids
             )
             post_release = release is not None and released
             if post_release:
-                passed, reason = self._ready_envelope_verdict(telemetry, processes)
+                passed, reason = self._ready_envelope_verdict(telemetry, processes, engine_gpu_ids)
             else:
                 passed, reason = active_passed, active_reason
             samples.append(

@@ -131,13 +131,16 @@
 # The remote qualification evidence limits lived twice (coordinator and evidence capture); the evidence module now
 # imports the coordinator's, raised to 32 MiB an artifact and 44 MiB in all: the attempt record keeps every window's
 # read and voided the PD arena's identity at ~17 MB (2026-10-27): +4 runtime, +5 docs, +3 notes.
+# The PD eager audit runs one engine on half the lane; its final-warmup device check now covers only the engine's
+# GPUs, after requiring a process on the empty half voided the first broken-control audit (2026-10-28): +24 runtime
+# (device_state.py and oci_backend.py ceilings raised), +2 docs, +3 notes.
 (root) 1157
 .github 338
 bundles 2398
-cacheon 91971
+cacheon 91995
 cacheon_kernels 936
 dashboard 4292
-docs 13349
+docs 13351
 examples 743
-scripts 4394
+scripts 4397
 tests 13863

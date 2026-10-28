@@ -697,7 +697,9 @@ prefill server and hands it to the decode engine with the same bootstrap room
 and DP rank, flushes both caches before each window, and requires execution
 coverage from both engines' ranks. The prefill server captures no decode graph,
 so its completions count without one. The eager audit and the pristine reference
-run one colocated engine with the prefill role's settings.
+run one colocated engine with the prefill role's settings on the first half of
+the lane; the audit's final-warmup device check requires active processes only
+on those GPUs.
 The driver uses the executable's sibling Python interpreter to call AIPerf's
 single-run API. The sealed slice digest supplies its benchmark identity, keeping
 cache-buster tokens identical between arms and windows. Each
