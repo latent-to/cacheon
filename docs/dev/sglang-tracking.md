@@ -163,7 +163,7 @@ GPU/model proof remains a separate step.
 4. **Run negative controls.** Confirm missing, ambiguous, wrong, graph-unsafe,
    and sabotage contributions still fail closed or route to stock as specified.
 5. **Run real GPU/model qualification controls.** Establish stock stability,
-   paired-replay noise, pristine T grading, worker cleanup, supported topology,
+   per-window and per-boot replay noise, pristine T grading, worker cleanup, supported topology,
    and known-good/known-bad candidates under the new exact environment.
 6. **Recalibrate the arena.** Freeze new workload, noise, quality, resource, and
    timing policy through the normal reviewed arena process. Do not reuse old
@@ -183,8 +183,8 @@ A pin is ready for authority only after progressively stronger controls:
    audit rather than falling through an unobserved upstream path;
 3. a faithful cache passes the content check, and a cache serving corrupted state is
    refused;
-4. two complete stock engines replay the arena workload in both lane orientations
-   within the calibrated noise;
+4. repeated fresh stock boots on the commissioned lane replay the arena workload
+   within the calibrated window and boot noise;
 5. candidate C changes only the selected target delta;
 6. pristine T regrades sealed outputs without candidate code present; and
 7. known champions are rebaselined rather than inheriting old speedups.

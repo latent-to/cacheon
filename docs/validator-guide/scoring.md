@@ -12,39 +12,50 @@ one exact marginal comparison:
 - B: the exact frozen incumbent stack; and
 - C: that same stack with one registered target replaced.
 
-B and C run as separate engine processes on two isolated TP lanes and replay the
-same sealed agent slice concurrently, one paired window at a time (see
-[Finite agent replay](qualification.md#finite-agent-replay)). The first
-orientation runs B on lane B and C on lane A; fresh engines then boot on the
-opposite lanes for the second. The controller fixes
+B and C run one engine at a time on the whole commissioned lane and replay the
+same sealed agent slice (see
+[Finite agent replay](qualification.md#finite-agent-replay)). B is measured once
+as a retained stock reference of four fresh boots of N windows each; C gets up to
+two fresh boots of N windows on the same lane; after a speed PASS one fresh stock
+bracket boot rechecks the reference. The controller fixes
 the slice, the operating load and the output budgets, releases requests in
 lockstep rounds, and timestamps every request on the host. The durable resident
-witness retains each window's turn records, physical-lane authority, operational
+witness retains each boot's turn records, physical-lane authority, operational
 timing, and budget. After the speed lifetimes are quiescent, qualification runs
 registered eager audit A when the plan requires it, destroys candidate lifetimes,
 and then runs pristine T. Reopen recomputes the costs and the frozen decision
 from the retained records, not from raw session frames. Candidate-reported
 aggregate throughput is never accepted as authority.
 
-The policy-17 speed estimate is conceptually:
+The policy-19 speed estimate is:
 
 ```text
-cost(window) = elapsed serving seconds, first warm release to last warm completion
-ratio(o)     = pooled incumbent cost / pooled candidate cost in lane orientation o
-speedup      = exp(mean over both orientations of log ratio(o))
-PASS         = the one-sided lower bound on speedup exceeds 1 at a sealed look
+cost(boot)  = log(mean elapsed serving seconds over the boot's N windows)
+speedup     = exp(mean cost of the 4 reference boots - mean cost of the k candidate boots)
+SE          = sqrt(sum of reference boot variances / 16 + sum of candidate boot variances / k^2)
+PASS        = exp(log speedup - z * SE) > 1 at a sealed look
 ```
 
-Each whole window is one observation; requests sharing a window are not treated
-as independent replications. The standard error combines the calibrated window
-and boot noise with the observed jackknife variance, and at most four looks
-share the sealed 12.5% error budget (90% at the last look). Both orientations must exist before a PASS,
-and the candidate must also pass the service-attainment gate. The last sealed
-window yields PASS or FAIL. An optional sealed `futility_margin` fails the stage
-after the first orientation when that orientation's pooled estimate is below
-`log1p(-futility_margin)`; the evidence then retains one orientation. Policy 16 scores
-the candidate's fastest complete pass against the incumbent's on one orientation
-with a fixed margin; it remains readable only for its retained evidence.
+A boot's variance is the larger of `null_noise²/N` and its within-boot jackknife
+variance, plus `boot_noise²`; requests sharing a window are not treated as
+independent replications. The reference variance is shared across candidates.
+Looks fall at candidate boot boundaries and spend the sealed 12.5% error budget
+(90% one-sided at the final look). After boot 1 the stage can end only on the
+sealed `futility_margin` (FAIL); a PASS needs both boots and the pooled
+attainment bound. A stock bracket that reads faster than the reference beyond a
+one-sided 1% test turns the PASS into `NO_DECISION` and retires the reference.
+
+Policy 20 keeps this arithmetic for a prefill/decode engine pair replaying the
+slice closed-loop at a sealed session count (see
+[Finite agent replay](qualification.md#finite-agent-replay)). With identical
+token work the speedup is the ratio of served output tokens per second. A gate
+holds the pooled per-user decode rate (the median over every turn with at least
+two output tokens) to the contract's `decode_floor_tps` at every look: a
+candidate below it fails with `service_floor_not_met`, because tokens bought by
+slowing every user below the price floor are not revenue; a stock reference
+below it is a mis-sealed load and yields `NO_DECISION`. A sealed goodput policy
+with `decode_floor` 1 selects policy 20; its digest names the pair topology, the
+closed-loop arrival and the gate.
 
 The exact thresholds come from a frozen `CalibrationManifest` bound to the
 measured reference, arena, runtime, model, hardware, workload, and verifier.
@@ -114,7 +125,7 @@ rules live in
 
 A qualified PASS earns reward only when its speedup beats the best earlier
 rewarded PASS against the same arena and incumbent stack by the reward margin:
-1.5% for V17, the sealed `min_margin` for historical policies. The first PASS
+1.5% for V17, V18 and V19, the sealed `min_margin` for historical policies. The first PASS
 against a commissioned baseline is eligible; see
 [Settlement and weights](settlement-and-weights.md).
 

@@ -258,7 +258,9 @@ Installed libraries may compile declared sources through their ordinary JIT insi
 the disposable worker. A separate `rebuild.json` is required only when selecting
 the native prebuild; `build_cuda_ext` requires a declared `.cu` compilation unit.
 The prebuild worker comes from the commissioned controller source, mounted read-only.
-JIT inputs stay beside namespaced Python, preserving paths relative to `__file__`.
+JIT inputs stay beside namespaced Python, preserving paths relative to `__file__`,
+including when the same bundle selects a native prebuild. The prebuild also retains
+its generated source paths and native module names.
 
 The approved native-extension builder compiles with C++20, as required by current
 PyTorch headers. Compiler flags are part of the recorded native build identity;

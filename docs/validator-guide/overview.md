@@ -24,7 +24,7 @@ flowchart LR
     Intake --> Private["Private 0700 fetch tree"]
     Private --> Publication["Immutable worker publication"]
     Publication --> Arena["Injected arena service<br/>trusted provider"]
-    Arena --> OCI["Paired replay speed stage<br/>B and C concurrent (v17)"]
+    Arena --> OCI["Replay speed stage<br/>one engine per lane (v19)"]
     OCI --> Audit["Audit-only role"]
     Audit --> T["Pristine T reference<br/>candidate-free"]
     T --> Evidence["Content-addressed evidence"]
@@ -74,9 +74,9 @@ The current validator path is deliberately staged:
 6. Admit the publication to its arena's qualification queue at first claim:
    duplicate FAIL replay, closed-target release, and capacity limits apply here.
    There is no separate screen.
-7. Qualify admitted candidates under the version-3 protocol: a paired replay
-   of B and C in both lane orientations (speed policy 17), then audit and
-   pristine T.
+7. Qualify admitted candidates under the version-3 protocol: fresh candidate
+   boots against a retained stock reference on one lane (speed policy 19), then
+   audit and pristine T.
 8. Reopen the complete audited PASS and apply target and evaluation-stack changes
    in one settlement transaction.
 9. Reconcile the global reward projection from a separate signer process.
@@ -108,7 +108,7 @@ Read [The chain loop](chain-loop.md), [Arena service](arena-service.md),
 |---|---|---|
 | Chain intake controller | Finalized order, reservations, private fetch, publication, durable state | Network arrival order, miner paths, mutable hosted bytes |
 | Arena service | Runtime/model/topology/workload identity, capacity, qualification-plan construction | Submission-provided module paths or commands |
-| OCI execution controller | Resident lane roles, paired windows, mounts, deadlines, device observations, protocol, teardown | Candidate process, candidate clocks, candidate quality claims |
+| OCI execution controller | Lane binding, engine boots and windows, mounts, deadlines, device observations, protocol, teardown | Candidate process, candidate clocks, candidate quality claims |
 | Audit-only role | Exact slot × rank/PID witness graded by the trusted host | Candidate-side audit or framework output |
 | Pristine reference T | Untimed teacher-forced quality evidence | Candidate C or the incumbent engine as grading oracle |
 | Settlement store | Reopened audited PASS evidence, target transitions, reward claims | An unreopened report or stale incumbent identity |
@@ -133,7 +133,7 @@ Read [The chain loop](chain-loop.md), [Arena service](arena-service.md),
 | Burn continuously to the subnet owner | `cacheon set-weights --burn-to-subnet-owner --watch` (journaled bootstrap; stops at the first CROWN; `--dry-run` to stop before signing) |
 | Seal model bytes | `cacheon model-provision` |
 
-`scan`, `verify`, and `check` are contributor diagnostics. Contributor-controlled paired
+`scan`, `verify`, and `check` are contributor diagnostics. Contributor-controlled
 profiling is useful before submission and during integration, but its output is not a
 crown, a settlement record, or weight authority. See
 [Verification and diagnostics](running-evals.md).

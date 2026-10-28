@@ -668,7 +668,9 @@ class ResidentSpeedWitness:
         ):
             raise QualificationRunnerError("resident speed wall time is invalid")
         rates = tuple(self.rates)
-        if rates or type(self.goodput) is not GoodputReadSet or bool(self.goodput.orientations) != (self.resident_policy.version == 18):
+        if (rates or type(self.goodput) is not GoodputReadSet
+                or bool(self.goodput.orientations) != (self.resident_policy.version == 18)
+                or bool(self.goodput.boots) != (self.resident_policy.version >= 19)):
             raise QualificationRunnerError("resident speed witness read order differs")
         object.__setattr__(self, "rates", rates)
         expected = _resident_speed_projection_digest(**{
@@ -733,8 +735,6 @@ class ResidentSpeedWitness:
         except (CrossoverRuntimeError, RawSpeedEvidenceError) as exc:
             raise QualificationRunnerError(str(exc)) from None
         grade = QualificationDecision(result.decision.value)
-        if grade is QualificationDecision.FAIL and result.verdict.speedup >= result.verdict.required:
-            return grade, result.settled_speedup, "service_contract_not_met"
         return grade, result.settled_speedup, _speed_reason(grade, result.verdict)
 
     def regrade(
@@ -1954,7 +1954,7 @@ def reopen_causal_qualification(
                 or type(plan) is not ResidentCrossoverPlan
                 or speed.plan_digest != plan.digest
                 or speed.baseline_lane_digest
-                == speed.candidate_lane_digest
+                != speed.candidate_lane_digest
                 or speed.baseline_runtime_resource_policy_digest
                 != plan.baseline.runtime_resource_policy_digest
                 or speed.candidate_runtime_resource_policy_digest
@@ -2084,7 +2084,6 @@ def run_causal_qualification(
     value: CausalQualificationInput,
     *,
     executor: OCIEngineExecutor,
-    resident_baseline_executor: OCIEngineExecutor | None = None,
     entropy_provider: EntropyProvider,
     hidden_judge: HiddenJudge,
     deadline: float,
@@ -2096,8 +2095,8 @@ def run_causal_qualification(
     The speed read shape comes only from ``value.speed_evidence_policy`` so an
     operator cannot silently change the estimator after sealing intake authority.
 
-    A ``continuation`` retains completed speed orientations, audit, pristine T
-    and the final product. Reinvoking the original sealed scope reuses completed
+    A ``continuation`` retains the completed speed stage, audit, pristine T and
+    the final product. Reinvoking the original sealed scope reuses completed
     work and executes only its missing stages.
     """
 
@@ -2113,8 +2112,6 @@ def run_causal_qualification(
         type(executor) is not OCIEngineExecutor
         or not callable(entropy_provider)
         or not callable(hidden_judge)
-        or type(resident_baseline_executor) is not OCIEngineExecutor
-        or resident_baseline_executor is executor
     ):
         raise QualificationRunnerError("runner authorities are not exact and callable")
     if continuation is not None:
@@ -2146,16 +2143,6 @@ def run_causal_qualification(
     ):
         raise QualificationRunnerError("hidden judge authority differs from the sealed cohort")
     assert value.resident_speed_plan is not None
-    observed_start = float(executor.manager.clock())
-    deadline = min(
-        float(deadline),
-        observed_start
-        + value.resident_speed_plan.policy.max_qualification_seconds,
-    )
-    if not math.isfinite(observed_start) or deadline <= observed_start:
-        raise QualificationRunnerError(
-            "resident qualification has no wall-clock budget"
-        )
     calibration = _validate_pre_execution(value)
     if continuation is not None:
         from cacheon.eval.qualification_recovery import resolve_audit_recovery
@@ -2205,14 +2192,25 @@ def run_causal_qualification(
         )
     durable_speed = crossover is not None
     try:
+        reference = None
+        if crossover is None:
+            # A missing stock reference is measured before this qualification's own clock starts.
+            from cacheon.eval.goodput_runtime import open_reference
+            reference = open_reference(value.resident_speed_plan, executor=executor, model_mount=value.model_mount,
+                                       evidence_root=value.evidence_root, deadline=float(deadline))
+        observed_start = float(executor.manager.clock())
+        deadline = min(float(deadline), observed_start + value.resident_speed_plan.policy.max_qualification_seconds)
+        if not math.isfinite(observed_start) or deadline <= observed_start:
+            raise QualificationRunnerError("resident qualification has no wall-clock budget")
         if crossover is None:
             from cacheon.eval.qualification_trajectories import create_controls
             crossover = run_resident_crossover_speed(
                 value.resident_speed_plan,
-                baseline_executor=resident_baseline_executor,
-                candidate_executor=executor,
+                executor=executor,
                 model_mount=value.model_mount,
-                deadline=float(deadline), continuation=continuation,
+                reference=reference,
+                evidence_root=value.evidence_root,
+                deadline=float(deadline),
                 quality_control=lambda controller, candidate, baseline_dir, candidate_dir, quiescence:
                     create_controls(value, controller, candidate, baseline_dir, candidate_dir,
                                     quiescence, entropy_provider),

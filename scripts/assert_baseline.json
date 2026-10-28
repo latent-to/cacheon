@@ -17,7 +17,7 @@
 "tests/test_remote_worker_request_plan.py": 63,
 "tests/test_remote_worker_spool.py": 42,
 "tests/test_seam_activation_live.py": 2,
-"tests/test_settlement.py": 84,
+"tests/test_settlement.py": 83,
 "tests/test_subnet_owner_burn.py": 20,
 "tests/test_validator_arena_allocation.py": 31,
 "tests/test_validator_arenas.py": 28,

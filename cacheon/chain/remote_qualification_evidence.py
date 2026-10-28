@@ -15,7 +15,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-from cacheon.chain.evaluation_coordinator import WorkerReadiness
+from cacheon.chain.evaluation_coordinator import (
+    _REMOTE_EVIDENCE_ARTIFACT_LIMIT as _MAX_REMOTE_EVIDENCE_ARTIFACT_BYTES,
+    _REMOTE_EVIDENCE_ARTIFACTS_LIMIT as _MAX_REMOTE_EVIDENCE_ARTIFACTS,
+    _REMOTE_EVIDENCE_TOTAL_LIMIT as _MAX_REMOTE_QUALIFICATION_EVIDENCE_BYTES,
+    WorkerReadiness,
+)
 from cacheon.eval.qualification import QualificationDecision
 from cacheon.eval.evidence_store import (
     EvidenceArtifactRef,
@@ -41,9 +46,6 @@ from cacheon.stack_manifest import EvaluationStackManifest
 
 
 _SCHEMA_VERSION = 2
-_MAX_REMOTE_EVIDENCE_ARTIFACTS = 256
-_MAX_REMOTE_EVIDENCE_ARTIFACT_BYTES = 16 << 20
-_MAX_REMOTE_QUALIFICATION_EVIDENCE_BYTES = 32 << 20
 
 
 class RemoteEvaluationDispatcherError(RuntimeError):

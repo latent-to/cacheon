@@ -295,11 +295,8 @@ def _declared_sources(
 ]:
     """Return selected compilation units, full inventory, and selected native set."""
 
-    from cacheon.manifest import (
-        all_declared_cuda_sources,
-        load_manifest,
-        resolve_cuda_sources,
-    )
+    from cacheon.engine_tree_paths import is_native_source
+    from cacheon.manifest import all_declared_cuda_sources, load_manifest, resolve_cuda_sources
 
     manifest = load_manifest(bundle)
     architecture = _canonical_architecture(architecture)
@@ -336,7 +333,7 @@ def _declared_sources(
         key=lambda row: row.relative_to(bundle).as_posix(),
     ):
         relative = path.relative_to(bundle).as_posix()
-        if path.suffix != ".cu":
+        if not is_native_source(bundle, path):
             continue
         alias = path.stem
         if _IDENTIFIER_RE.fullmatch(alias) is None:

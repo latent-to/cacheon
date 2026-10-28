@@ -89,7 +89,7 @@ The quickstart did not exercise:
 - SGLang model execution and the node audit against stock;
 - CUDA graph capture and replay;
 - no-egress OCI candidate execution;
-- production qualification (paired replay windows), the registered eager audit,
+- production qualification (the replay speed stage), the registered eager audit,
   and pristine T;
 - audited qualification or settlement; or
 - integration and serving.

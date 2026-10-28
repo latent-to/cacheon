@@ -115,8 +115,11 @@ Truth is the stock node in the running engine, on the same call:
    pages), plus native recurrent convolution and temporal rows for both live
    requests and tracked checkpoints. Native MTP verification also restores and
    grades its batch-position temporal and convolution scratch rows. ReplaySSM
-   state remains unsupported;
-3. the arguments stock changed and the state rows are put back;
+   state remains unsupported. A call that moves the batch's layer-boundary
+   residual stream (a decoder layer on SGLang main) also keeps the residual and
+   the pending contribution it leaves there;
+3. the arguments stock changed, the state rows and the residual stream are put
+   back;
 4. the honest twin answers the same call and is put back the same way: the stock
    node with supported fused ops on SGLang's native reference paths, giving the
    same math with different rounding. Ordinary residual RMSNorm uses an unfused
@@ -182,6 +185,10 @@ outputs; it does not reorder execution results, router pairs or masks.
 What stock leaves in its own arguments is not graded. The fused RMSNorm overwrites
 its arguments and returns them, and a decoder layer leaves normed intermediates in
 its dead input; values reach the caller through the result and the engine state.
+A decoder layer also hands the next layer its residual through the residual stream,
+so a `model.layers.*` candidate is graded on the residual it leaves there (every
+tensor of DeepSeek-V4's mHC state) as well as its result; a call that leaves the
+stream as it found it, such as an MLP or an attention block, adds nothing.
 A result that is a record rather than a tuple is graded through its fields; a module
 in it (a MoE record carries its experts) holds weights, not an answer, and is skipped.
 
@@ -253,8 +260,9 @@ interfaces and state guarantees; returning a subclass is not correctness proof.
 The choice is made once, at engine start, with an empty call descriptor: an op declaring
 dtypes, architectures or eligibility never matches, and the run fails as `candidate_never_executed`.
 
-The same content checks run for stock and candidate. Stock checking failures are
-infrastructure failures; they are not attributed to a miner's cache. Storage
+The content checks run only around a candidate's cache. Stock's cache is trusted
+and runs unchecked: checking it cost the DeepSeek-V4.1 PD decode schedulers 18% of
+their decode speed, so a cache candidate carries the check's cost in its own arm. Storage
 validation is adapter work under this common contract. It recognizes full-attention
 KV, sliding-window KV and its index state (by slot, or by page where the window pool
 stores whole pages), compressed KV and index pages, per-request sliding-window rings,

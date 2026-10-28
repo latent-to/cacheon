@@ -174,6 +174,11 @@ def identity() -> dict:
         or rank >= world_size
     ):
         rank = world_size = -1
+    # A prefill/decode pair is two process groups in one fence, each numbering its ranks from 0; the worker places
+    # both in one roster (prefill first), or every member read as malformed against the pair's 2*tp coverage.
+    offset, roster = _env_int("CACHEON_RECEIPT_RANK_OFFSET"), _env_int("CACHEON_RECEIPT_WORLD_SIZE")
+    if rank >= 0 and offset is not None and roster is not None and rank + offset < roster:
+        rank, world_size = rank + offset, roster
     resolved = {"pid": pid, "rank": rank, "world_size": world_size}
     if rank >= 0:
         _IDENTITY = resolved

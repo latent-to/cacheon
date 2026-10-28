@@ -1,5 +1,4 @@
 """Check the generated OCI paths as the actual runtime identity before model load."""
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -25,19 +24,16 @@ for value in writes:
     assert path.read_bytes() == b'preflight'
     path.unlink()
 
-files = []
-for value in readonly:
-    path = Path(value)
-    files.extend([path] if path.is_file() else (item for item in path.rglob('*') if item.is_file()))
-
-def check(path):
-    """Hash exactly the mounted bytes, without importing candidate code."""
-    digest = hashlib.sha256()
-    with path.open('rb') as handle:
-        while block := handle.read(8*1024*1024):
-            digest.update(block)
-    return {'path': str(path), 'bytes': path.stat().st_size, 'sha256': digest.hexdigest()}
-
-with ThreadPoolExecutor(max_workers=8) as pool:
-    reads = list(pool.map(check, files))
+reads = []
+pending = [Path(value) for value in readonly]
+while pending:
+    path = pending.pop()
+    if path.is_dir():
+        # rglob hid an unreadable oci_site mount during the 2026-10-24 cutover.
+        pending.extend(path.iterdir())
+    else:
+        # Hash exactly the mounted bytes, without importing candidate code.
+        with path.open('rb') as handle:
+            digest = hashlib.file_digest(handle, 'sha256').hexdigest()
+        reads.append({'path': str(path), 'bytes': path.stat().st_size, 'sha256': digest})
 print(json.dumps({'uid': os.getuid(), 'gid': os.getgid(), 'writes': writes, 'reads': reads}))

@@ -154,7 +154,7 @@ python -m cacheon.cli check path/to/bundle \
 Use a fresh output directory and check the per-node, per-rank table. The command
 retains numerical and graph receipts and reports missing coverage. A successful
 check is development evidence; qualification uses the validator's full workload,
-paired timing and final quality gate.
+replay timing and final quality gate.
 
 ## Complete-engine performance development
 
@@ -162,15 +162,15 @@ Cacheon deliberately exposes no local qualification command. Contributors may pr
 the complete serving engine on a disposable host appropriate for candidate code, using
 the published arena contract as the environment specification. Keep the model, runtime,
 topology, graph mode, cache configuration, and workload fixed; run the incumbent and
-candidate concurrently on two disjoint device sets, swap the sets with fresh engines,
-and distrust a gain smaller than the spread between windows. The canonical
+candidate one engine at a time on the same device set, each measurement a fresh
+boot, and distrust a gain smaller than the spread between boots. The canonical
 [performance-development procedure](../validator-guide/running-evals.md#performance-development)
 defines the required inputs and local result record; no repository command runs this
 comparison.
 
 Production version-3 qualification materializes the exact incumbent and
-candidate engines through an injected arena service and measures them with the
-paired replay in both lane orientations (speed policy 17). It then
+candidate engines through an injected arena service and measures fresh candidate
+boots against a retained stock reference on one lane (speed policy 19). It then
 runs registered eager audit A, tears down candidate lifetimes, and obtains
 candidate-free pristine T quality evidence. A contributor-controlled model run
 cannot substitute for that authority.
@@ -182,8 +182,8 @@ Move upward only after the lower layer is green:
 | Layer | Required observation | Still does not prove |
 |---|---|---|
 | `verify` | Target resolution, imports, and entry signatures | Numerical correctness, graph behavior, or speedup |
-| `check` | Audit against stock and captured execution on the public requests at full TP width | Hidden workload behavior, paired speed, or pristine quality |
-| Local paired replay | Model can load and the selected delta can improve the matched workload | Validator isolation, hidden quality, crown authority, settlement |
+| `check` | Audit against stock and captured execution on the public requests at full TP width | Hidden workload behavior, arena speed, or pristine quality |
+| Local replay | Model can load and the selected delta can improve the matched workload | Validator isolation, hidden quality, crown authority, settlement |
 | One complete audited qualification PASS | Candidate is `qualified` and eligible for cohort settlement; the current registered cohort winner may be crowned while another is held | Reward eligibility, integration safety, or release readiness |
 
 Keep local A/B results as engineering evidence, labeled with their exact environment and

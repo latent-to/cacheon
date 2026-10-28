@@ -176,9 +176,10 @@ separate authorities and must not be added to the intake service definition.
 With an injected deployment registry, the same testnet loop may qualify, retain a
 complete audited PASS, and settle. That does not move qualification onto chain: the chain supplies
 arrival and current metagraph authority, while the registered OCI/referee fleet produces
-and retains the evidence. Production version-3 qualification uses the paired
-replay of B and C, then audit and pristine T. Verify both lane orientations of
-the paired replay before daemon mode.
+and retains the evidence. Production version-3 qualification runs candidate
+boots against a retained stock reference on one lane (speed policy 19), then
+audit and pristine T. Verify the stock reference, both candidate boots and the
+stock bracket before daemon mode.
 
 ## Weight dry run
 

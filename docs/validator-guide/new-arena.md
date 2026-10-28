@@ -1,7 +1,8 @@
 # Commissioning a new arena
 
 An arena is one sealed model, worker image, workload and lane width, served by
-one or more commissioned pairs on a node. The repository carries the operator
+one or more commissioned pairs on a node; a pair is the operator's name for one
+worker and the one lane it owns. The repository carries the operator
 that commissions a pair as tracked templates under `scripts/arena/`, with every
 arena-specific value in one `operator.json` beside the arena's inputs, and the
 tools that produce the arena's own inputs: the prompt pools and authority, the
@@ -105,8 +106,9 @@ the pod transport. One directory holds them:
 | `arena_id` | the registered arena identity, as sealed in the deployment profile and the manifest |
 | `slug` | the short name in unit names, credential ids, digest domains and rendered file names |
 | `model_profile_key` | the model profile key the deployment profile seals |
-| `tensor_parallel_size` | the lane width; a pair is two disjoint lanes of this width |
+| `tensor_parallel_size` | the lane width; one engine at a time owns every GPU of the lane |
 | `replay_load` | the sealed replay sessions per window |
+| `tokens_per_prompt` | the largest recorded output budget of one turn in the sessions the replay serves; the commission refuses any other value |
 | `tokenizer_asset` | the tokenizer directory name inside the replay inputs archive |
 | `model_in_ram` | whether the checkpoint is served from a RAM mount or from its storage path |
 | `owner` | the dispatcher owner name of the commissioned pair |
@@ -157,7 +159,7 @@ python3 -B scripts/arena/launch_node.py --operator /path/to/operator-musespark \
   --source runtime-source.tar --source-metadata runtime-source.json \
   --source-revision <commit> --image-digest <sha256 hex> -- \
   --host <pod> --user root --known-hosts known_hosts --shared /data/<arena> \
-  --tag <node tag> --lane 0,1,2,3 --baseline 4,5,6,7 \
+  --tag <node tag> --lane 0,1,2,3 \
   --model-input model-input.json --model-token /path/to/token \
   --runtime-seed /path/to/runtime-seed
 ```

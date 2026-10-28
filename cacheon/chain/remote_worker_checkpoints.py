@@ -174,8 +174,7 @@ def _previous_work_checkpoint(transport, body):
         if snapshot["origin"]["request"] != ready["request_digest"] or wire.digest != ready["request_digest"]:
             fail("retained checkpoint differs from its original request")
         stages = snapshot["stages"]
-        progress = tuple(name in stages for name in ("quality", "audit", "speed", "speed_first"))
-        progress += (sum(name.startswith("speed_window_") for name in stages),)
+        progress = tuple(name in stages for name in ("quality", "audit", "speed"))
         matches.append((progress, request["queued_at_unix_ns"], ready))
     return max(matches, key=lambda row: row[:2])[2] if matches else None
 

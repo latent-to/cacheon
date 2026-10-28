@@ -14,6 +14,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 
 selected = ContextVar("dashboard_source", default=None)
+_process_tables = ContextVar("dashboard_process_tables", default=None)
 _PATHS = {"db": "DB_PATH", "mission": "MISSION", "audit": "AUDIT_PATH",
           "spool": "SPOOL", "heartbeat": "HEARTBEAT_PATH", "registration": "REGISTRATION_PATH",
           "logs": "LOG_ROOT", "evidence_state": "QUAL_EVIDENCE_STATE", "stage": "STAGE_ROOT"}
@@ -143,19 +144,31 @@ def process_matches(role, default=(), *, proc_root=Path("/proc")):
     needles = source.processes[role] if source else default
     if not needles:
         return False
-    for entry in proc_root.iterdir():
-        if not entry.name.isdigit():
+    tables = _process_tables.get()
+    if tables is None:
+        tables = {}
+    if proc_root not in tables:
+        records = []
+        for entry in proc_root.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                argv = entry.joinpath("cmdline").read_bytes().decode().strip("\0").split("\0")
+                tokens = [part for arg in argv for part in (arg.split("=", 1) if arg.startswith("--") else [arg])]
+                records.append((entry, tokens))
+            except (OSError, UnicodeError):
+                continue
+        tables[proc_root] = records
+    for entry, tokens in tables[proc_root]:
+        if not all(needle in tokens for needle in needles if not needle.startswith("/")):
             continue
         try:
-            argv = entry.joinpath("cmdline").read_bytes().decode().strip("\0").split("\0")
-            tokens = [part for arg in argv for part in (arg.split("=", 1) if arg.startswith("--") else [arg])]
-            cwd = entry.joinpath("cwd").resolve()
             def matches(needle):
                 if not needle.startswith("/"):
                     return needle in tokens
                 root = Path(needle)
                 return any(root == p or root in p.parents for p in (
-                    (Path(token) if token.startswith("/") else cwd / token)
+                    (Path(token) if token.startswith("/") else entry.joinpath("cwd").resolve() / token)
                     for token in tokens if "/" in token))
             if all(matches(needle) for needle in needles):
                 return True
@@ -328,6 +341,15 @@ def install_sources(app, api):
     settings = json.loads(Path(path).read_text()) if path else {}
     app.state.dashboard_weight_producer_config = settings.get("weight_producer_config")
     app.state.dashboard_weight_producer_pidfile = settings.get("weight_producer_pidfile")
+
+    @app.middleware("http")
+    async def process_table_request(request, call_next):
+        # An arena read checks every role of every source; one fresh table serves this request.
+        token = _process_tables.set({})
+        try:
+            return await call_next(request)
+        finally:
+            _process_tables.reset(token)
 
     @app.get("/{arena}", include_in_schema=False)
     def arena_page(arena: str, request: Request):

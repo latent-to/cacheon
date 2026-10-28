@@ -416,9 +416,6 @@ def run_with_runtime(
         body = wire.body
         from cacheon.chain.qualification_request import require_commissioned_incumbent
 
-        service = runtime._commissioned_service
-        if service is not None and body.get("screen_lane") == "reproduction":
-            qualification_commission = service.reproduction_commission
         require_commissioned_incumbent(body, qualification_commission.construction)
         candidates = body["candidates"]
         # Cohort size is enforced against the sealed manifest capacity by

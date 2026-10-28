@@ -1,12 +1,12 @@
-"""Bounded production speed stage with two resident TP lanes.
+"""Bounded production speed stage: one engine at a time owns the lane.
 
-Stock and candidate load once on disjoint lanes and replay the sealed session
-slice in paired windows (speed policies 16–18; ``goodput_runtime`` runs the
-windows and ``service_capacity`` grades them). Audit and pristine T are later
-stages and must not run unless this returns PASS.
+Stock and candidate replay the sealed session slice in whole engine lifetimes on
+the same lane (speed policy 19; ``goodput_runtime`` runs the lifetimes and
+``service_capacity`` grades them against the retained stock reference). Audit
+and pristine T are later stages and must not run unless this returns PASS.
 
-The batch-cell B/C/B-prime schedules (policies 8-15) were deleted with the
-batch evaluator; their retained products stay readable as stored JSON only.
+Paired two-lane stages (policies 16-18) and the batch-cell B/C/B-prime schedules
+(policies 8-15) no longer execute; their retained witnesses stay readable.
 """
 
 from __future__ import annotations
@@ -17,8 +17,11 @@ import time
 from dataclasses import dataclass, field as dataclass_field
 from typing import Callable
 
+from cacheon.eval import pd_engine
 from cacheon.eval.resident_speed_policy import ResidentSpeedPolicy
-from cacheon.eval.goodput_runtime import GoodputPolicy as GoodputPolicy, GoodputReadSet
+from cacheon.eval.goodput_runtime import (
+    REFERENCE_BOOTS, GoodputPolicy as GoodputPolicy, GoodputReadSet, regrade_reference_speed,
+)
 from cacheon.eval.reference_protocol import ReferencePromptInput
 from cacheon.eval.qualification import SelectionEntropyReceipt
 from cacheon.eval.engine_launch import EngineLaunchSpec, TrustedLaunchBinding
@@ -106,13 +109,15 @@ class ResidentCrossoverPlan:
             type(self.baseline) is not ResidentArmPlan
             or type(self.candidate) is not ResidentArmPlan
             or type(self.policy) is not ResidentSpeedPolicy
+            or self.policy.version < 19
             or _workload(self.baseline.session_plan)
             != _workload(self.candidate.session_plan)
         ):
             raise CrossoverRuntimeError("resident crossover plan is inconsistent")
         replay = self.baseline.session_plan.replay
         if (replay is None or len(replay.loads) != 1 or replay.contract != self.policy.goodput.contract
-                or replay.elapsed_cost != bool(self.policy.goodput.error_rate)):
+                or replay.elapsed_cost != bool(self.policy.goodput.error_rate)
+                or replay.closed_loop != (self.policy.version == 20)):
             raise CrossoverRuntimeError("goodput plan requires one sealed load and its service contract")
         allowed_differences = {
             "stack_digest",
@@ -120,38 +125,20 @@ class ResidentCrossoverPlan:
             "native_build_spec_digest",
             "resource_policy_digest",
         }
-        common = set(self.baseline.launch.__dataclass_fields__) - {
-            "hardware",
-            *allowed_differences,
-        }
+        common = set(self.baseline.launch.__dataclass_fields__) - allowed_differences
         if any(
             getattr(self.baseline.launch, field)
             != getattr(self.candidate.launch, field)
             for field in common
         ):
             raise CrossoverRuntimeError("resident arms differ outside contribution identity")
-        left, right = self.baseline.launch.hardware, self.candidate.launch.hardware
-        shape = lambda row: (
-            row.visible_gpu_count,
-            row.architecture,
-            row.topology_class,
-            row.tp_size,
-            row.ep_size,
-            row.dp_size,
-        )
-        if shape(left) != shape(right) or left.visible_gpu_count != left.tp_size:
-            raise CrossoverRuntimeError("resident TP lanes are not equivalent")
-        if set(self.baseline.binding.physical_hardware.physical_gpu_ids) & set(
-            self.candidate.binding.physical_hardware.physical_gpu_ids
-        ):
-            raise CrossoverRuntimeError("resident TP lanes overlap physical GPUs")
-        if (
-            self.baseline.executor_namespace_digest
-            == self.candidate.executor_namespace_digest
-        ):
-            raise CrossoverRuntimeError(
-                "resident TP lanes require distinct executor namespaces"
-            )
+        hardware = self.candidate.launch.hardware
+        # Version 20 times a prefill/decode pair, each engine on half the lane; nothing else may.
+        pair = pd_engine.is_pair(dict(self.candidate.session_plan.engine_config.engine_kwargs))
+        if (pair != (self.policy.version == 20)
+                or hardware.visible_gpu_count != hardware.tp_size * (2 if pair else 1)
+                or _expected_lane_digest(self.baseline) != _expected_lane_digest(self.candidate)):
+            raise CrossoverRuntimeError("stock and candidate do not share one whole lane")
 
     @property
     def digest(self) -> str:
@@ -256,13 +243,11 @@ def _execution_digest(value: EngineExecutionEvidence) -> str:
     )
 
 
-def _validate_execution_binding(execution: EngineExecutionEvidence, arm: ResidentArmPlan,
-                                *, checkpoint: bool = False) -> None:
-    """Bind either measurement schedule to the same launched engine and physical lane."""
+def _validate_execution_binding(execution: EngineExecutionEvidence, arm: ResidentArmPlan) -> None:
+    """Bind one engine lifetime to its sealed launch and physical lane."""
     session, plan = execution.session, arm.session_plan
     if (
-        execution.schema != ("cacheon.oci-resident-engine-checkpoint.v1" if checkpoint else
-                             "cacheon.oci-resident-engine-execution.v1")
+        execution.schema != "cacheon.oci-resident-engine-execution.v1"
         or execution.launch_digest != arm.launch.digest
         or execution.resource_policy_digest != arm.runtime_resource_policy_digest
         or type(session) is not SessionExecutionEvidence
@@ -273,12 +258,8 @@ def _validate_execution_binding(execution: EngineExecutionEvidence, arm: Residen
     ):
         raise CrossoverRuntimeError("resident execution differs from its sealed arm")
     receipts = execution.device_receipts
-    if checkpoint:
-        if len(receipts) != 3 or receipts[2] is not None:
-            raise CrossoverRuntimeError("open replay checkpoint cannot claim a post-drain receipt")
-        receipts = receipts[:2]
     physical = arm.binding.physical_hardware.physical_gpu_ids
-    if type(receipts) is not tuple or len(receipts) != (2 if checkpoint else 3):
+    if type(receipts) is not tuple or len(receipts) != 3:
         raise CrossoverRuntimeError("resident execution lacks device receipt coverage")
     if all(value.isdecimal() for value in physical) and any(
         tuple(row.selected_physical_gpu_ids) != tuple(map(int, physical))
@@ -297,13 +278,20 @@ def _validate_execution_binding(execution: EngineExecutionEvidence, arm: Residen
 
 @dataclass(frozen=True)
 class ResidentCrossoverEvidence:
+    """One speed stage on one lane.
+
+    ``prior_executions`` holds the stock reference lifetimes, then every candidate lifetime before
+    the last. ``baseline_execution`` is the stock bracket that follows a PASS, or None; without it
+    the lane's last quiescence is the candidate's, and both quiescence fields carry it.
+    """
+
     plan_digest: str
     selected_delta_digest: str
     policy: ResidentSpeedPolicy
     workload_digest: str
     baseline_lane_digest: str
     candidate_lane_digest: str
-    baseline_execution: EngineExecutionEvidence
+    baseline_execution: EngineExecutionEvidence | None
     candidate_execution: EngineExecutionEvidence
     baseline_quiescence: OCIQuiescenceReceipt
     candidate_quiescence: OCIQuiescenceReceipt
@@ -325,19 +313,11 @@ class ResidentCrossoverEvidence:
     replay_windows: tuple[str, ...] = dataclass_field(default=(), metadata={"wire_optional": True})
 
     def __post_init__(self) -> None:
-        version = (
-            self.policy.version if type(self.policy) is ResidentSpeedPolicy else 0
-        )
-        # A sealed futility FAIL retains exactly one orientation and no swapped boot.
-        stopped = (version == 17 and not self.prior_executions and self.decision is SpeedStageDecision.FAIL
-                   and self.policy.goodput.futility_margin > 0 and type(self.goodput) is GoodputReadSet
-                   and len(self.goodput.incumbent) == self.goodput.window_limit // 2)
-        if ((version == 17 and not stopped and (len(self.prior_executions) != 2
-                               or any(type(v) is not EngineExecutionEvidence for v in self.prior_executions)))
-            or (version != 17 and self.prior_executions)
-            or (bool(self.replay_windows) != (version == 18))
-            or (type(self.goodput) is GoodputReadSet and bool(self.goodput.orientations) != (version == 18))):
-            raise CrossoverRuntimeError("swapped replay requires both first-orientation executions")
+        if (type(self.policy) is not ResidentSpeedPolicy or self.policy.version < 19 or self.replay_windows
+            or len(self.prior_executions) < REFERENCE_BOOTS
+            or any(type(v) is not EngineExecutionEvidence for v in self.prior_executions)
+            or type(self.goodput) is not GoodputReadSet or not self.goodput.boots):
+            raise CrossoverRuntimeError("speed evidence lacks its stock reference lifetimes")
         for field in (
             "plan_digest",
             "selected_delta_digest",
@@ -354,7 +334,7 @@ class ResidentCrossoverEvidence:
             or type(self.goodput) is not GoodputReadSet
             or self.rates != ()
             or type(self.policy) is not ResidentSpeedPolicy
-            or type(self.baseline_execution) is not EngineExecutionEvidence
+            or (self.baseline_execution is not None and type(self.baseline_execution) is not EngineExecutionEvidence)
             or type(self.candidate_execution) is not EngineExecutionEvidence
             or type(self.baseline_quiescence) is not OCIQuiescenceReceipt
             or type(self.candidate_quiescence) is not OCIQuiescenceReceipt
@@ -362,7 +342,7 @@ class ResidentCrossoverEvidence:
             or type(self.final_verdict) is not SpeedupVerdict
             or type(self.escalated) is not bool
             or type(self.decision) is not SpeedStageDecision
-            or self.baseline_lane_digest == self.candidate_lane_digest
+            or self.baseline_lane_digest != self.candidate_lane_digest
             or self.exit_reason
             != ("borderline_" if self.escalated else "clear_")
             + self.decision.value.lower()
@@ -382,43 +362,9 @@ class ResidentCrossoverEvidence:
     def regrade(self, plan: ResidentCrossoverPlan) -> SpeedupVerdict:
         """Recompute the grade only from the sealed plan and the retained turn records."""
 
-        if self.policy.version == 18:
-            from cacheon.eval.replay_checkpoint import regrade
-            return regrade(self, plan)
-        final_plan = plan
-        if plan.policy.version == 17 and self.prior_executions:
-            from cacheon.eval.goodput_runtime import _orientation_plan
-            windows = plan.baseline.session_plan.replay.windows
-            final_plan = _orientation_plan(plan, windows-windows//2, swapped=True)
-        if (
-            type(plan) is not ResidentCrossoverPlan
-            or self.plan_digest != plan.digest
-            or self.selected_delta_digest != plan.selected_delta_digest
-            or self.policy != plan.policy
-            or self.workload_digest
-            != marginal_workload_digest(plan.baseline.session_plan)
-            or self.baseline_lane_digest != _expected_lane_digest(final_plan.baseline)
-            or self.candidate_lane_digest != _expected_lane_digest(final_plan.candidate)
-            or self.baseline_quiescence.namespace_digest
-            != final_plan.baseline.executor_namespace_digest
-            or self.candidate_quiescence.namespace_digest
-            != final_plan.candidate.executor_namespace_digest
-            or any(
-                (row.container_ids, row.lease_records, row.resource_entries)
-                != ((), (), ())
-                for row in (
-                    self.baseline_quiescence,
-                    self.candidate_quiescence,
-                )
-            )
-        ):
+        if type(plan) is not ResidentCrossoverPlan:
             raise CrossoverRuntimeError("resident evidence names another sealed plan")
-        from cacheon.eval.goodput_runtime import regrade_goodput_execution
-        grade = regrade_goodput_execution(self, plan)
-        if (self.initial_verdict != grade.verdict or self.final_verdict != grade.verdict
-            or self.decision is not grade.decision):
-            raise CrossoverRuntimeError("goodput headline does not regrade")
-        return grade.verdict
+        return regrade_reference_speed(self, plan)
 
     @property
     def digest(self) -> str:
@@ -431,7 +377,8 @@ class ResidentCrossoverEvidence:
         return canonical_digest(
             "cacheon.qualification.resident-crossover-speed",
             {
-                "baseline_execution": _execution_digest(self.baseline_execution),
+                "baseline_execution": (None if self.baseline_execution is None
+                                       else _execution_digest(self.baseline_execution)),
                 "baseline_lane": self.baseline_lane_digest,
                 "baseline_quiescence": self.baseline_quiescence.digest,
                 "candidate_execution": _execution_digest(self.candidate_execution),
@@ -520,47 +467,43 @@ class ResidentMarginalLifecycleEvidence:
 
     @property
     def final_baseline(self) -> EngineExecutionEvidence:
-        """The resident baseline lifetime that served the last paired window."""
+        """The last engine lifetime on the lane: the stock bracket, or else the last candidate boot."""
 
-        return self.crossover.baseline_execution
+        return self.crossover.baseline_execution or self.crossover.candidate_execution
 
     @property
     def timed_session_ids(self) -> frozenset[str]:
         return frozenset(
-            {
-                self.crossover.baseline_execution.session.session_id,
-                self.crossover.candidate_execution.session.session_id,
-            }
+            row.session.session_id
+            for row in (*self.crossover.prior_executions[REFERENCE_BOOTS:], self.crossover.candidate_execution,
+                        *((self.crossover.baseline_execution,) if self.crossover.baseline_execution else ()))
         )
 
 
 def run_resident_crossover_speed(
     plan: ResidentCrossoverPlan,
     *,
-    baseline_executor: OCIEngineExecutor,
-    candidate_executor: OCIEngineExecutor,
+    executor: OCIEngineExecutor,
     model_mount: TrustedArenaModelMountReceipt,
+    reference: tuple[EngineExecutionEvidence, ...],
+    evidence_root,
     deadline: float,
     clock: Callable[[], float] = time.monotonic,
     quality_control=None,
-    continuation=None,
 ) -> ResidentCrossoverEvidence:
     """Run the exact production speed stage for one candidate."""
 
-    from cacheon.eval.goodput_runtime import run_goodput_pair
+    from cacheon.eval.goodput_runtime import run_reference_speed
 
     if (
         type(plan) is not ResidentCrossoverPlan
-        or type(baseline_executor) is not OCIEngineExecutor
-        or type(candidate_executor) is not OCIEngineExecutor
-        or baseline_executor is candidate_executor
+        or type(executor) is not OCIEngineExecutor
         or type(model_mount) is not TrustedArenaModelMountReceipt
     ):
         raise CrossoverRuntimeError("resident crossover authorities are not exact")
-    return run_goodput_pair(
-        plan, baseline_executor=baseline_executor, candidate_executor=candidate_executor,
-        model_mount=model_mount, deadline=deadline, clock=clock, quality_control=quality_control,
-        continuation=continuation,
+    return run_reference_speed(
+        plan, executor=executor, model_mount=model_mount, reference=reference, evidence_root=evidence_root,
+        deadline=deadline, clock=clock, quality_control=quality_control,
     )
 
 

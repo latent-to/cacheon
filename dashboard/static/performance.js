@@ -25,7 +25,15 @@ function replayPerformance(speed, title) {
   const cost = (lane) => fastest ? lane.mean_warm_latency_s : lane.elapsed_s;
   const mark = (lane) => lane.used_for_score ? `<b>${metricNumber(cost(lane), 3)}</b>` : metricNumber(cost(lane), fastest ? 3 : 1);
   const early = speed.window_limit > speed.windows;
-  const rows = speed.lanes.filter((lane) => lane.role === "B").map((base, pass) => {
+  // Policy 19 runs one engine at a time on the whole lane: rows are fresh boots, not simultaneous pairs.
+  const reference = speed.score_basis === "retained_reference_boots";
+  const mean = (lanes, field) => lanes.reduce((n, lane) => n + lane[field], 0) / lanes.length;
+  const bootRows = (role, label) => Object.values(speed.lanes.filter((lane) => lane.role === role)
+    .reduce((boots, lane) => ((boots[lane.boot] ||= []).push(lane), boots), {})).map((lanes, boot) => `<tr>
+      <td>${label(boot)}</td><td>${metricNumber(mean(lanes, "elapsed_s"), 1)}</td><td>${metricNumber(mean(lanes, "decode_tps"), 1)}</td>
+      <td>${metricNumber(mean(lanes, "mean_ttft_s"), 2)}</td><td>${metricNumber(mean(lanes, "attainment") * 100, 1)}</td></tr>`);
+  const rows = reference ? [...bootRows("B", (boot) => boot < speed.reference_boots ? `Stock reference boot ${boot + 1}` : "Stock bracket after PASS"),
+    ...bootRows("C", (boot) => `Candidate boot ${boot + 1}`)] : speed.lanes.filter((lane) => lane.role === "B").map((base, pass) => {
     const cand = speed.lanes.find((lane) => lane.role === "C" && slot(lane) === slot(base));
     return cand ? `<tr><td>Pass ${pass + 1}${swaps.B.indexOf(base.physical_lane) ? ' <span class="muted small">lanes swapped</span>' : ""}</td>
       <td><b>${metricGain(cost(base) / cost(cand))}</b></td><td>${mark(base)} → ${mark(cand)}</td>
@@ -38,7 +46,8 @@ function replayPerformance(speed, title) {
   return `<section class="performance">${title}
     <h4>Agent replay: measured against the baseline</h4>
     <p>Both sides replayed the same ${metricNumber(speed.lanes[0].warm_turns, 0)} coding-agent turns at ${metricNumber(speed.load, 0)} concurrent sessions per lane,
-      ${metricNumber(speed.windows, 0)} time${speed.windows === 1 ? "" : "s"}${early ? ` of a possible ${metricNumber(speed.window_limit, 0)}` : ""}.</p>
+      ${reference ? `${metricNumber(speed.window_limit, 0)} times per fresh engine boot; the candidate ran ${metricNumber(speed.windows / speed.window_limit, 0)} boots against ${metricNumber(speed.reference_boots, 0)} retained stock boots`
+        : `${metricNumber(speed.windows, 0)} time${speed.windows === 1 ? "" : "s"}${early ? ` of a possible ${metricNumber(speed.window_limit, 0)}` : ""}`}.</p>
     <div class="cards">${card(metricGain(speed.speedup), "Measured gain", grade.decision === "PASS" ? "ok" : "bad")}
       ${card(metricGain(grade.required_speedup), early ? `Needed at pass ${metricNumber(speed.windows, 0)} of ${metricNumber(speed.window_limit, 0)}` : "Needed")}
       ${card(sideBySide(arm("B", "decode_tps"), arm("C", "decode_tps"), 1, "more"), "Decode tok/s, baseline → candidate")}
@@ -46,22 +55,24 @@ function replayPerformance(speed, title) {
       ${card((margin >= 0 ? "+" : "") + metricNumber(margin, 2) + " pp", margin >= 0 ? "Above what was needed" : "Short of what was needed")}
       ${card(metricNumber(speed.speed_stage_seconds / 60, 1) + " min", "Speed stage, including startup")}</div>
     <p>${esc(grade.detail[0].toUpperCase() + grade.detail.slice(1))}.${early ? " What is needed shrinks with every pass, so a full run needs less than the figure shown for this pass." : ""}
-      ${grade.futility_margin ? `A run whose first lane orientation reads more than ${metricNumber(grade.futility_margin * 100, 2)}% slower than the baseline stops there.` : ""}</p>
-    <div class="metrics-table">${table(["Pass", "Gain", fastest ? "Mean turn (s)" : "Same work (s)", "Decode (tok/s)", "First token (s)", "In service level (%)"], rows)}</div>
-    <p class="metric-note">Every pair reads baseline → candidate. Each pass runs the two at the same moment on two lanes. Timing starts at the first warm release; the opening cold-prefill round is excluded.
+      ${grade.futility_margin ? `A run whose first ${reference ? "boot" : "lane orientation"} reads more than ${metricNumber(grade.futility_margin * 100, 2)}% slower than the baseline stops there.` : ""}</p>
+    <div class="metrics-table">${reference ? table(["Engine boot", "Same work (s)", "Decode (tok/s)", "First token (s)", "In service level (%)"], rows)
+      : table(["Pass", "Gain", fastest ? "Mean turn (s)" : "Same work (s)", "Decode (tok/s)", "First token (s)", "In service level (%)"], rows)}</div>
+    <p class="metric-note">${reference ? "One engine at a time owns the whole lane. The stock reference is retained across candidates; after a PASS a stock bracket boot reruns, and a stock reading significantly faster than its reference turns the result into no decision and rebuilds the reference."
+        : "Every pair reads baseline → candidate. Each pass runs the two at the same moment on two lanes."} Timing starts at the first warm release; the opening cold-prefill round is excluded.
       ${fastest ? "The score divides the baseline’s fastest pass by the candidate’s fastest pass; those two readings are in bold."
-        : "The score pools the time within each lane orientation and combines the two orientations geometrically."}
+        : reference ? "The score compares the mean log same-work time per boot." : "The score pools the time within each lane orientation and combines the two orientations geometrically."}
       Decode is every token after the first over every second after it; first-token time includes queueing.</p>
     <details><summary>Service level and noise settings</summary>
     <p class="metric-note">Unsuccessful requests across all passes: ${metricNumber(speed.lanes.reduce((n, row) => n + row.unsuccessful_turns, 0), 0)}.
       ${grade.lower_speedup == null ? "" : `Lower bound of the gain: ${metricGain(grade.lower_speedup)}.`}</p>
     <p class="metric-note">Service contract: first token within ${metricNumber(speed.contract.ttft_bound_s, 2)} s,
       decode at least ${metricNumber(speed.contract.decode_floor_tps, 1)} tok/s.
-      Attainment includes every attempted turn. Candidate attainment less its noise allowance of
+      Attainment includes every attempted turn. ${grade.attainment_tolerance >= 1 ? "It is reported only: this commission seals no attainment bound." : `Candidate attainment less its noise allowance of
       ${metricNumber(grade.attainment_margin * 100, 2)} percentage points must stay within
-      ${metricNumber(grade.attainment_tolerance * 100, 2)} percentage points of the incumbent in each window.</p>
-    <p class="metric-note">${fastest ? 'Configured noise allowance' : 'Configured paired window log SD'}: ${metricNumber(grade.null_noise * 100, 3)}% · replay policy ${metricNumber(speed.policy_version, 0)}.
-      ${grade.standard_error == null ? '' : `Final log standard error: ${metricNumber(grade.standard_error * 100, 3)}%; configured paired boot log SD: ${metricNumber(grade.boot_noise * 100, 3)}%. The statistical bound depends on the commissioned calibration.`}
+      ${metricNumber(grade.attainment_tolerance * 100, 2)} percentage points of the incumbent ${grade.attainment_pooled ? "over the pooled windows" : "in each window"}.`}</p>
+    <p class="metric-note">${fastest ? 'Configured noise allowance' : `Configured ${reference ? "" : "paired "}window log SD`}: ${metricNumber(grade.null_noise * 100, 3)}% · replay policy ${metricNumber(speed.policy_version, 0)}.
+      ${grade.standard_error == null ? '' : `Final log standard error: ${metricNumber(grade.standard_error * 100, 3)}%; configured ${reference ? "" : "paired "}boot log SD: ${metricNumber(grade.boot_noise * 100, 3)}%. The statistical bound depends on the commissioned calibration.`}
       Workload <code style="overflow-wrap:anywhere">${esc(speed.workload_digest)}</code>.</p></details>
   </section>`;
 }

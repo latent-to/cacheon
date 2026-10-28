@@ -114,11 +114,13 @@ def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
         lanes = []
         for role, windows in (("B", reads.incumbent), ("C", reads.candidate)):
             arm = []
-            for read in windows:
+            for index, read in enumerate(windows):
                 work = fixed_work_rate(read, expected)
                 elapsed = fixed_work_rate(read, expected, wall_time=True)
+                # Version 19 retains whole boots: reference boots, then the bracket, per arm.
+                boot = {"boot": index // reads.window_limit} if reads.boots else {}
                 arm.append({"role": role, "window": read.window, "load": read.load,
-                            "physical_lane": read.lane,
+                            "physical_lane": read.lane, **boot,
                             "warm_turns": work.turns, "request_time_s": work.elapsed_s,
                             "mean_warm_latency_s": work.elapsed_s / work.turns,
                             "elapsed_s": elapsed.elapsed_s, "turns_per_second": elapsed.rate,
@@ -132,11 +134,14 @@ def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
         speed.update({
             "lanes": lanes, "speedup": float(grade.settled_speedup),
             "policy_version": retained.resident_policy.version,
-            "score_basis": ("fastest_pass_latency" if retained.resident_policy.version == 16
-                            else "pooled_elapsed_orientation"),
+            "score_basis": {16: "fastest_pass_latency", 19: "retained_reference_boots",
+                            20: "retained_reference_boots"}.get(
+                retained.resident_policy.version, "pooled_elapsed_orientation"),
             "speed_stage_seconds": retained.completed_monotonic_s - retained.started_monotonic_s,
             "workload_digest": retained.workload_digest,
-            "load": reads.incumbent[0].load, "windows": len(reads.incumbent), "window_limit": reads.window_limit,
+            "load": reads.incumbent[0].load,
+            "windows": len(reads.candidate if reads.boots else reads.incumbent),
+            "window_limit": reads.window_limit, "reference_boots": reads.reference_boots,
             "contract": asdict(policy.contract),
             "grading": {"decision": grade.decision.value, "detail": grade.verdict.detail,
                         "required_speedup": grade.verdict.required,
@@ -147,7 +152,8 @@ def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
                         "boot_noise": policy.boot_noise if policy.error_rate else None,
                         "error_rate": policy.error_rate or None,
                         "attainment_tolerance": policy.attainment_tolerance,
-                        "attainment_margin": policy.attainment_margin, "futility_margin": policy.futility_margin},
+                        "attainment_margin": policy.attainment_margin, "futility_margin": policy.futility_margin,
+                        "attainment_pooled": bool(policy.attainment_pooled)},
         })
     except (RuntimeError, ValueError, KeyError, TypeError, AttributeError) as exc:
         speed["grading_error"] = str(exc)

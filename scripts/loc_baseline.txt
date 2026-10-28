@@ -82,13 +82,70 @@
 # contribution's own publication. Runtime net 0; +25 docs for JIT/recovery, +10 tests in existing end-to-end modules.
 # Scripts include these three notes, the preceding change's three uncounted notes, and +1 for NUMA-safe GPU pin indexing.
 # First-arena start: +9 scripts/+4 docs replace manual intake installation and first-sync ordering; +1 accounting note.
-(root) 1155
+# Pooled service attainment (a sealed attainment_pooled grades the bound once over all paired windows; policies
+# without it keep the per-window rule and their bytes): +17 runtime, +7 docs, +2 notes. Supersedes nothing.
+# A sealed attainment tolerance of 1 with margin 0 reports attainment without failing (owner ruling 2026-10-25):
+# +2 runtime notes, +1 docs, +2 notes. Supersedes nothing; no deletion was available.
+# Speed policy 19 (one full-node engine against a retained stock reference) deletes the second lane, lane pair, role
+# swap, reproduction commission and replay checkpoints: -935 runtime, -6 docs, -4 tests, -4 scripts; +11 dashboard
+# lists per-boot rows for a reference read set, the one raise; +3 notes. TP8 results page: +229 docs, +1 root.
+# Speed policy 20 (DeepSeek PD arena: a prefill/decode pair in one worker fence, closed-loop replay, a pooled decode-p50
+# floor gate; owner order 2026-10-27, LOC ceiling raised by owner waiver): +317 runtime (+391/-74; pd_engine is the
+# pair's consumer in engine_worker), +27 docs, +5 notes. The first raise counted only +128 runtime. Review fixes (PD
+# receipt roster, closed-loop prompt pool, stock floor refused at open_reference, service_floor_not_met): +42 runtime
+# (+72/-30), +11 docs. Supersedes nothing; no deletion was available in this change.
+# PD commissioning (owner waiver): the lane stays commissioned at its full width and a pair's engines each take
+# half (b300_deployment, hardware_bindings); cacheon check runs a pair in its one-engine form: +17/-7 runtime. The
+# lane validator's half-wired pair allowance is deleted. The PD arena inputs (examples/arena_inputs/dsv41pd): +136 examples.
+# The reference token maximum the commission checks against the replay slice becomes an operator parameter (the two
+# templates hard-coded the 48-session slice's 9238; the PD slice's is 22484): +2 scripts, +3 examples, +1 docs, +2 notes.
+# PD arena seals Mooncake's NVLink KV transport (NIXL cost ~500 s of each boot's first window) and the decode radix cache
+# (+11.7% stock), measured 8xB300 2026-10-27: +4 runtime (three env keys), +13 examples, +2 notes. Supersedes NIXL.
+# A pair's worker preflight counts both roles' GPUs and seals a loopback host address for SGLang's KV managers (the
+# first PD twin's preflight refused the 8-GPU lane; no-network fence, 2026-10-27): +1 runtime, +2 notes.
+# The PD arena registers the repository's broken node control for its audit: +2 examples, +1 note.
+# The pair's prefill client opens a connection per request with no cap (a pooled connection SGLang had closed after 5 s
+# idle failed the first stock reference read, "Server disconnected", 2026-10-27): +3 runtime, +2 notes.
+# The replay bridge templates chat turns in a process pool (on its event loop, 0.21 s per 135k-token turn capped the
+# PD arena at 3.4 turns/s and a 47 s TTFT median, 2026-10-27); the Lium client gets 32 cores: +27 runtime, +1 examples, +3 notes.
+# The node audit puts SGLang's layer-boundary residual stream back after each stock reference (a model.layers.* identity
+# bundle failed every call on the PD arena, 2026-10-27): +35 runtime, +2 notes.
+# The node audit grades the residual stream a call leaves when it moves the stream (a model.layers.* candidate could
+# rewrite the residual after its result and pass, 2026-10-27): +27 runtime, +2 notes. The slot contract and the slot
+# guide say so: +8 docs, +1 note.
+# The session codec checks an all-int list (a 135k-token turn's IDs) at C speed instead of an element at a time
+# (it held the PD session worker's loop at ~98% and TTFT near 7 s, 2026-10-27): +7 runtime, +2 notes.
+# AIPerf 0.13.0 closed a stock window one root turn early (3,571 of 3,572 returned, the join refused the read,
+# 2026-10-27); the replay client completes a phase only when every sent request returns: +9 runtime, +2 notes.
+# The PD arena seals 192 sessions again: production stock read 130 there only because the prefix-cache check also
+# ran on stock's cache and held the decode schedulers (2026-10-27); the check now guards only a candidate's cache:
+# -7 runtime, +1 docs, +1 note.
+# The PD session worker's one event loop ran at 70-94% of a core in steady state, its token-ID JSON (decode the
+# controller's frame, encode the prefill POST) ~30% of it, and time to first token read 3.4 s against the HTTP
+# harness's 1.1 s (2026-10-27); both now go through orjson: +25 runtime, +4 notes. No deletion here; the
+# prefix-cache change before it deleted 7.
+# The PD worker checkpoint keeps every turn's output IDs per engine lifetime; four stock boots and a candidate boot
+# came to 516 MB and voided an identity run at the 128 MiB bound, now 1 GiB (2026-10-27): +2 runtime. The PD
+# arena's results page and README report the production stock read at 192 sessions: +74 docs, +3 examples, +1
+# root (nav), +4 notes.
+# The remote qualification evidence limits lived twice (coordinator and evidence capture); the evidence module now
+# imports the coordinator's, raised to 32 MiB an artifact and 44 MiB in all: the attempt record keeps every window's
+# read and voided the PD arena's identity at ~17 MB (2026-10-27): +4 runtime, +5 docs, +3 notes.
+# The PD eager audit runs one engine on half the lane; its final-warmup device check now covers only the engine's
+# GPUs, after requiring a process on the empty half voided the first broken-control audit (2026-10-28): +24 runtime
+# (device_state.py and oci_backend.py ceilings raised), +2 docs, +3 notes.
+# The PD arena's results page records both go-live controls: identity FAIL at 0.985 and the wrong MLP's audit FAIL
+# (2026-10-28): +10 docs, +2 notes.
+# Dashboard outage: compact completed-report caches and request-scoped process reads replace repeated parsing
+# and scans; include the deployed frontend's independent refresh and explicit health states. Production
+# +154/-49, tests +122/-0, dashboard docs +9, and these +3 notes (2026-10-28).
+(root) 1157
 .github 338
 bundles 2398
-cacheon 92378
+cacheon 92008
 cacheon_kernels 936
-dashboard 4281
-docs 12989
-examples 582
-scripts 4352
-tests 13838
+dashboard 4393
+docs 13361
+examples 743
+scripts 4402
+tests 13985

@@ -336,8 +336,6 @@ class B300RemoteQualificationAdapter:
             != manifest.runtime.base_engine_digest
             or self.construction.qualification_policy_digest
             != manifest.qualification_policy_digest
-            or self.deployment.authorities.qualification_stage
-            != self.deployment.screen_lane
         ):
             raise B300RemoteQualificationAdapterError(
                 "qualification construction differs from the fixed deployment"
@@ -361,7 +359,6 @@ class B300RemoteQualificationAdapter:
             type(worker) is not B300MainnetWorker
             or worker.service.manifest != manifest
             or worker.readiness != self.readiness
-            or worker._remote_qualification_lane != self.deployment.screen_lane
             or worker.service._provider is not worker._provider
         ):
             if owns_worker:
@@ -437,8 +434,6 @@ class B300RemoteQualificationAdapter:
             or body["qualification_policy_digest"]
             != self.construction.qualification_policy_digest
             or body["screen_lane"] != self.deployment.screen_lane
-            or body["screen_lane"]
-            != self.deployment.authorities.qualification_stage
         ):
             raise B300RemoteQualificationAdapterError(
                 "remote request differs from deployment service, policy, lane, or READY authority"

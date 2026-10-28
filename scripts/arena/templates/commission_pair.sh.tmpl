@@ -2,9 +2,9 @@
 # Commission one @MODEL_PROFILE_KEY@ TP@TP@ pair on this box with the proven GLM sequence (commission_stage.sh, 2026-09-29):
 # READY receipt, deployment profile, declaration, base authority, bootstrap materialization and registration, calibration
 # seal, finalize, final materialization and registration, pod install, CPU handoff archive. CPU-only: the runtime
-# preflight inside base-authority boots the image without GPUs. usage: commission_pair_@SLUG@.sh TAG LANE BASE SEED
+# preflight inside base-authority boots the image without GPUs. usage: commission_pair_@SLUG@.sh TAG LANE SEED
 set -eu
-TAG=$1; LANE=$2; BASE=$3; SEED=$4
+TAG=$1; LANE=$2; SEED=$3
 NODE=/data/cacheon-dsv41/node; STAGE=$NODE/pair-$TAG; QA=$STAGE/qualification-authority; L=$STAGE/chain-logs
 SRC=/data/cacheon-dsv41/stage-e0d4a039/source; PACKET=/data/cacheon-dsv41/packet
 PY=/data/cacheon-b300/controller-venv-h3/bin/python
@@ -56,11 +56,11 @@ test "$($PY -B -c 'import cacheon;print(cacheon.__file__)')" = "$SRC/cacheon/__i
 step 0b-replay-tokenizer-preflight
 $PY -B /root/cacheon-dsv41/preflight_replay_tokenizer.py "$QA/qualification_capabilities.py" > "$L/0b-replay-tokenizer-preflight.json"
 step 1-commission
-$PY - "$STAGE/commission-command.json" "$PY" "$SERVICE" "$SRC" "$REV" "$SEED" "$MODEL" "$RECEIPT" "$IMAGE" "$LANE" "$BASE" "$HOSTADDR" "$STAGE/ready-receipt.json" <<'PY'
+$PY - "$STAGE/commission-command.json" "$PY" "$SERVICE" "$SRC" "$REV" "$SEED" "$MODEL" "$RECEIPT" "$IMAGE" "$LANE" "$HOSTADDR" "$STAGE/ready-receipt.json" <<'PY'
 import json, sys
-out, py, service, src, rev, seed, model, receipt, image, lane, base, host, ready = sys.argv[1:]
+out, py, service, src, rev, seed, model, receipt, image, lane, host, ready = sys.argv[1:]
 cmd = [py, "-B", service, "commission-current-pod", "--source-root", src, "--source-revision", rev, "--runtime-root", seed, "--model-root", model,
-       "--model-receipt", receipt, "--worker-image", image, "--python-executable", py, "--lane-devices", lane, "--baseline-devices", base,
+       "--model-receipt", receipt, "--worker-image", image, "--python-executable", py, "--lane-devices", lane,
        "--pod-endpoint", f"{host}:22", "--output", ready]
 open(out, "w").write(json.dumps(cmd) + "\n")
 PY
@@ -83,7 +83,7 @@ step 6-seal-calibration
 $PY -B "$A" --seal-calibration-from-durable > "$STAGE/calibration-capture.json" 2> "$L/6-seal.err"
 $PY -c 'import json,sys; d=json.load(open(sys.argv[1])); print("SEALED_INCUMBENT", {k: v.get("artifact_digest", "")[:12] for k, v in d["incumbent_stack"]["entries"].items()})' "$STAGE/calibration-capture.json"
 step 7-finalize
-$PY -B "$QA/finalize-authority.py" "$STAGE/bootstrap-authority/authority-config.json" "$STAGE/bootstrap-authority/measurement-config.json" "$STAGE/calibration-capture.json" "$STAGE/final-authority" "$QA/calibration-v3-width0/calibration-pair.json" "$QA/calibration-v3-width0/primary/projection.json" "$QA/calibration-v3-width0/reproduction/projection.json" > "$L/7-finalize.log" 2>&1
+$PY -B "$QA/finalize-authority.py" "$STAGE/bootstrap-authority/authority-config.json" "$STAGE/bootstrap-authority/measurement-config.json" "$STAGE/calibration-capture.json" "$STAGE/final-authority" "$QA/calibration-v3-width0/calibration-pair.json" "$QA/calibration-v3-width0/primary/projection.json" > "$L/7-finalize.log" 2>&1
 mv "$STAGE/commissioned" "$STAGE/commissioned-bootstrap"
 step 8-materialize-final
 materialize "$STAGE/final-authority" "$QA/calibration-v3-width0/calibration-pair.json" "$QA/calibration-v3-width0/primary/projection.json" > "$L/8-materialize-final.log" 2>&1

@@ -67,18 +67,18 @@ evaluation and economic state.
 | Private validator snapshot/restore | [`chain/archive.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/archive.py) |
 | Injected arena boundary | [`arena_service.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/arena_service.py) |
 | Qualification schema and regrading | [`eval/qualification.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification.py) |
-| Adaptive two-lane qualification | [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py), [`eval/qualification_runner.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py) |
+| Adaptive single-lane qualification | [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py), [`eval/qualification_runner.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/qualification_runner.py) |
 | Standing qualification composition | [`eval/b300_qualification_deployment.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_qualification_deployment.py), [`eval/b300_registered_qualification.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_registered_qualification.py) |
 | Sealed qualification input authorities | [`eval/b300_registered_qualification_inputs.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_registered_qualification_inputs.py) |
-| Physical qualification lane pair | [`eval/b300_qualification_lanes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_qualification_lanes.py) |
+| Physical qualification lane | [`eval/b300_qualification_lanes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_qualification_lanes.py) |
 | Remote qualification evidence products | [`chain/remote_qualification_evidence.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/chain/remote_qualification_evidence.py) |
 | Remote qualification adapter | [`eval/b300_remote_qualification_adapter.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/b300_remote_qualification_adapter.py) |
 | Bundle and committed-source identity | [`bundle_hash.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/bundle_hash.py) |
 | Host audit grading | [`audit_gate.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit_gate.py) |
 | OCI lifecycle and protocol | [`eval/oci_backend.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_backend.py), [`eval/oci_session_protocol.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_session_protocol.py) |
-| Current speed substrate | Paired replay (speed policy 17) in [`eval/goodput_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/goodput_runtime.py), [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py) and [`eval/agent_replay.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/agent_replay.py) |
+| Current speed substrate | Engine boots against a retained stock reference (speed policy 19) in [`eval/goodput_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/goodput_runtime.py), [`eval/crossover_runtime.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/crossover_runtime.py) and [`eval/agent_replay.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/agent_replay.py) |
 | Statistical speed grade | [`eval/service_capacity.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/service_capacity.py) |
-| Immutable native prebuild and the store both lanes share | [`eval/oci_prebuild.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_prebuild.py) |
+| Immutable native prebuild and the store every boot shares | [`eval/oci_prebuild.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/oci_prebuild.py) |
 | Device conditioning/cleanup | [`eval/device_state.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/eval/device_state.py) |
 
 ## State, economics, and weights
@@ -181,7 +181,7 @@ roots, and the remaining focused tests mirror authority boundaries:
   component parser's import and CUDA closures included), pod faults, crowns,
   weights, a second target, the weight service, arenas and the operator commands,
   including private digest-bound recovery;
-- the off-chain twin proves the paired replay, registered eager audit A and
+- the off-chain twin proves the replay speed stage, registered eager audit A and
   pristine T on the commissioned node; and
 - chain-intake, settlement, economics, and weight-publication tests cover
   durable economic transitions.

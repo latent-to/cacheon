@@ -428,21 +428,28 @@ class B300RegisteredQualificationFactory:
         authority = self.profile_for(
             candidate.reservation.target_id
         ).resolve(candidate, prepared_candidate)
-        candidate_resident_arm = ResidentArmPlan(
-            prepared_candidate.launch,
-            prepared_candidate.binding.launch_binding,
-            prepared_candidate.session_plan,
+        executor = (
             inputs.candidate_executor_namespace_digest,
             inputs.candidate_runtime_resource_policy_digest,
             inputs.candidate_device_configuration_digest,
         )
-        # Every candidate is measured by the paired replay in `goodput_runtime`,
-        # which boots real trees for both arms; after a speed PASS the quality
-        # gate runs in the still-open baseline arm.
+        # One executor owns the lane: `goodput_runtime` boots the incumbent for
+        # the retained reference and the post-PASS bracket, and the candidate
+        # tree for its own boots; the quality gate runs in the bracket.
         resident_plan = ResidentCrossoverPlan(
             candidate.reservation.selected_delta_digest,
-            inputs.resident_baseline_arm,
-            candidate_resident_arm,
+            ResidentArmPlan(
+                inputs.incumbent_launch,
+                inputs.incumbent_binding.launch_binding,
+                inputs.baseline_session_plan,
+                *executor,
+            ),
+            ResidentArmPlan(
+                prepared_candidate.launch,
+                prepared_candidate.binding.launch_binding,
+                prepared_candidate.session_plan,
+                *executor,
+            ),
             inputs.resident_speed_policy,
         )
         audit_seed = hashlib.sha256(

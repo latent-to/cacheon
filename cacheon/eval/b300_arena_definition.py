@@ -74,32 +74,10 @@ def ready_lane(ready: dict[str, object]) -> tuple[int, ...]:
     tp = lane.get("tensor_parallel_size")
     if type(tp) is not int or tp != len(selected):
         raise B300DeploymentError("READY lane differs from its tensor parallel size")
+    if not set(selected).issubset(ready_gpu_ids(ready)):
+        raise B300DeploymentError("READY lane lies outside its inventory")
     require_digest(lane.get("lane_digest"), field="READY lane digest", error=B300DeploymentError)
     return selected
-
-
-def ready_lanes(ready: dict[str, object]) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    """Resolve the commissioned pair, allowing other devices on the host.
-
-    Existing full-host receipts have one uniquely determined complement.
-    A partial-host allocation must explicitly name its baseline devices.
-    """
-    selected = ready_lane(ready)
-    inventory = ready_gpu_ids(ready)
-    lane = _mapping(ready.get("lane"), "READY lane")
-    baseline = _device_ids(lane["baseline_devices"], "READY baseline lane") if "baseline_devices" in lane else tuple(
-        index for index in inventory if index not in selected
-    )
-    if (
-        len(baseline) != len(selected)
-        or set(selected).intersection(baseline)
-        or not set(selected + baseline).issubset(inventory)
-    ):
-        raise B300DeploymentError(
-            "READY requires equal disjoint lanes within its inventory; "
-            "partial-host allocations must name baseline_devices"
-        )
-    return selected, baseline
 
 
 def device_policy(gpus: tuple[GPUConfiguration, ...]) -> DeviceStatePolicy:
@@ -141,14 +119,18 @@ def resource_policy(policy, overrides: object):
 
 
 def hardware_bindings(
-    runtime: ArenaRuntimeIdentity, policy: DeviceStatePolicy, *, dp_size: int
+    runtime: ArenaRuntimeIdentity, policy: DeviceStatePolicy, *, dp_size: int, tp_size: int
 ) -> tuple[LogicalHardwareSpec, PhysicalHardwareBinding]:
-    """Project both launch views from the same commissioned runtime and lane."""
+    """Project both launch views from the same commissioned runtime and lane.
+
+    The lane is commissioned at its full width; ``tp_size`` is the engine's degree, half the lane when a
+    prefill/decode pair splits it (speed policy 20).
+    """
     common = dict(
         architecture=runtime.target_architecture,
         topology_class=runtime.topology_class,
         topology_digest=runtime.topology_digest,
-        tp_size=runtime.tensor_parallel_size,
+        tp_size=tp_size,
         ep_size=1,
         dp_size=dp_size,
         device_policy_digest=policy.policy_sha256,

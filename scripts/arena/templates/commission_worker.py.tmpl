@@ -10,7 +10,7 @@ import tarfile
 import time
 
 parser = argparse.ArgumentParser(description=__doc__)
-for name in ('shared', 'root', 'host', 'user', 'known-hosts', 'tag', 'lane', 'baseline'):
+for name in ('shared', 'root', 'host', 'user', 'known-hosts', 'tag', 'lane'):
     parser.add_argument('--'+name, required=True)
 parser.add_argument('--model-proof',type=Path)
 parser.add_argument('--model-input',type=Path)
@@ -103,10 +103,10 @@ try:
     run('prepare-'+args.tag, ['/usr/bin/python3','-B',str(helper/'prepare_worker.py'),
         '--shared',str(shared),'--root',str(root),'--known-hosts',args.known_hosts,
         '--tag',args.tag,'--pod-host',args.host,'--pod-user',args.user,
-        '--lane',args.lane,'--baseline',args.baseline,'--model-input',str(model_input),
+        '--lane',args.lane,'--model-input',str(model_input),
         '--pod-port',args.pod_port], 120)
     run('commission-'+args.tag, ['bash',str(root/'operator/commission.sh'),args.tag,
-        args.lane,args.baseline,str(seed)], 2400)
+        args.lane,str(seed)], 2400)
     run('runtime-uid-'+args.tag, ['/usr/bin/python3','-B',str(helper/'runtime_uid_preflight.py'),
         '--shared',str(shared),'--root',str(root),'--tag',args.tag], 1800)
     stage = root/('node/pair-'+args.tag)

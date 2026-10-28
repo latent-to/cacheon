@@ -22,6 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterator
 
+from cacheon.eval import pd_engine
 from cacheon.eval.engine_worker import (
     _path_mount_is_read_only as _path_is_read_only,
 )
@@ -465,10 +466,9 @@ def _validate_live_preflight(
     if observed_sglang != expected_sglang:
         raise SessionWorkerError("installed SGLang differs from the launch identity")
     architectures = _gpu_architectures()
-    if len(architectures) != config.tp_size:
-        raise SessionWorkerError(
-            "visible GPU count differs from the engine tensor-parallel degree"
-        )
+    # A prefill/decode pair (speed policy 20) sees both roles' GPUs, tp_size each, as engine_worker pins them.
+    if len(architectures) != config.tp_size * (2 if pd_engine.is_pair(config.engine_kwargs) else 1):
+        raise SessionWorkerError("visible GPU count differs from the engine tensor-parallel degree")
     facts = RuntimePreflightFacts(
         launch_digest=launch_digest,
         runtime_digest=_required_digest_env(_DIGEST_ENV["runtime_digest"]),

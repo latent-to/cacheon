@@ -1,4 +1,4 @@
-"""Closed B300/TP4 composition root for arena qualification.
+"""Closed B300 composition root for arena qualification.
 
 The generic arena service deliberately leaves deployment assembly out of the
 consensus-facing types.  This module supplies that assembly without resolving
@@ -7,7 +7,7 @@ Every executable authority is supplied in process, paired with a deployment
 identity digest, and captured before the provider accepts work.
 
 A commissioning run seals only :class:`B300DeclaredAuthorities` into the
-manifest; the full :class:`B300DeploymentAuthorities` with executors, judge,
+manifest; the full :class:`B300DeploymentAuthorities` with executor, judge,
 entropy, and deadline exist only inside the qualification worker process.
 """
 
@@ -26,12 +26,8 @@ from cacheon.arena_service import (
 )
 from cacheon.eval.device_state import DeviceStatePolicy
 from cacheon.eval.b300_qualification_lanes import (
-    QUALIFICATION_LANE_PAIR_SCHEMA,
     QUALIFICATION_LANE_SCHEMA,
-    QUALIFICATION_ROLE_SWAP_SCHEMA,
     B300ArenaProviderError,
-    B300QualificationLaneOrientation,
-    B300QualificationLanePair,
     B300QualificationLanePolicy,
     _digest,
 )
@@ -41,7 +37,7 @@ from cacheon.eval.qualification_runner import HiddenJudgeBinding
 from cacheon.stack_identity import canonical_digest
 
 
-PROVIDER_SCHEMA = "cacheon.eval.b300-arena-provider.v3"
+PROVIDER_SCHEMA = "cacheon.eval.b300-arena-provider.v4"
 
 
 QualificationFactoryBuilder = Callable[
@@ -55,16 +51,15 @@ class B300DeclaredQualificationAuthorities:
     """Path-free qualification identities sealed before any executor exists.
 
     A commissioning run must identify the qualification worker without
-    pretending to possess its private judge, entropy, executors, or factory.
+    pretending to possess its private judge, entropy, executor, or factory.
     These declarations are therefore sufficient for provider/service identity,
     but grant no qualification capability.
     """
 
     qualification_policy_digest: str
     qualification_builder_digest: str
-    candidate_executor_policy_digest: str
-    resident_baseline_executor_policy_digest: str
-    lane_pair: B300QualificationLanePair
+    executor_policy_digest: str
+    lane: B300QualificationLanePolicy
     entropy_provider_digest: str
     hidden_judge_binding_digest: str
     deadline_policy_digest: str
@@ -73,30 +68,24 @@ class B300DeclaredQualificationAuthorities:
         for field in (
             "qualification_policy_digest",
             "qualification_builder_digest",
-            "candidate_executor_policy_digest",
-            "resident_baseline_executor_policy_digest",
+            "executor_policy_digest",
             "entropy_provider_digest",
             "hidden_judge_binding_digest",
             "deadline_policy_digest",
         ):
             object.__setattr__(self, field, _digest(getattr(self, field), field))
-        if type(self.lane_pair) is not B300QualificationLanePair:
-            raise B300ArenaProviderError("qualification lane pair is not exact")
+        if type(self.lane) is not B300QualificationLanePolicy:
+            raise B300ArenaProviderError("qualification lane is not exact")
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "candidate_executor_policy_digest": (
-                self.candidate_executor_policy_digest
-            ),
             "deadline_policy_digest": self.deadline_policy_digest,
             "entropy_provider_digest": self.entropy_provider_digest,
+            "executor_policy_digest": self.executor_policy_digest,
             "hidden_judge_binding_digest": self.hidden_judge_binding_digest,
-            "lane_pair": self.lane_pair.to_dict(),
+            "lane": self.lane.to_dict(),
             "qualification_builder_digest": self.qualification_builder_digest,
             "qualification_policy_digest": self.qualification_policy_digest,
-            "resident_baseline_executor_policy_digest": (
-                self.resident_baseline_executor_policy_digest
-            ),
         }
 
 
@@ -118,7 +107,7 @@ class B300DeclaredAuthorities:
             raise B300ArenaProviderError(
                 "declared qualification authority is not exact"
             )
-        self.qualification.lane_pair.validate_runtime(self.runtime_identity)
+        self.qualification.lane.validate_runtime(self.runtime_identity)
 
     @property
     def qualification_policy_digest(self) -> str:
@@ -127,12 +116,13 @@ class B300DeclaredAuthorities:
 
 @dataclass(frozen=True)
 class B300DeploymentAuthorities:
-    """All non-public authorities needed by one B300/TP4 service.
+    """All non-public authorities needed by one B300 qualification service.
 
     The public arena manifest cannot and does not recreate these values.  In
     particular, private selection-secret lookup, plan construction, entropy,
-    hidden judging, executor lifecycles, and the absolute deadline remain
-    explicit deployment inputs.
+    hidden judging, the executor lifecycle, and the absolute deadline remain
+    explicit deployment inputs.  One executor owns the whole lane: it runs the
+    stock reference, the candidate, and the stock bracket in turn.
     """
 
     runtime_identity: ArenaRuntimeIdentity
@@ -140,14 +130,12 @@ class B300DeploymentAuthorities:
     qualification_builder_digest: str
     qualification_factory_builder: QualificationFactoryBuilder
     executor: OCIEngineExecutor
-    resident_baseline_executor: OCIEngineExecutor
     entropy_provider_digest: str
     entropy_provider: object
     hidden_judge: object
     deadline_policy_digest: str
     deadline_provider: DeadlineProvider
-    qualification_lane_pair: B300QualificationLanePair
-    qualification_stage: str
+    qualification_lane: B300QualificationLanePolicy
 
     def __post_init__(self) -> None:
         if type(self.runtime_identity) is not ArenaRuntimeIdentity:
@@ -161,31 +149,10 @@ class B300DeploymentAuthorities:
             object.__setattr__(self, field, _digest(getattr(self, field), field))
         if not callable(self.qualification_factory_builder):
             raise B300ArenaProviderError("qualification factory builder is not callable")
-        if type(self.qualification_lane_pair) is not B300QualificationLanePair:
-            raise B300ArenaProviderError("qualification lane pair is not exact")
-        self.qualification_lane_pair.validate_runtime(self.runtime_identity)
-        orientation = self.qualification_lane_pair.orientation(
-            self.qualification_stage
-        )
-        if (
-            type(self.executor) is not OCIEngineExecutor
-            or type(self.resident_baseline_executor) is not OCIEngineExecutor
-            or self.executor is self.resident_baseline_executor
-            or self.executor.manager is self.resident_baseline_executor.manager
-        ):
-            raise B300ArenaProviderError("qualification executors are not exact and distinct")
-        _executor_identity(self.executor, role="candidate")
-        _executor_identity(self.resident_baseline_executor, role="resident_baseline")
-        _validate_executor_lane(
-            self.executor,
-            orientation.candidate,
-            role="candidate",
-        )
-        _validate_executor_lane(
-            self.resident_baseline_executor,
-            orientation.resident_baseline,
-            role="resident_baseline",
-        )
+        if type(self.qualification_lane) is not B300QualificationLanePolicy:
+            raise B300ArenaProviderError("qualification lane is not exact")
+        self.qualification_lane.validate_runtime(self.runtime_identity)
+        _validate_executor_lane(self.executor, self.qualification_lane)
         if not callable(self.entropy_provider) or not callable(self.hidden_judge):
             raise B300ArenaProviderError("entropy or hidden-judge authority is not callable")
         if type(getattr(self.hidden_judge, "binding", None)) is not HiddenJudgeBinding:
@@ -198,34 +165,16 @@ class B300DeploymentAuthorities:
         binding = getattr(self.hidden_judge, "binding", None)
         if type(binding) is not HiddenJudgeBinding:
             raise B300ArenaProviderError("hidden judge binding changed or is untyped")
-        orientation = self.qualification_orientation
-        _validate_executor_lane(
-            self.executor,
-            orientation.candidate,
-            role="candidate",
-        )
-        _validate_executor_lane(
-            self.resident_baseline_executor,
-            orientation.resident_baseline,
-            role="resident_baseline",
-        )
+        config, _policy = _validate_executor_lane(self.executor, self.qualification_lane)
         return B300DeclaredQualificationAuthorities(
             self.qualification_policy_digest,
             self.qualification_builder_digest,
-            _executor_role_policy_identity(self.executor, role="candidate"),
-            _executor_role_policy_identity(
-                self.resident_baseline_executor,
-                role="resident_baseline",
-            ),
-            self.qualification_lane_pair,
+            b300_executor_policy_digest(config),
+            self.qualification_lane,
             self.entropy_provider_digest,
             binding.digest,
             self.deadline_policy_digest,
         )
-
-    @property
-    def qualification_orientation(self) -> B300QualificationLaneOrientation:
-        return self.qualification_lane_pair.orientation(self.qualification_stage)
 
 
 def _native_limits_payload(config: OCIBackendConfig) -> dict[str, int]:
@@ -235,66 +184,19 @@ def _native_limits_payload(config: OCIBackendConfig) -> dict[str, int]:
     }
 
 
-def _executor_config(
-    executor: OCIEngineExecutor,
-    *,
-    role: str,
-) -> tuple[OCIBackendConfig, DeviceStatePolicy]:
-    if type(executor) is not OCIEngineExecutor:
-        raise B300ArenaProviderError(f"{role} executor is not exact")
-    config = getattr(executor, "config", None)
-    device_policy = getattr(executor, "device_policy", None)
-    manager = getattr(executor, "manager", None)
-    if (
-        type(config) is not OCIBackendConfig
-        or type(device_policy) is not DeviceStatePolicy
-        or manager is None
-        or getattr(manager, "executor_id", None) != config.prebuild.executor_id
-    ):
-        raise B300ArenaProviderError(f"{role} executor configuration is inconsistent")
-    return config, device_policy
+def b300_executor_policy_digest(config: OCIBackendConfig) -> str:
+    """Bind the executor policy without binding it to one physical lane."""
 
-
-def b300_executor_role_policy_digest(
-    config: OCIBackendConfig,
-    *,
-    role: str,
-) -> str:
-    """Bind an executor role without binding it to one physical TP4 lane."""
-
-    if type(config) is not OCIBackendConfig or role not in {
-        "candidate",
-        "resident_baseline",
-    }:
-        raise B300ArenaProviderError("qualification executor role policy is invalid")
+    if type(config) is not OCIBackendConfig:
+        raise B300ArenaProviderError("qualification executor policy is invalid")
     return canonical_digest(
-        "cacheon.eval.b300-oci-executor-role-policy.v1",
+        "cacheon.eval.b300-oci-executor-role-policy.v2",
         {
             "dependency_policy_digest": config.prebuild.policy.dependency_policy_digest,
             "executor_id": config.prebuild.executor_id,
             "native_limits": _native_limits_payload(config),
             "resource_policy_digest": config.prebuild.policy.resource_policy_digest,
-            "role": role,
             "runtime_policy_digest": config.runtime.digest,
-        },
-    )
-
-
-def _executor_role_policy_identity(executor: OCIEngineExecutor, *, role: str) -> str:
-    config, _device_policy = _executor_config(executor, role=role)
-    return b300_executor_role_policy_digest(config, role=role)
-
-
-def _executor_identity(executor: OCIEngineExecutor, *, role: str) -> str:
-    config, device_policy = _executor_config(executor, role=role)
-    return canonical_digest(
-        "cacheon.eval.b300-oci-executor-policy.v1",
-        {
-            "device_configuration_digest": device_policy.configuration_sha256,
-            "device_policy_digest": device_policy.policy_sha256,
-            "role_policy_digest": b300_executor_role_policy_digest(
-                config, role=role
-            ),
         },
     )
 
@@ -302,18 +204,24 @@ def _executor_identity(executor: OCIEngineExecutor, *, role: str) -> str:
 def _validate_executor_lane(
     executor: OCIEngineExecutor,
     expected: B300QualificationLanePolicy,
-    *,
-    role: str,
-) -> None:
-    _config, policy = _executor_config(executor, role=role)
-    observed = B300QualificationLanePolicy.from_device_policy(
-        expected.lane_id,
-        policy,
-    )
-    if observed != expected:
+) -> tuple[OCIBackendConfig, DeviceStatePolicy]:
+    if type(executor) is not OCIEngineExecutor:
+        raise B300ArenaProviderError("qualification executor is not exact")
+    config = getattr(executor, "config", None)
+    policy = getattr(executor, "device_policy", None)
+    manager = getattr(executor, "manager", None)
+    if (
+        type(config) is not OCIBackendConfig
+        or type(policy) is not DeviceStatePolicy
+        or manager is None
+        or getattr(manager, "executor_id", None) != config.prebuild.executor_id
+    ):
+        raise B300ArenaProviderError("qualification executor configuration is inconsistent")
+    if B300QualificationLanePolicy.from_device_policy(expected.lane_id, policy) != expected:
         raise B300ArenaProviderError(
-            f"{role} executor differs from its selected physical TP4 lane"
+            "qualification executor differs from its physical lane"
         )
+    return config, policy
 
 
 _AuthorityBundle = B300DeploymentAuthorities | B300DeclaredAuthorities
@@ -338,19 +246,14 @@ def b300_arena_provider_digest(authorities: _AuthorityBundle) -> str:
             },
             "qualification": {
                 "builder_digest": qualification.qualification_builder_digest,
-                "candidate_executor_policy_digest": (
-                    qualification.candidate_executor_policy_digest
-                ),
                 "deadline_policy_digest": qualification.deadline_policy_digest,
                 "entropy_provider_digest": qualification.entropy_provider_digest,
+                "executor_policy_digest": qualification.executor_policy_digest,
                 "hidden_judge_binding_digest": (
                     qualification.hidden_judge_binding_digest
                 ),
-                "lane_pair": qualification.lane_pair.service_policy(),
+                "lane": qualification.lane.service_policy(),
                 "policy_digest": qualification.qualification_policy_digest,
-                "resident_baseline_executor_policy_digest": (
-                    qualification.resident_baseline_executor_policy_digest
-                ),
             },
             "runtime": authorities.runtime_identity.to_dict(),
         },
@@ -377,7 +280,7 @@ class B300ArenaServiceProvider:
             raise B300ArenaProviderError("provider identity differs from the manifest")
         if manifest.runtime != authorities.runtime_identity:
             raise B300ArenaProviderError(
-                "runtime, model, topology, or TP4 identity differs from the manifest"
+                "runtime, model, topology, or TP identity differs from the manifest"
             )
         if (
             manifest.qualification_policy_digest
@@ -393,9 +296,6 @@ class B300ArenaServiceProvider:
             authorities if type(authorities) is B300DeploymentAuthorities else None
         )
         self._qualification_capabilities = capabilities
-        self.qualification_stage = (
-            capabilities.qualification_stage if capabilities is not None else None
-        )
         self._closed = False
         self._lock = threading.RLock()
 
@@ -457,9 +357,6 @@ class B300ArenaServiceProvider:
                 hidden_judge=capabilities.hidden_judge,
                 deadline=float(deadline),
                 qualification_policy_digest=request.qualification_policy_digest,
-                resident_baseline_executor=(
-                    capabilities.resident_baseline_executor
-                ),
             )
 
     def close(self) -> None:
@@ -483,13 +380,9 @@ __all__ = [
     "B300DeclaredAuthorities",
     "B300DeclaredQualificationAuthorities",
     "B300DeploymentAuthorities",
-    "B300QualificationLaneOrientation",
-    "B300QualificationLanePair",
     "B300QualificationLanePolicy",
     "PROVIDER_SCHEMA",
-    "QUALIFICATION_LANE_PAIR_SCHEMA",
     "QUALIFICATION_LANE_SCHEMA",
-    "QUALIFICATION_ROLE_SWAP_SCHEMA",
-    "b300_executor_role_policy_digest",
+    "b300_executor_policy_digest",
     "b300_arena_provider_digest",
 ]

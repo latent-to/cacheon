@@ -21,10 +21,10 @@ lock file.
 ## Settlement inputs
 
 `SettlementCandidate` accepts one complete audited PASS. The production
-version-3 attempt runs the paired replay of B and C (speed policy 17), then
-registered eager audit A and pristine T. Every window's turn records remain in
-the evidence, and the settled speedup is the pooled, orientation-balanced
-cost ratio the grader computed. Retained batch-cell PASS rows settle on the
+version-3 attempt runs candidate boots against a retained stock reference on
+one lane (speed policy 19), then registered eager audit A and pristine T. Every
+boot's turn records remain in the evidence, and the settled speedup is the
+per-boot cost ratio the grader computed. Retained batch-cell PASS rows settle on the
 speedup their own policy recorded.
 
 Historical paired candidates remain byte-compatible and use their original
@@ -211,7 +211,7 @@ promotion, integration, or release cannot renew the same bounty.
 ## Legacy V1 global projection
 
 The reward builder reopens retained PASS evidence and pays only records that beat
-the preceding rewarded v17 or v18 record against the same baseline by at least 1.5%
+the preceding rewarded v17, v18 or v19 record against the same baseline by at least 1.5%
 (`V17_REWARD_MARGIN`); a declared recommission of that baseline continues its record
 (`reward_group_continuations`, see the emissions policy). Credit remains the
 unshrunken marginal logarithmic reward. An

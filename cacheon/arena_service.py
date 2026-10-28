@@ -335,7 +335,6 @@ class ArenaQualificationWork:
     hidden_judge: object
     deadline: float
     qualification_policy_digest: str
-    resident_baseline_executor: object | None = None
 
     def __post_init__(self) -> None:
         if type(self.factory) is not QualificationPlanFactory:

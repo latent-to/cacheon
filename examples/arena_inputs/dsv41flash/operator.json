@@ -5,6 +5,7 @@
   "model_profile_key": "DeepSeek-V4.1-Flash",
   "tensor_parallel_size": 2,
   "replay_load": 24,
+  "tokens_per_prompt": 9238,
   "tokenizer_asset": "tokenizer-nvfp4",
   "model_in_ram": true,
   "owner": "dsv41-spot-recovery",

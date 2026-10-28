@@ -70,7 +70,7 @@ chain, not a claim that every row is embedded in the attempt or SQLite:
 | Stack construction | Target catalog, contribution ref, incumbent/candidate manifests, materialized trees, marginal arm plans |
 | Arena | Service manifest, capacity decision, candidate binding (reservation, publication, qualification attempt) |
 | Launch | Runtime preflight, model mount, native build/publication, hardware/resource/seccomp identity |
-| Execution | Versioned `ResidentSpeedWitness` paired-replay turn records (policies 16/17), physical-lane roles, and the richer session/device observations validated against the frozen plan. Current source requires complete per-rank execution evidence before speed grading. Witnesses below version 16 are batch-cell or MiniMax-M3 history and are refused |
+| Execution | Versioned `ResidentSpeedWitness` turn records for every engine boot (policy 19; retained policies 16–18 hold paired windows), the retained stock reference (`cacheon.qualification.stock-reference` domain, `cacheon.qualification.stock-reference.v1` schema) it was graded against, the physical-lane identity, and the richer session/device observations validated against the frozen plan. Current source requires complete per-rank execution evidence before speed grading. Witnesses below version 16 are batch-cell or MiniMax-M3 history and are refused |
 | Slot audit | Bounded raw eager/untimed candidate facts, exact slot × rank/process coverage, canonical decimal receipt identity, and trusted-host grade when the plan registers an audit requirement |
 | Graph | Member, variant, shape, capture, and replay observations |
 | Selection | Pre-execution commitment, post-commit entropy, secret reveal, selected prompts, sealed trajectory digest |
@@ -138,10 +138,10 @@ desired verdict:
 1. Reopen the chain-scoped reservation and immutable publication.
 2. Reopen the exact target catalog, stack/tree, launch, model, and native identities.
 3. Authenticate each evidence artifact by domain, schema, size, and digest.
-4. Validate the exact window schedule and stopping point required by the
-   witness version, both physical-lane orientations (or the single orientation
-   a sealed futility FAIL retains), turn records and host timing, then regrade
-   speed under frozen calibration.
+4. Validate the exact boot and window schedule and stopping point required by
+   the witness version, the reference, candidate and any stock bracket boots on
+   one physical lane, turn records and host timing, then regrade speed under
+   frozen calibration.
 5. Regrade graph observations against the frozen requirement.
 6. When the registered plan requires slot audit, reopen the bounded raw audit
    facts, verify exact slot × rank/process coverage, and reproduce the
@@ -196,8 +196,8 @@ terminal speed exit with one, and audit recovery cannot overturn either speed ex
 ### Reopening a disputed speed pass
 
 Start with the settlement candidate and its retained qualification attempt.
-Regrade the exact paired-window schedule, turn records, stopping point and
-calibration, then verify audit, selection, candidate-free T and the live target
+Regrade the exact boot schedule, reference and candidate turn records, stopping
+point, stock bracket and calibration, then verify audit, selection, candidate-free T and the live target
 transition.
 New bundles require one complete audited PASS. Historical paired qualifications
 retain their original identities and conservative settlement rule. Dashboard

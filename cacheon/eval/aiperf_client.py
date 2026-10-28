@@ -29,7 +29,16 @@ def main() -> None:
     from aiperf.config.flags.resolver import resolve_config
     from aiperf.config.loader import build_benchmark_plan
     from aiperf.orchestrator.orchestrator import resolve_run_seed
+    from aiperf.timing.phase.credit_counter import CreditCounter
 
+    def all_returned(self) -> bool:
+        # The session-target arm can freeze the sent count one root turn early; closing the phase at that count
+        # left the last turn out of the export and voided a stock window (pair dsv41pd-k, 2026-10-27). Services
+        # fork from this process, so the timing service inherits this.
+        return self._final_requests_sent is not None and (
+            self._requests_completed + self._requests_cancelled >= max(self._final_requests_sent, self._requests_sent))
+
+    CreditCounter.check_all_returned_or_cancelled = all_returned
     _, bound, _ = app.parse_args(arguments)
     config = bound.arguments["cli_config"]
     plan = build_benchmark_plan(resolve_config(config, config.config_file))

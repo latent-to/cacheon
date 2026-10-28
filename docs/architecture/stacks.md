@@ -28,7 +28,7 @@ The reference does not compete on speed and is not the incumbent engine. This pr
 |---|---:|---:|
 | Hostile proposal entries allowed | Yes | No |
 | Bound to one arena | Yes | Quality profile |
-| Timed | Versioned paired-replay speed work | Never |
+| Timed | Versioned replay speed work | Never |
 | Can update after a crown | Transactionally | No |
 | Can be served as product | No | No |
 
@@ -98,9 +98,9 @@ Suppose incumbent manifest `E0` contains `forward_pass = F0` and `prefix_cache =
 A proposal resolves to `forward_pass` as `F1`. Planning produces:
 
 ```text
-incumbent = materialize(E0)                              # F0 + K on the incumbent lane
-candidate = materialize(replace(E0, forward_pass, F1))  # F1 + K on the candidate lane
-speed     = both lanes replay the sealed session slice in paired windows, then swap lanes
+incumbent = materialize(E0)                              # F0 + K, retained stock reference
+candidate = materialize(replace(E0, forward_pass, F1))  # F1 + K, fresh boots on the same lane
+speed     = candidate boots replay the sealed session slice against the stock reference
 A         = separate eager, untimed candidate audit
 T         = materialize(pristine reference)             # neither proposal is a grading oracle
 ```
@@ -157,15 +157,14 @@ Materialized source is only one part of a running engine. The launch authority a
 - bounded host/worker protocol and evidence keys.
 
 The controller prepares these inputs before timed execution. Production
-qualification binds two isolated physical TP lanes and runs separate incumbent
-and candidate engine processes on them, replaying each paired window
-concurrently. Policy 17's second orientation boots fresh engines with the
-physical incumbent and candidate lane roles exchanged.
+qualification binds one physical TP lane and runs one engine at a time on it:
+the retained stock reference boots, the candidate boots, and any stock bracket
+boot.
 
 A separate
 no-GPU/no-network prebuild OCI compiles registered native products and publishes
-them for reopening into one store shared by both lanes, so the swapped
-orientation reuses the first orientation's builds. The disposable runtime worker
+them for reopening into one store under the commissioned root, so later boots
+reuse earlier builds. The disposable runtime worker
 mounts that publication
 read-only; its scheduler ranks may import sealed candidate Python, validate and
 load native products, construct the engine, and execute, but they must never

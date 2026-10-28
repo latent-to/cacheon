@@ -27,7 +27,7 @@ The production SQLite state machine currently exposes these statuses:
 | `fetching` | HTTPS fetch/extract/hash/publication work is active |
 | `transport_retry` | transient transport failure is eligible for another fetch attempt |
 | `published` | immutable worker publication and selected-delta identity exist; waiting in the qualification queue |
-| `qualifying` | one authority-bound version-3 attempt—paired replay of B and C, registered eager audit A, then pristine T—is active |
+| `qualifying` | one authority-bound version-3 attempt—candidate boots against the retained stock reference, registered eager audit A, then pristine T—is active |
 | `reproduction_pending` | historical transition; a retained complete primary PASS is accepted on restart without another GPU run |
 | `qualified` | one complete audited PASS is retained; settlement is separate |
 | `no_decision` | retryable qualification evidence/failure product was retained |
@@ -213,21 +213,25 @@ and immutable publication in
 
 Qualification aggregates mandatory graph, marginal speed, registered eager
 audit A when required by the plan, and pristine T quality evidence. The current
-speed order is the paired replay of B and C, followed by A and T. Any FAIL makes
+speed order is the candidate boots against the retained stock reference (and a
+stock bracket boot after a speed PASS), followed by A and T. Any FAIL makes
 the attempt fail; any `NO_DECISION` prevents PASS.
 
 Speed problems:
 
-- the paired gain has not cleared the sealed statistical boundary by the last
-  sealed window: candidate FAIL (`speed_threshold_not_met`, or `candidate_slower`
-  when the estimate falls below the mirrored bound). The last window always
-  decides PASS or FAIL;
-- the first lane orientation reads slower than the arena's sealed futility
-  margin: candidate FAIL without the swapped orientation;
-- replay windows or physical-lane identities fail their bound consistency
+- the gain has not cleared the sealed statistical boundary by the second boot:
+  candidate FAIL (`speed_threshold_not_met`, or `candidate_slower` when the
+  estimate falls below the mirrored bound);
+- the first candidate boot reads slower than the arena's sealed futility margin:
+  candidate FAIL without the second boot;
+- the stock bracket after a PASS reads faster than its reference: `NO_DECISION`,
+  and the next qualification measures a new reference;
+- replay windows or the physical-lane identity fail their bound consistency
   checks: authority/infrastructure uncertainty, never a candidate pass;
 - C clears the speed bound but misses service attainment: candidate FAIL
   (`service_contract_not_met`);
+- under policy 20, C's pooled per-user decode p50 falls below the sealed floor: candidate
+  FAIL (`service_floor_not_met`);
 - arm identities/resources differ: authority mismatch, never a valid speedup;
 - candidate falls back for material calls: no positive marginal effect.
 

@@ -94,6 +94,128 @@ def _witness(gain: float) -> dict:
 WITNESS = {"miner-pass": _witness(1.04), "miner-fail": _witness(.9)}
 
 
+def _retained_request(tmp_path):
+    """A real spool carrier whose completed result can arrive after a dashboard read."""
+    request, reservation = "a" * 64, "b" * 64
+    carrier = tmp_path / "outbox" / request / "request.json"
+    carrier.parent.mkdir(parents=True)
+    carrier.write_text(json.dumps({"request_id": request, "lease": {
+        "members": [{"reservation_id": reservation}]}}))
+    root = tmp_path / "results" / request
+    (root / "blobs").mkdir(parents=True)
+    return request, reservation, root
+
+
+def test_process_checks_share_one_request_snapshot(tmp_path, monkeypatch):
+    """Health checks share process reads without retaining stale state into another request."""
+    from dashboard.sources import _process_tables, process_matches
+
+    proc = tmp_path / "proc"
+    for pid, command in (("101", b"python\0-m\0intake\0--config=/arena-a/config.json\0"),
+                         ("202", b"python\0worker/run.py\0--config=/arena-b/config.json\0")):
+        entry = proc / pid
+        entry.mkdir(parents=True)
+        (entry / "cmdline").write_bytes(command)
+        (entry / "cwd").symlink_to(tmp_path)
+    original, reads = Path.read_bytes, []
+
+    def read_bytes(path):
+        reads.append(path)
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    token = _process_tables.set({})
+    try:
+        assert process_matches("intake", ("intake", "/arena-a"), proc_root=proc)
+        assert process_matches("supervisor", (str(tmp_path / "worker"), "/arena-b"), proc_root=proc)
+        assert not process_matches("intake", ("intake", "/arena-b"), proc_root=proc)
+        assert len(reads) == 2
+    finally:
+        _process_tables.reset(token)
+    (proc / "101" / "cmdline").write_bytes(b"python\0-m\0stopped\0")
+    assert not process_matches("intake", ("intake", "/arena-a"), proc_root=proc)
+
+
+def test_completed_log_reads_share_one_parse(tmp_path, monkeypatch):
+    """Concurrent detail polls must not each expand the same large worker log."""
+    import hashlib
+    from concurrent.futures import ThreadPoolExecutor
+    from cacheon.eval import explain, remote_run_forensics as forensic
+
+    request, reservation, root = _retained_request(tmp_path)
+    original, calls = explain.worker_log_lines, []
+
+    def explain_once(value):
+        calls.append(value["events"])
+        time.sleep(.02)  # Keep overlapping cold reads in flight.
+        return original(value)
+
+    monkeypatch.setattr(explain, "worker_log_lines", explain_once)
+
+    def publish(state):
+        payload = json.dumps({"schema": forensic.WORKER_LOG_SCHEMA, "request_id": request,
+                              "events": [{"phase": "qualification", "state": state}],
+                              "oci_streams": []}).encode()
+        digest = hashlib.sha256(payload).hexdigest()
+        (root / "blobs" / digest).write_bytes(payload)
+        result = {"request_id": request, "state": "completed", "artifacts": [
+            {"role": "worker_log", "sha256": digest, "size": len(payload)}]}
+        (root / "result.json").write_text(json.dumps(result))
+        return result
+
+    publish("completed")
+    read = lambda _: forensic.remote_runs((tmp_path,), reservation, set())[0]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(read, range(8)))
+    assert len(calls) == 1
+    assert all("qualification=completed" in row["worker_log"]["explanation"][1] for row in results)
+    results[0]["worker_log"]["explanation"].clear()
+    assert read(None)["worker_log"]["explanation"]
+    result = publish("failed")
+    assert "qualification=failed" in read(None)["worker_log"]["explanation"][1]
+    assert len(calls) == 2
+    result["request_id"] = "c" * 64
+    (root / "result.json").write_text(json.dumps(result))
+    assert read(None)["worker_log_error"] == "worker log payload is malformed"
+
+
+def test_qualification_summary_refreshes_and_keeps_disclosure_private(tmp_path, monkeypatch):
+    """A late or replaced result appears, and disclosure cannot mutate the cached report."""
+    import hashlib
+    from dashboard.forensics import submission_forensics
+
+    request, reservation, root = _retained_request(tmp_path)
+    assert submission_forensics(tmp_path, reservation, target_id="model")[0]["qualification"] is None
+    original, reads = Path.read_bytes, []
+
+    def read_bytes(path):
+        if path.parent == root / "blobs":
+            reads.append(path.name)
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+    def publish(reason):
+        payload = json.dumps({"payload_kind": "remote_qualification_hold", "payload": {
+            "reservation_digests": [reservation], "reason": reason,
+            "failure_message": "source-bearing diagnostic"}}).encode()
+        digest = hashlib.sha256(payload).hexdigest()
+        (root / "blobs" / digest).write_bytes(payload)
+        (root / "result.json").write_text(json.dumps({
+            "request_id": request, "state": "completed", "response_sha256": digest,
+            "artifacts": [{"role": "adapter_result", "sha256": digest, "size": len(payload)}]}))
+
+    publish("first hold")
+    first = submission_forensics(tmp_path, reservation, target_id="model")[0]["qualification_hold"]
+    first.pop("failure_message")
+    again = submission_forensics(tmp_path, reservation, target_id="model")[0]["qualification_hold"]
+    assert again["failure_message"] == "source-bearing diagnostic"
+    assert len(reads) == 1
+    publish("later hold")
+    assert submission_forensics(tmp_path, reservation, target_id="model")[0]["qualification_hold"]["reason"] == "later hold"
+    assert len(reads) == 2
+
+
 def _deploy(tmp_path: Path, monkeypatch, supervisors, gateways) -> SimpleNamespace:
     """Both arenas as production leaves them; the validator decryption key is the free arena's."""
 

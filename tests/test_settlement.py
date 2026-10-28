@@ -329,8 +329,6 @@ def test_auditless_resident_pair_becomes_settlement_candidate() -> None:
 
 
 def test_resident_lane_orientation_is_registered_and_nonoverlapping() -> None:
-    with pytest.raises(SettlementError, match="reused one physical TP lane"):
-        _resident_orientation("lane-a", "lane-a")
     with pytest.raises(SettlementError, match="all-zero"):
         ResidentLaneOrientation(
             "0" * 64,

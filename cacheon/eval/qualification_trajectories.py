@@ -34,10 +34,9 @@ def source_digest(replay, root: str, outer: int, inner: int | None) -> str:
 
 
 def prompt_pool(replay) -> dict[str, int]:
-    """Enumerate the manifest's selected windows; never choose or truncate another window."""
-    (load,) = replay.loads
+    """Enumerate the windows a replay serves (the whole slice under closed loop); never choose or truncate another."""
     result = {}
-    for index, session in enumerate(replay.slice.sessions[:load]):
+    for index, session in enumerate(replay.slice.sessions[:replay.sessions]):
         path = replay.slice.directory / f"{index:03d}_{session.id}.json"
         trace = json.loads(path.read_text())
         counts = [0, 0]

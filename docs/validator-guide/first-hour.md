@@ -222,7 +222,7 @@ and review all of the following as one service identity:
 2. prompt-corpus digest, seed scheme, the workload cells, and the sealed replay slice that is scored;
 3. queue depth, queue age, active-qualification, and cohort bounds;
 4. provider implementation digest and qualification-policy digest; and
-5. adaptive resident speed policy, two non-overlapping physical TP lanes, audit-only
+5. adaptive resident speed policy, one commissioned physical TP lane, audit-only
    plan, calibration, pristine reference, evidence-root, entropy, hidden judge, OCI
    executor, and absolute-deadline authorities used by `build_qualification`.
 
@@ -233,10 +233,10 @@ intake-only `chain-validate` process, over the same store; see
 object is not supplied by this repository.
 
 Do not substitute a shell command, dynamic import path, or fake provider that declares
-success. A commissioned provider must construct the sealed paired-replay speed
+success. A commissioned provider must construct the sealed replay speed
 work, audit, and pristine-T qualification work.
 
-The tracked operator that performs this commissioning for one pair, rendered
+The tracked operator that performs this commissioning for one worker, rendered
 per arena from its `operator.json`, is described in
 [Commissioning a new arena](new-arena.md).
 
@@ -258,9 +258,10 @@ Structural qualification fixtures can validate transitions, independence checks,
 evidence reopening. They cannot satisfy the production-provider, GPU-performance, or
 calibration requirements of this commissioning step.
 
-For resident authority, also confirm that both lanes condition and flush before every
-paired window, both lanes prove quiescence before audit/T, and the second orientation
-boots fresh engines that exact-swap the physical baseline and candidate lane roles.
+For resident authority, also confirm that every engine boot conditions and flushes
+before each window, the first qualification on a lane measures and publishes the
+four-boot stock reference while later ones reuse it, a speed PASS runs the stock
+bracket boot, and the lane proves quiescence before audit/T.
 
 ## 9. Commission the signer separately
 

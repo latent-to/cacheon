@@ -25,7 +25,7 @@ scan -> verify -> check -> chain-package -> host -> chain-submit -> chain-status
 
 Local measurements are useful for iteration. They do not select a production arena
 authority, reserve a finalized cohort position, retain authenticated resident
-speed evidence under the sealed paired replay, perform
+speed evidence under the sealed replay, perform
 the registered eager audit A and pristine-reference T stages, or authorize settlement.
 
 ## Production path at a glance
@@ -37,7 +37,7 @@ flowchart TD
     C --> D["Qualification queue<br/>admission at first claim"]
     D -->|"copy of a loser"| F["Terminal invalid or attributable failure"]
     D -->|"post-crown commitment"| X["Returned unevaluated<br/>NO_DECISION, payment released"]
-    D -->|"claimed cohort"| Q["Paired replay speed<br/>audit, then pristine T"]
+    D -->|"claimed cohort"| Q["Replay speed vs retained stock reference<br/>audit, then pristine T"]
     Q -->|"FAIL"| F
     Q -->|"NO_DECISION"| N["NO_DECISION / retry"]
     Q -->|"complete audited PASS"| S["Reopen retained evidence"]
@@ -137,10 +137,9 @@ At an evaluation boundary, the validator freezes:
 - workload, prompt, seed, role, topology, calibration, and evidence policy.
 
 Each candidate stack is the frozen incumbent with exactly one registered target delta.
-Production qualification uses two isolated TP lanes while serializing GPU work. One
-attempt runs both lane orientations: the incumbent on lane B and the candidate on lane
-A, then fresh engines with the roles exchanged. The swap is part of the sealed speed
-policy, not a scheduler preference.
+Production qualification gives one engine at a time the whole commissioned TP lane.
+The stock reference, the candidate boots and any stock bracket run in turn on that
+lane; the schedule is part of the sealed speed policy, not a scheduler preference.
 
 Qualification constructs a fresh, candidate-specific authority and retains each speed,
 audit, graph, and T product against that exact delta.
@@ -150,14 +149,13 @@ Principal code: [`eval/qualification_intake.py`](https://github.com/latent-to/ca
 ## 6. Version-3 adaptive qualification
 
 The production evidence protocol is version 3. Inside it, every candidate is
-measured by the paired replay: the plan seals speed policy 17, and separate
-incumbent and candidate processes replay the same sealed agent workload
-concurrently on two isolated lanes, then boot fresh with the lanes exchanged.
-Speed policy 16 is regrade-only, and evidence sealed below version 16 is
-refused.
+measured under speed policy 19: fresh candidate boots replay the sealed agent
+workload on the whole commissioned lane and are graded against a retained stock
+reference measured on that lane. Speed policies 16–18 are regrade-only, and
+evidence sealed below version 16 is refused.
 
-The current subpolicy retains stage and total budgets and the required
-physical-lane role assignment. Evidence reopens under the arithmetic that
+The current subpolicy retains stage and total budgets and the physical-lane
+binding. Evidence reopens under the arithmetic that
 produced it; a label change cannot upgrade it and pre-v16 witnesses are refused.
 
 The authoritative work is staged. Speed is decided first; audit and pristine-reference
@@ -167,27 +165,28 @@ after a speed non-PASS, pristine T does not, and the verdict stays the speed gra
 
 | Arm | Stack | Timed? | Purpose |
 |---|---|---:|---|
-| B | Exact frozen incumbent on the assigned baseline lane/process | Yes | Incumbent replay; after a speed PASS, the selected stock-drift controls |
-| C | Incumbent plus one exact target delta on the disjoint candidate lane/process | Yes | Candidate replay and sealed trajectory |
+| B | Exact frozen incumbent on the commissioned lane | Yes | Retained stock reference; after a speed PASS, the stock bracket boot and the selected stock-drift controls |
+| C | Incumbent plus one exact target delta on the same lane | Yes | Candidate boots and sealed trajectory |
 | A | Candidate in a separate eager, untimed role | No | Registered sampled slot audit and typed host regrade |
 | T | Pristine candidate-free reference | No | Teacher-forced semantic quality and hidden tasks |
 
 Native build and timed execution use separate containers. Before a runtime arm
 starts, a disposable, no-GPU/no-network prebuild OCI parses the materialized
 tree, invokes only registered build patchers, and emits a sealed native
-publication. The resident speed lanes mount that reopened
+publication. The resident speed engines mount that reopened
 publication read-only. Candidate Python import, engine construction, and
 execution occur only in the runtime's positively identified scheduler ranks;
 runtime ranks may validate and load native products but may never compile or
 repair them. Both stages use read-only roots, bounded mounts and protocols, and
 host-owned cleanup; the trusted controller also owns timing.
 
-The sealed stopping rule, not the candidate, decides how many paired windows
-run, and the regrade checks that the retained windows stopped exactly where the
-rule stops. Both engines condition and flush before each window, and every
-window is retained. The last sealed window yields PASS or FAIL; a sealed futility
-margin may FAIL the stage after the first orientation. Invalid baseline evidence
-cannot produce a candidate verdict.
+The sealed stopping rule, not the candidate, decides how many candidate boots
+run, and the regrade checks that the retained boots stopped exactly where the
+rule stops. Every engine conditions and flushes before each window, and every
+window is retained. The last candidate boot yields PASS or FAIL; a sealed futility
+margin may FAIL the stage after the first boot. Invalid stock evidence, including
+a stock bracket that reads faster than its reference, cannot produce a candidate
+verdict.
 
 When the registered plan requires sampled slot audit, a separate eager, untimed candidate
 role emits bounded raw facts. The trusted host grades exact slot × TP-rank/process coverage
@@ -201,11 +200,11 @@ trajectory under a separate pristine lifetime. T never contains the candidate an
 not compete on speed. Hidden reference work, quality policy, and selected prompt identity
 are bound into retained evidence.
 
-The host applies the exact versioned policy. Conceptually, a policy-17 result
-pools elapsed serving cost within each lane orientation:
+The host applies the exact versioned policy. Conceptually, a policy-19 result
+compares the log mean elapsed serving cost per boot:
 
 ```text
-speedup  = exp(mean over orientations of log(pooled B cost / pooled C cost))
+speedup  = exp(mean log cost of the 4 reference boots - mean log cost of the candidate boots)
 eligible = one-sided lower bound on speedup > 1 at a sealed look
 ```
 
@@ -226,7 +225,7 @@ The candidate clears the registered speed, quality, graph, evidence, and whole-s
 
 ### `FAIL`
 
-Complete evidence attributes a policy failure to the candidate under a valid authority. Examples include incorrect output, a quality regression, or a speed gain not established by the last sealed window.
+Complete evidence attributes a policy failure to the candidate under a valid authority. Examples include incorrect output, a quality regression, or a speed gain not established by the last sealed candidate boot.
 
 ### `NO_DECISION`
 
@@ -237,7 +236,7 @@ The distinction is load-bearing: treating evaluator failure as candidate failure
 ### Worked lifecycle: qualify and settle
 
 Intake freezes one contribution and its finalized priority. Its first claim
-admits it to a complete paired-replay qualification with eager audit and pristine T.
+admits it to a complete replay qualification with eager audit and pristine T.
 One complete audited PASS becomes `qualified`. Settlement reopens
 that attempt's retained evidence and atomically records its result before the
 next ordinary intake continues. Incomplete evidence remains `NO_DECISION` and
@@ -293,7 +292,7 @@ explicitly fenced incentive paths:
   [Finite-debt V2](../reference/emissions-policy.md#finite-debt-v2).
 
 A qualified PASS is paid only when it beats the best earlier rewarded PASS against the
-same arena and incumbent stack by the reward margin (1.5% for V17).
+same arena and incumbent stack by the reward margin (1.5% for V17, V18 and V19).
 
 The publisher persists intent and later readback states. An SDK return value does not
 prove inclusion, and the publisher may not advance economic authority from an
@@ -315,8 +314,8 @@ able to reopen, rather than merely observe, each handoff:
   publication;
 - registered arena, target catalog, incumbent manifest, candidate transition, and
   candidate binding (reservation, publication, and qualification attempt);
-- lane identities and a versioned `ResidentSpeedWitness` containing every paired
-  window's turn records, plus
+- the lane identity and a versioned `ResidentSpeedWitness` containing every
+  boot's turn records, plus
   retained graph/quality/pristine-T references and witnesses; richer raw
   session/device frames are validated in-run but are not serialized into the
   attempt;

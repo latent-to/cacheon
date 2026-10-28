@@ -29,7 +29,6 @@ from cacheon.eval.b300_arena_provider import (
     B300ArenaServiceProvider,
     B300DeclaredAuthorities,
     B300DeclaredQualificationAuthorities,
-    B300QualificationLanePair,
     B300QualificationLanePolicy,
     b300_arena_provider_digest,
 )
@@ -39,7 +38,6 @@ from cacheon.eval.b300_arena_definition import (
     engine_template as _engine_template,
     prompt_batch_cells as _prompt_batch_cells,
     ready_lane as _ready_lane,
-    ready_lanes as _ready_lanes,
     resource_policy as _resource_policy,
     string_rows as _string_rows,
     target_partition as _target_partition,
@@ -63,6 +61,7 @@ from cacheon.eval.oci_backend import (
     OCIRuntimeResourcePolicy,
     runtime_identity_from_preflight,
 )
+from cacheon.eval import pd_engine
 from cacheon.eval.oci_prebuild import OCIPrebuildConfig, OCIPrebuildPolicy
 from cacheon.eval.oci_process import OCIProcessManager
 from cacheon.eval.oci_session_protocol import EngineSessionConfig
@@ -83,7 +82,7 @@ from cacheon.target_catalog import TargetCatalog, default_target_catalog
 from cacheon._strict import require_digest
 
 
-DEPLOYMENT_SCHEMA = "cacheon-b300-deployment-v3"
+DEPLOYMENT_SCHEMA = "cacheon-b300-deployment-v4"
 DEPLOYMENT_FILE = "deployment.json"
 MANIFEST_FILE = "arena-service-manifest.json"
 READINESS_FILE = "worker-readiness.json"
@@ -538,9 +537,8 @@ class _CommissionedInputs:
     authority_refs: dict[str, dict[str, str]]
     preflight: RuntimePreflightReceipt
     gpus: tuple[GPUConfiguration, ...]
-    qualification_gpus: tuple[GPUConfiguration, ...]
     device_policy: DeviceStatePolicy
-    qualification_lane_pair: B300QualificationLanePair
+    qualification_lane: B300QualificationLanePolicy
     runtime: ArenaRuntimeIdentity
     topology_digest: str
     controller_distribution_digest: str
@@ -662,10 +660,9 @@ def _validate_ready_inventory(
 ) -> None:
     gpu = _mapping(ready.get("gpu"), "READY GPU inventory")
     inventory = gpu.get("inventory")
-    allocated = tuple(sorted(index for lane in _ready_lanes(ready) for index in lane))
-    if tuple(gpu.physical_id for gpu in gpus) != allocated:
+    if tuple(gpu.physical_id for gpu in gpus) != _ready_lane(ready):
         raise B300DeploymentError(
-            "provisioned GPU set differs from the commissioned lane pair"
+            "provisioned GPU set differs from the commissioned lane"
         )
     for configured in gpus:
         try:
@@ -701,29 +698,12 @@ def _derive_inputs(
     gpus: tuple[GPUConfiguration, ...],
 ) -> _CommissionedInputs:
     _same_authority_identity(authority, measurement)
-    selected, complement_ids = _ready_lanes(ready)
+    selected = _ready_lane(ready)
     _validate_ready_inventory(ready, gpus)
     if len({(gpu.name, gpu.memory_total_mib) for gpu in gpus}) != 1:
-        raise B300DeploymentError("qualification lanes require the same GPU model and memory capacity")
-    by_id = {gpu.physical_id: gpu for gpu in gpus}
-    try:
-        selected_gpus = tuple(by_id[physical_id] for physical_id in selected)
-    except KeyError:
-        raise B300DeploymentError(
-            "commissioned lane is absent from the allocated pair"
-        ) from None
-    complement_gpus = tuple(by_id[physical_id] for physical_id in complement_ids)
-    device_policy = _device_policy(selected_gpus)
-    physical_lanes = sorted(
-        (selected_gpus, complement_gpus),
-        key=lambda lane: tuple(gpu.physical_id for gpu in lane),
-    )
-    lane_a_policy = _device_policy(physical_lanes[0])
-    lane_b_policy = _device_policy(physical_lanes[1])
-    qualification_lane_pair = B300QualificationLanePair(
-        B300QualificationLanePolicy.from_device_policy("A", lane_a_policy),
-        B300QualificationLanePolicy.from_device_policy("B", lane_b_policy),
-    )
+        raise B300DeploymentError("qualification lane requires one GPU model and memory capacity")
+    device_policy = _device_policy(gpus)
+    qualification_lane = B300QualificationLanePolicy.from_device_policy("A", device_policy)
 
     topology = _mapping(authority.get("topology"), "topology authority")
     raw_lane = topology.get("lane")
@@ -829,7 +809,9 @@ def _derive_inputs(
     prompt_batch_cells = _prompt_batch_cells(prompt, batches, workload)
     model_profile_key = _text(prompt.get("model_profile_key"), "model profile key")
     engine_template = _engine_template(prompt)
-    if engine_template.tp_size != runtime.tensor_parallel_size:
+    # A prefill/decode pair runs two engines of half the commissioned lane each (speed policy 20).
+    engines = 2 if pd_engine.is_pair(dict(engine_template.engine_kwargs)) else 1
+    if engine_template.tp_size * engines != runtime.tensor_parallel_size:
         raise B300DeploymentError(
             "arena engine tensor parallel size differs from READY runtime"
         )
@@ -841,7 +823,7 @@ def _derive_inputs(
             prompt_identity=prompt_identity,
             catalog=catalog,
             registered_target_ids=registered_target_ids,
-            lane_pair=qualification_lane_pair,
+            lane=qualification_lane,
             backend_config_factory=lambda executor_id: _backend_config(
                 root, preflight, executor_id=executor_id, resources=authority.get("resources")
             ),
@@ -854,10 +836,9 @@ def _derive_inputs(
         authority=authority,
         authority_refs=authority_refs,
         preflight=preflight,
-        gpus=selected_gpus,
-        qualification_gpus=gpus,
+        gpus=gpus,
         device_policy=device_policy,
-        qualification_lane_pair=qualification_lane_pair,
+        qualification_lane=qualification_lane,
         runtime=runtime,
         topology_digest=topology_digest,
         controller_distribution_digest=controller_distribution_digest,
@@ -936,7 +917,7 @@ def _authority_inputs(
             "explicit sealed authority paths or SHA-256 values differ from config"
         )
     preflight = _runtime_preflight(_find_preflight(device_execution))
-    selected = tuple(sorted(index for lane in _ready_lanes(ready) for index in lane))
+    selected = _ready_lane(ready)
     if (provisioner is None) == (provisioned_gpus is None):
         raise B300DeploymentError(
             "GPU configuration requires exactly one provisioner or sealed inventory"
@@ -994,7 +975,7 @@ def _deployment_payload(inputs: _CommissionedInputs) -> dict[str, object]:
         ),
         "device_policy_digest": inputs.device_policy.policy_sha256,
         "gpu_configurations": [
-            gpu.canonical_dict() for gpu in inputs.qualification_gpus
+            gpu.canonical_dict() for gpu in inputs.gpus
         ],
         "preflight_sha256": inputs.preflight.sha256,
         "prompt_identity": dict(inputs.prompt_identity),

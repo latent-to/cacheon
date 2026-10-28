@@ -49,8 +49,9 @@ from cacheon.target_catalog import TargetCatalog
 # v4 dropped v3's graph_facts_builder_digest with the offline graph stage.
 QUALIFICATION_COMMISSION_SCHEMA = "cacheon-private-b300-qualification-commission-v4"
 QUALIFICATION_DEADLINE_MAXIMUM_SECONDS = 14_400
-CALIBRATION_PACKAGE_SCHEMA = "cacheon-private-b300-calibration-pair-v1"
-QUALIFICATION_STAGES = frozenset({"primary", "reproduction"})
+# v2: one lane, one primary stage; v1 carried the retired reproduction orientation.
+CALIBRATION_PACKAGE_SCHEMA = "cacheon-private-b300-calibration-v2"
+QUALIFICATION_STAGES = frozenset({"primary"})
 
 QUALIFICATION_EVIDENCE_POLICY_DIGEST = canonical_digest(
     "cacheon.eval.b300-qualification-evidence-policy.v1",
@@ -199,7 +200,7 @@ def parse_sealed_calibration_package(
     CalibrationManifest,
     CalibrationEvidenceSet,
 ]:
-    """Reopen one closed two-orientation calibration package."""
+    """Reopen the closed single-lane calibration package."""
 
     stages = value.get("stages") if type(value) is dict else None
     if (
@@ -221,8 +222,6 @@ def parse_sealed_calibration_package(
         )
     try:
         parsed = {}
-        templates = {}
-        source_digests = {}
         for name in QUALIFICATION_STAGES:
             record = stages[name]
             threshold = CalibrationThresholdPolicy.from_dict(
@@ -255,24 +254,7 @@ def parse_sealed_calibration_package(
                 or manifest.context != threshold.context
             ):
                 raise ValueError(f"{name} calibration evidence was relabeled")
-            template = threshold.to_dict()
-            del template["context"]
             parsed[name] = (threshold, manifest, evidence)
-            templates[name] = template
-            source_digests[name] = canonical_digest(
-                "cacheon.private.b300-calibration-measurement-authority.v1",
-                source,
-            )
-        primary = parsed["primary"]
-        reproduction = parsed["reproduction"]
-        if (
-            templates["primary"] != templates["reproduction"]
-            or primary[0].context == reproduction[0].context
-            or primary[1].raw_evidence_digest
-            == reproduction[1].raw_evidence_digest
-            or source_digests["primary"] == source_digests["reproduction"]
-        ):
-            raise ValueError("lane calibration authorities are not independent")
         if parsed[stage][0].context != context:
             raise ValueError(
                 f"{stage} calibration context differs from the commissioned lane"

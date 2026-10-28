@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, Protocol
 
+from cacheon.eval import pd_engine
 from cacheon.eval.device_state import (
     CommandRunner as DeviceCommandRunner,
     DeviceStateActiveReceipt,
@@ -907,8 +908,10 @@ class _FinalWarmupConditioner:
         first_timed_index: int,
         deadline: float,
         clock: Callable[[], float],
+        engine_gpu_ids: tuple[int, ...] | None = None,
     ) -> None:
         self.guard = guard
+        self.engine_gpu_ids = engine_gpu_ids
         self.launch_id = launch_id
         self.final_warmup_index = final_warmup_index
         self.first_timed_index = first_timed_index
@@ -931,6 +934,7 @@ class _FinalWarmupConditioner:
                 release=self.release.is_set,
                 wait_for_release=self.release.wait,
                 cancel=self.cancelled.is_set,
+                engine_gpu_ids=self.engine_gpu_ids,
             )
         except BaseException as exc:
             self.error = exc
@@ -1331,8 +1335,7 @@ class OCIEngineExecutor:
             transport = transport_type(
                 self.manager, lease, argv, clock=self.manager.clock
             )
-            value = run(transport, session_deadline, launch_id,
-                        (prebuild, publication.publication_digest, argv_digest, pre_receipt))
+            value = run(transport, session_deadline, launch_id)
         except BaseException as exc:
             primary = exc
         finally:
@@ -1408,8 +1411,11 @@ class OCIEngineExecutor:
                 transport: AttachedSessionTransport,
                 session_deadline: float,
                 launch_id: str,
-                checkpoint_metadata,
             ) -> tuple[SessionExecutionEvidence, DeviceStateActiveReceipt]:
+                # The eager audit runs a PD pair's prefill role alone on the lane's first TP GPUs
+                # (pd_engine.colocated); requiring a process on the decode role's empty GPUs voided the PD
+                # arena's first audit (2026-10-28).
+                colocated = plan.audit_policy is not None and pd_engine.is_pair(plan.engine_config.engine_kwargs)
                 conditioner = _FinalWarmupConditioner(
                     self.device_guard,
                     launch_id=launch_id,
@@ -1417,6 +1423,8 @@ class OCIEngineExecutor:
                     first_timed_index=plan.warmup_count,
                     deadline=session_deadline,
                     clock=self.manager.clock,
+                    engine_gpu_ids=(self.device_guard.policy.physical_gpu_ids[:plan.engine_config.tp_size]
+                                    if colocated else None),
                 )
                 try:
                     kwargs = {
@@ -1434,9 +1442,14 @@ class OCIEngineExecutor:
                             check_cancelled()
                         transport.check_cancelled = check_cancelled
                         controller = OpenedOuterSession(plan, **kwargs)
-                        from cacheon.eval.replay_checkpoint import _drive_opened
-                        session = _drive_opened(controller, opened_driver, conditioner, launch, identity,
-                            preflight, mount, self.config.runtime.digest, recovered, checkpoint_metadata)
+                        try:  # Startup and driver failure stay inside the ordinary teardown path.
+                            controller.start()
+                            session = opened_driver(controller)
+                            if (not controller.closed or type(session) is not SessionExecutionEvidence
+                                    or session.session_id != controller.session_id):
+                                raise OCIBackendError("opened session driver did not close its own engine session")
+                        finally:
+                            controller.abort()
                     return session, conditioner.require_complete()
                 finally:
                     conditioner.cancel()
@@ -1553,7 +1566,6 @@ class OCIEngineExecutor:
                 transport: AttachedSessionTransport,
                 session_deadline: float,
                 _launch_id: str,
-                _checkpoint_metadata,
             ) -> ReferenceSessionEvidence:
                 if type(transport) is not AttachedReferenceTransport:
                     raise OCIBackendError("reference runtime received the wrong transport")

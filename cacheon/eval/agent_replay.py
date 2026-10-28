@@ -2,7 +2,8 @@
 
 The validator owns this loopback HTTP adapter, chat template and timestamps.
 The candidate still sees only disclosed generation inputs over its OCI pipes.
-AIPerf owns trajectory order; the bridge owns arrival timing as lockstep rounds.
+AIPerf owns trajectory order; the bridge owns arrival timing as lockstep rounds, or (version 20) one
+lockstep cold round followed by closed-loop arrival at the sealed session count.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import multiprocessing
 import os
 import secrets
 import shutil
@@ -17,6 +19,7 @@ import signal
 import tempfile
 import time
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from uuid import UUID
@@ -46,6 +49,7 @@ class AgentReplayPlan:
     windows: int = 1
     elapsed_cost: bool = field(default=False, metadata={"wire_optional": True})
     max_work_seconds: int = field(default=0, metadata={"wire_optional": True})
+    closed_loop: bool = field(default=False, metadata={"wire_optional": True})
     slice: SliceManifest = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -60,11 +64,19 @@ class AgentReplayPlan:
             raise ValueError("agent replay read identity is invalid")
         if type(self.windows) is not int or self.windows < 1:
             raise ValueError("agent replay needs at least one sealed window")
-        if type(self.elapsed_cost) is not bool:
-            raise ValueError("replay cost accounting must be boolean")
+        if type(self.elapsed_cost) is not bool or type(self.closed_loop) is not bool:
+            raise ValueError("replay cost accounting and arrival must be boolean")
         if type(self.max_work_seconds) is not int or not 0 <= self.max_work_seconds <= 7200:
             raise ValueError("replay work deadline is outside its bound")
         object.__setattr__(self, "slice", manifest)
+
+    @property
+    def sessions(self) -> int:
+        """Sessions one window replays. Closed loop keeps the sealed load in flight over the whole slice, each
+        finished session handing its slot to the next: replaying only ``load`` sessions drained the window to its
+        longest one (output per session spans 4.5x on the Weka slice, so mean concurrency fell to ~N/4.5)."""
+        (load,) = self.loads
+        return self.slice.max_load if self.closed_loop else load
 
     def workload_identity(self) -> dict:
         """Bind the consumed bytes, root accounting and replay policy, not local paths."""
@@ -74,10 +86,10 @@ class AgentReplayPlan:
             "slice": self.slice.digest, "dataset": self.slice.dataset,
             "revision": self.slice.revision,
             "rules_json": json.dumps(self.slice.rules, sort_keys=True, separators=(",", ":"), allow_nan=False),
-            "expected_work": {str(load): self.slice.expected_work(load) for load in self.loads},
+            "expected_work": {str(load): self.slice.expected_work(self.sessions) for load in self.loads},
             "loads": list(self.loads),
             "windows": self.windows,
-            "arrival": "lockstep-rounds",
+            "arrival": "closed-loop-after-cold-round" if self.closed_loop else "lockstep-rounds",
             "contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
             "client": "aiperf-0.13.0", "scenario": None, "ignore_trace_delays": True,
             "cache_bust_identity": "sealed-slice-digest",
@@ -143,6 +155,27 @@ def _chat_input_ids(tokenizer, body):
     )
 
 
+# Templating a 135k-token agent turn costs ~0.21 s of CPU. On the bridge's event loop it capped the PD arena at
+# 3.4 turns/s against the engines' ~16 and held every first-token frame behind it (TTFT median 47 s, 2026-10-27).
+_TOKENIZE_WORKERS = 8
+_pool_tokenizer = None
+
+
+def _load_pool_tokenizer(path: str) -> None:
+    global _pool_tokenizer
+    from transformers import AutoTokenizer
+    _pool_tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True, local_files_only=True)
+
+
+def _pool_chat_input_ids(body: dict) -> list[int]:
+    return _chat_input_ids(_pool_tokenizer, body)
+
+
+def _pool_started() -> None:
+    # Busy for a second, so each concurrent call starts its own worker (and loads its tokenizer) before any read.
+    time.sleep(1)
+
+
 _ROUND_SETTLE_S = 0.5
 _FIRST_ROUND_WAIT_S = 120.0
 
@@ -163,11 +196,17 @@ class _Rounds:
     order so rank placement is the same in every read, and each release is
     numbered in that order: the engine requires batch indices in dispatch
     order, which arrival order no longer is.
+
+    ``closed_loop`` keeps only the first round: every later request leaves on
+    arrival, so the sealed session count is the engine's offered concurrency,
+    as a serving fleet sees it. Cold/warm membership stays a function of the
+    slice because the cold round is still one release.
     """
 
     def __init__(self, openings: int, clock, settle_s: float = _ROUND_SETTLE_S,
-                 first_wait_s: float = _FIRST_ROUND_WAIT_S):
+                 first_wait_s: float = _FIRST_ROUND_WAIT_S, closed_loop: bool = False):
         self.openings, self.clock, self.settle_s, self.first_wait_s = openings, clock, settle_s, first_wait_s
+        self.closed_loop = closed_loop
         self.pending: dict[str, tuple[str, asyncio.Future]] = {}
         self.inflight: set[str] = set()
         self.first_released = False
@@ -176,6 +215,10 @@ class _Rounds:
 
     async def hold(self, request_id: str, key: str) -> tuple[float, int]:
         """Wait for the round this request joins; return its release time on the session clock and dispatch ordinal."""
+        if self.closed_loop and self.first_released:
+            self.inflight.add(request_id)
+            self.released += 1
+            return self.clock(), self.released - 1
         future = asyncio.get_running_loop().create_future()
         self.pending[request_id] = (key, future)
         self._arm()
@@ -227,12 +270,13 @@ class _Rounds:
 class ReplayBridge:
     """Adapt trusted chat requests to canonical IDs and retain their actual token evidence."""
 
-    def __init__(self, session, exchange, tokenizer, output: Path, load: int):
-        self.session, self.exchange, self.tokenizer = session, exchange, tokenizer
+    def __init__(self, session, exchange, tokenizer, output: Path, load: int, closed_loop: bool,
+                 pool: ProcessPoolExecutor):
+        self.session, self.exchange, self.tokenizer, self.pool = session, exchange, tokenizer, pool
         self.first_batch_index = session.next_batch_index
         self.rows, self.failure = {}, None
         self.stamps: dict[str, int] = {}
-        self.rounds = _Rounds(load, session.clock)
+        self.rounds = _Rounds(load, session.clock, closed_loop=closed_loop)
         self.placement = _Placement(session.plan.engine_config.engine_kwargs.get("dp_size", 1))
         self.failed = asyncio.Event()
         self.offset_ns = time.time_ns() - round(session.clock() * 1e9)
@@ -257,7 +301,7 @@ class ReplayBridge:
                 raise ValueError("AIPerf repeated an X-Request-ID")
             if body.get("stream") is not True:
                 raise ValueError("agent replay requires streaming requests")
-            ids = _chat_input_ids(self.tokenizer, body)
+            ids = await asyncio.get_running_loop().run_in_executor(self.pool, _pool_chat_input_ids, body)
             count = body.get("max_tokens", body.get("max_completion_tokens"))
             self.rows[external_id] = None
             stamp, ordinal = await self.rounds.hold(external_id, _session_key(body["messages"]))
@@ -346,12 +390,13 @@ def collect_read(plan: AgentReplayPlan, bridge: ReplayBridge) -> LoadRead:
 
     Ordinals follow the round and the client's conversation coordinate, not its send time: two
     conversations of one root leave 1 ms apart in either order, which swapped ordinals on one lane
-    and voided a complete read as different work (2026-10-01, off-chain request 959338a5).
+    and voided a complete read as different work (2026-10-01, off-chain request 959338a5). Closed-loop
+    arrival stamps every warm turn apart, so its ordinals follow the conversation coordinate alone.
     """
     records, seen, ordinals = [], set(), defaultdict(int)
     metadata = [json.loads(line)["metadata"] for line in
                 (plan.output_directory / "aiperf" / "profile_export.jsonl").read_text().splitlines()]
-    for meta in sorted(metadata, key=lambda r: (bridge.stamps.get(r["x_request_id"], 0),
+    for meta in sorted(metadata, key=lambda r: (0 if plan.closed_loop else bridge.stamps.get(r["x_request_id"], 0),
                                                 r["conversation_id"], r["turn_index"])):
         external_id = meta["x_request_id"]
         if external_id in seen or external_id not in bridge.rows:
@@ -376,7 +421,7 @@ def collect_read(plan: AgentReplayPlan, bridge: ReplayBridge) -> LoadRead:
         raise ServiceEvidenceError("bridge has requests absent from the retained AIPerf export")
     (load,) = plan.loads
     read = LoadRead(plan.arm, plan.window, plan.lane, load, tuple(records))
-    rate = fixed_work_rate(read, plan.slice.expected_work(load), wall_time=plan.elapsed_cost)
+    rate = fixed_work_rate(read, plan.slice.expected_work(plan.sessions), wall_time=plan.elapsed_cost)
     output = plan.output_directory
     with (output / "turns.jsonl").open("x") as f:
         for record in records:
@@ -389,7 +434,7 @@ def collect_read(plan: AgentReplayPlan, bridge: ReplayBridge) -> LoadRead:
     return read
 
 
-async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRead:
+async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer, tokenize_pool: ProcessPoolExecutor) -> LoadRead:
     """Drain one sealed load on the opened engine and retain the scorer's input."""
     from aiohttp import web
 
@@ -401,10 +446,10 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRe
     pool = output / "slice"
     pool.mkdir()
     (load,) = plan.loads
-    for source in sorted(current.directory.glob("*.json"))[:load]:
+    for source in sorted(current.directory.glob("*.json"))[:plan.sessions]:
         (pool / source.name).symlink_to(source.resolve())
     async with session.exchange() as exchange:
-        bridge = ReplayBridge(session, exchange, tokenizer, output, load)
+        bridge = ReplayBridge(session, exchange, tokenizer, output, load, plan.closed_loop, tokenize_pool)
         app = web.Application(client_max_size=MAX_BATCH_REQUEST_BYTES)
         app.router.add_post("/v1/chat/completions", bridge.chat)
         runner = web.AppRunner(app, access_log=None, shutdown_timeout=1)
@@ -426,7 +471,7 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRe
                     "--tokenizer", str(plan.tokenizer_path), "--tokenizer-trust-remote-code",
                     "--url", f"http://127.0.0.1:{port}", "--endpoint-type", "chat", "--streaming",
                     "--no-fixed-schedule", "--input-file", str(pool),
-                    "--custom-dataset-type", "weka_trace", "--num-conversations", str(load),
+                    "--custom-dataset-type", "weka_trace", "--num-conversations", str(plan.sessions),
                     "--concurrency", str(load), "--dataset-sampling-strategy", "sequential",
                     "--cache-bust", "first_turn_prefix", "--ignore-trace-delays", "--use-server-token-count",
                     "--random-seed", str(current.rules["seed"]), "--ui", "none",
@@ -489,14 +534,18 @@ async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None, before_r
         tokenizer = AutoTokenizer.from_pretrained(plan.tokenizer_path, trust_remote_code=True, local_files_only=True)
     reads = []
     (load,) = plan.loads
-    for window in range(1, plan.windows + 1):
-        await flush_cache(session)
-        if before_read is not None and not await before_read(load, window):
-            break
-        read_plan = replace(plan, window=window, output_directory=plan.output_directory / f"window{window}")
-        read = await _run_load_read(session, read_plan, tokenizer=tokenizer)
-        session.replay_reads.append(read)
-        reads.append(read)
+    with ProcessPoolExecutor(_TOKENIZE_WORKERS, mp_context=multiprocessing.get_context("spawn"),
+                             initializer=_load_pool_tokenizer, initargs=(str(plan.tokenizer_path),)) as pool:
+        loop = asyncio.get_running_loop()
+        await asyncio.gather(*(loop.run_in_executor(pool, _pool_started) for _ in range(_TOKENIZE_WORKERS)))
+        for window in range(1, plan.windows + 1):
+            await flush_cache(session)
+            if before_read is not None and not await before_read(load, window):
+                break
+            read_plan = replace(plan, window=window, output_directory=plan.output_directory / f"window{window}")
+            read = await _run_load_read(session, read_plan, tokenizer=tokenizer, tokenize_pool=pool)
+            session.replay_reads.append(read)
+            reads.append(read)
     result = {"workload": plan.workload_identity(), "reads": [asdict(read) for read in reads]}
     (plan.output_directory / "window.json").write_text(json.dumps(result, indent=2) + "\n")
     return tuple(reads)

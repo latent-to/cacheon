@@ -55,6 +55,15 @@ separate from finalized `items` / `pass_total`. Waiting rows have
 
 ## Design notes
 
+- Completed qualification reports and worker-log explanations are cached as compact
+  summaries. Concurrent reads share the first parse; changed result descriptors
+  invalidate the summary, and unfinished results are checked again.
+- Arena health checks share one process-table read per HTTP request. The next
+  request reads current process state again.
+- Tab content refreshes independently of arena metadata. Revisiting a tab shows
+  its last result immediately while refreshing; refresh failures remain visible
+  beside an explicit previous-data label. Closed arenas remain selectable, and
+  evaluator status distinguishes healthy idle workers from disconnected services.
 - **Never writes the intake DB.** Opens it `mode=ro` with WAL visibility. Safe to run alongside intake/supervisor.
 - Chain enrichment (block timestamps, payment coldkey signers, metagraph
   emissions) runs on a background thread against

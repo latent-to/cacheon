@@ -573,6 +573,13 @@ def _walk_json(value: object, *, depth: int, budget: _JSONBudget) -> None:
             raise SessionProtocolError("session JSON contains a non-finite number")
         return
     if isinstance(value, list):
+        # A token-ID list checked an element at a time cost ~20 ms per 135k-token turn on each side and held the
+        # PD worker's event loop at ~98%, capping the arena below the engines' rate (2026-10-27). Same bounds.
+        if value and depth < MAX_JSON_NESTING and set(map(type, value)) == {int}:
+            budget.take(len(value))
+            if min(value) < -(1 << 63) or max(value) >= 1 << 63:
+                raise SessionProtocolError("session JSON integer exceeds its bound")
+            return
         for item in value:
             _walk_json(item, depth=depth + 1, budget=budget)
         return

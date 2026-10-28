@@ -33,7 +33,7 @@ TEMPLATES = Path(__file__).resolve().with_name("templates")
 SCHEMA = "cacheon-arena-operator-v1"
 PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size", "replay_load",
-        "tokenizer_asset", "model_in_ram", "owner", "audit_control_delta_digests", "node"}
+        "tokens_per_prompt", "tokenizer_asset", "model_in_ram", "owner", "audit_control_delta_digests", "node"}
 NODE_KEYS = {"name", "scheduler_starts", "client_cpus"}
 PACKET = ("cacheon_b300_qualification_adapter.py", "finalize-authority.py", "numeric_answer_judge.py",
           "prompt-authority.current.json", "qualification_capabilities.py")
@@ -87,8 +87,9 @@ def load_operator(path: Path) -> dict:
     if not re.fullmatch(r"[a-z0-9]+", operator["slug"]):
         raise SystemExit(f"{path}: slug must be lowercase letters and digits")
     width = operator["tensor_parallel_size"]
-    if not (isinstance(width, int) and width > 0 and isinstance(operator["replay_load"], int)):
-        raise SystemExit(f"{path}: tensor_parallel_size and replay_load are positive integers")
+    if not all(isinstance(operator[key], int) and operator[key] > 0
+               for key in ("tensor_parallel_size", "replay_load", "tokens_per_prompt")):
+        raise SystemExit(f"{path}: tensor_parallel_size, replay_load and tokens_per_prompt are positive integers")
     for lane, cpus in operator["node"]["client_cpus"].items():
         devices = [int(value) for value in lane.split(",")]
         if len(devices) != width or devices != sorted(devices) or not cpus:
@@ -103,8 +104,9 @@ def values(operator: dict, arena_inputs: str) -> dict[str, str]:
     width = operator["tensor_parallel_size"]
     return {
         "ARENA_ID": operator["arena_id"], "ARENA_INPUTS": arena_inputs, "SLUG": operator["slug"],
-        "MODEL_PROFILE_KEY": operator["model_profile_key"], "TP": str(width), "GPUS": str(2 * width),
-        "REPLAY_LOAD": str(operator["replay_load"]), "TOKENIZER_ASSET": operator["tokenizer_asset"],
+        "MODEL_PROFILE_KEY": operator["model_profile_key"], "TP": str(width),
+        "REPLAY_LOAD": str(operator["replay_load"]), "TOKENS_PER_PROMPT": str(operator["tokens_per_prompt"]),
+        "TOKENIZER_ASSET": operator["tokenizer_asset"],
         "OWNER": operator["owner"], "RAM_MODEL_ARGS": " '--ram-model'," if operator["model_in_ram"] else "",
         "SCHEDULER_STARTS": json.dumps(operator["node"]["scheduler_starts"]),
         "NODE_NAME": operator["node"]["name"], "CLIENT_SETS": repr(operator["node"]["client_cpus"]),

@@ -30,6 +30,10 @@ earlier one published, and a flush or an audited request waits for it. A refusal
 stops the engine and is receipted as the candidate's. Residual: a page is
 checked after the forward pass that read it, so bytes a cache moves into a served
 slot after that pass read it are not told apart from bytes placed before.
+
+Only a candidate's cache is checked. Stock's cache is trusted, and checking it
+cost the DeepSeek-V4.1 PD decode schedulers 18% of their decode speed at 192
+sessions (2026-10-27), so a cache candidate carries the check in its own arm.
 """
 
 from __future__ import annotations
@@ -88,13 +92,11 @@ def admit(tree: ast.Module, slot: str, entry: str, *, error: type[Exception]) ->
         raise error(f"{ADDRESS} entry {entry!r} must be callable with only the runtime cache")
 
 
-def _refuse(message: str, *, error: type[Exception] = RuntimeError,
-            phase: str = "entry", candidate: bool = True) -> NoReturn:
+def _refuse(message: str, *, error: type[Exception] = RuntimeError, phase: str = "entry") -> NoReturn:
     """Receipt the refusal as the candidate's, then take the engine down with it."""
 
     failure = error(f"{ADDRESS}: {message}")
-    if candidate:
-        _receipts.failed(ADDRESS, failure, phase=phase)
+    _receipts.failed(ADDRESS, failure, phase=phase)
     raise failure
 
 
@@ -132,13 +134,13 @@ class _Held:
 class _Guard:
     """The validator's record of which prefix each KV page it saw computed holds."""
 
-    def __init__(self, ctx, *, candidate: bool = True) -> None:
+    def __init__(self, ctx) -> None:
         import torch
 
         from cacheon.integrations.sglang_dsa_state import KV_BUFFERS
 
         params = ctx.params
-        self.torch, self.candidate = torch, candidate
+        self.torch = torch
         self.allocator = params.token_to_kv_pool_allocator
         self.requests = params.req_to_token_pool
         self.page = int(params.page_size)
@@ -176,13 +178,10 @@ class _Guard:
             self.hybrid = PrefixStateAudit(self, ctx)
 
     def refuse(self, message, **kwargs) -> NoReturn:
-        _refuse(message, candidate=self.candidate, **kwargs)
+        _refuse(message, **kwargs)
 
     def invoke(self, function, *args, **kwargs):
-        """Keep stock failures outside candidate attribution while applying the same checks."""
-        if self.candidate:
-            return _receipts.invoke(ADDRESS, function, *args, kwargs=kwargs)
-        return function(*args, **kwargs)
+        return _receipts.invoke(ADDRESS, function, *args, kwargs=kwargs)
 
     def _layers(self, names: tuple[str, ...], params, draws,
                 *, allow_empty=False) -> list[tuple[Any, bool]]:
@@ -406,9 +405,8 @@ class _Guard:
         from cacheon import audit
 
         self.held.pop(req.rid, None)
-        if self.candidate:
-            _receipts.completed(ADDRESS)
-        if self.candidate and audit.sampled():
+        _receipts.completed(ADDRESS)
+        if audit.sampled():
             self.poll(block=True)
             # The worker's typed receipt rejects the old "kv_content" mode (2026-09-29).
             audit.record_fraction(ADDRESS, 1.0, 1.0, "matched_ratio")
@@ -542,35 +540,30 @@ def _guarded(cls: type, base: type, guard: _Guard) -> type:
 
 
 def _bind(impl, ctx, stock):
-    """Pass the runtime-built object to the candidate and guard its handoffs."""
+    """Pass the runtime-built object to the candidate and guard its handoffs; stock's runs unguarded."""
 
+    if impl is None:
+        return stock(ctx)
     if (ctx.is_hybrid_swa or ctx.is_hybrid_ssm) and ctx.disable_radix_cache:
-        if impl is None:
-            return stock(ctx)
         raise RuntimeError(f"{ADDRESS}: this hybrid runtime disables prefix caching")
     base = importlib.import_module("sglang.srt.mem_cache.base_prefix_cache").BasePrefixCache
-    if impl is not None and inspect.isclass(impl.entry):
+    if inspect.isclass(impl.entry):
         _refuse("entry must accept the runtime cache, not its construction parameters",
                 error=TypeError, phase="prepare")
-    if impl is not None and impl.prepare is not None:
+    if impl.prepare is not None:
         _refuse("a cache entry takes no prepare", error=TypeError, phase="prepare")
     cache = stock(ctx)
     if not isinstance(cache, base):
-        if impl is None:
-            return cache
         _refuse(f"this engine builds {type(cache).__name__}, not a BasePrefixCache",
                 phase="prepare")
-    guard = _Guard(ctx, candidate=impl is not None)
-    if impl is not None:
-        cls = _receipts.invoke(ADDRESS, impl.entry, cache, phase="prepare")
-        if not inspect.isclass(cls) or not issubclass(cls, type(cache)):
-            _refuse("entry must return a subclass of the runtime cache's type",
-                    error=TypeError, phase="prepare")
-        if inspect.isabstract(cls):
-            _refuse(f"entry leaves {sorted(cls.__abstractmethods__)} abstract",
-                    error=TypeError, phase="prepare")
-    else:
-        cls = type(cache)
+    guard = _Guard(ctx)
+    cls = _receipts.invoke(ADDRESS, impl.entry, cache, phase="prepare")
+    if not inspect.isclass(cls) or not issubclass(cls, type(cache)):
+        _refuse("entry must return a subclass of the runtime cache's type",
+                error=TypeError, phase="prepare")
+    if inspect.isabstract(cls):
+        _refuse(f"entry leaves {sorted(cls.__abstractmethods__)} abstract",
+                error=TypeError, phase="prepare")
     guard.owned(cache, phase="prepare")
     guarded = _guarded(cls, base, guard)
     try:

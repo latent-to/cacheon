@@ -59,9 +59,11 @@ _RESULT_SCHEMA_VERSION = 1
 _TRANSIENT_COORDINATOR_OWNERSHIP_MESSAGE = (
     "evaluation store lock/cursor did not stabilize within retry bounds"
 )
-_REMOTE_EVIDENCE_ARTIFACT_LIMIT = 16 << 20
+# The attempt record keeps every replay window's read: 15 windows on the DeepSeek-V4.1 PD arena came to ~17 MB and voided
+# its first identity at 16 MiB (2026-10-27). The response carries the artifacts base64 under its 64 MiB transport bound.
+_REMOTE_EVIDENCE_ARTIFACT_LIMIT = 32 << 20
 _REMOTE_EVIDENCE_ARTIFACTS_LIMIT = 256
-_REMOTE_EVIDENCE_TOTAL_LIMIT = 32 << 20
+_REMOTE_EVIDENCE_TOTAL_LIMIT = 44 << 20
 
 
 SYSTEMIC_QUALIFICATION_REASONS = frozenset(

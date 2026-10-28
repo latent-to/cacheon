@@ -11,9 +11,12 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
+
+from cacheon.eval import pd_engine
 
 
 logger = logging.getLogger("cacheon.eval.engine-worker")
@@ -347,6 +350,7 @@ def _require_execution_completion(
     expected_slots: list[str],
     expected_member_count: int,
     require_captured: bool = False,
+    eager_members: frozenset[int] = frozenset(),
 ) -> str:
     """Fail closed unless every active member completed every registered slot."""
 
@@ -362,10 +366,12 @@ def _require_execution_completion(
     # A completion counts on a graphs-on run only if the dispatcher saw the candidate
     # invoked inside a capture: one absent from the graph is timed as stock while
     # its eager-warmup completion sits on disk. A slot SGLang serves outside the
-    # graph, such as the scheduler's prefix cache, runs in every timed step without one.
+    # graph, such as the scheduler's prefix cache, runs in every timed step without one,
+    # and so does every slot on a prefill server, which captures no decode graph.
     eager = eager_slots()
     captured = [
-        row for row in completed if row.get("captured") is True or row.get("slot") in eager
+        row for row in completed
+        if row.get("captured") is True or row.get("slot") in eager or row.get("pid") in eager_members
     ]
     passed, detail = receipts.completed_gate(
         captured if require_captured else completed, **coverage
@@ -411,6 +417,7 @@ def _complete_candidate_execution(
     expected_member_count: int,
     audit_policy: object | None,
     graphs: bool,
+    eager_members: frozenset[int] = frozenset(),
 ) -> None:
     """Keep missing execution terminal only inside the independent audit role.
 
@@ -425,6 +432,7 @@ def _complete_candidate_execution(
             expected_slots=expected_slots,
             expected_member_count=expected_member_count,
             require_captured=graphs,
+            eager_members=eager_members,
         )
         _emit_execution_summary(receipt_dir)
     except CandidateExecutionCoverageError as exc:
@@ -466,19 +474,20 @@ def _report_running_engine_failures(engine: object) -> None:
     manager.signal_handler_class = ReportingSignalHandler
 
 
-def _bind_engine_boot(plan: str | None) -> None:
+def _bind_engine_boot(plan: str | None, part: slice = slice(None)) -> None:
     """Boot the engine on the NUMA node of its sealed scheduler vCPUs, before any rank touches host memory.
 
     Each rank first-touches its host-resident tables inside sgl.Engine() (DeepSeek-V4.1 Engram: ~200 GB of huge
     pages per TP2 lane). SGLang's own NUMA bind needs memory-policy permission the OCI runtime does not grant, and
     the sealed pins apply only once the engine returns, so unbound boots left the tables on whichever socket each
     rank happened to run: both lanes' on the remote socket in one Lium 4x B300 boot (2026-10-17). Children inherit
-    this affinity; _pin_engine_processes narrows it after boot.
+    this affinity; _pin_engine_processes narrows it after boot. ``part`` selects one engine's schedulers when
+    a prefill/decode pair shares the plan.
     """
     if not plan:
         return
     cpus: set[int] = set()
-    for scheduler in json.loads(plan)["schedulers"]:
+    for scheduler in json.loads(plan)["schedulers"][part]:
         (node,) = Path(f"/sys/devices/system/cpu/cpu{scheduler}").glob("node[0-9]*")
         for span in (node / "cpulist").read_text().strip().split(","):
             low, _, high = span.partition("-")
@@ -486,41 +495,51 @@ def _bind_engine_boot(plan: str | None) -> None:
     os.sched_setaffinity(0, cpus)
 
 
-def _pin_engine_processes(plan: str | None, *, schedulers: int) -> None:
-    """Pin each SGLang scheduler (by TP rank) to its sealed vCPU and every other engine process to the pool.
-
-    On the B300 VM, 13 of every 15 vCPUs run single-thread code at half speed, and unpinned schedulers
-    landed on different ones each boot: whole-boot copy offsets up to 6.7% (2026-09-30). A plan that
-    does not match the running engine fails the launch.
-    """
-    if not plan:
-        return
-    spec = json.loads(plan)
-    scheduler_cpus, pool = list(spec["schedulers"]), set(spec["pool"])
-    if len(scheduler_cpus) != schedulers:
-        raise RuntimeError(f"CPU pin plan covers {len(scheduler_cpus)} schedulers; the engine runs {schedulers}")
+def _process_tree(root: int) -> list[int]:
     children: dict[int, list[int]] = {}
     for entry in os.scandir("/proc"):
         if entry.name.isdigit():
             with contextlib.suppress(OSError):
                 ppid = int(Path(entry.path, "stat").read_text().rsplit(")", 1)[1].split()[1])
                 children.setdefault(ppid, []).append(int(entry.name))
-    tree, frontier, ranks = [os.getpid()], [os.getpid()], []
+    tree, frontier = [root], [root]
     while frontier:
         frontier = [child for parent in frontier for child in children.get(parent, [])]
         tree += frontier
-    for pid in tree:
+    return tree
+
+
+def _pin_engine_processes(plan: str | None, *, schedulers: int, pinned: int, companion: int | None = None) -> None:
+    """Pin each SGLang scheduler (by TP rank) to its sealed vCPU and every other engine process to the pool.
+
+    On the B300 VM, 13 of every 15 vCPUs run single-thread code at half speed, and unpinned schedulers
+    landed on different ones each boot: whole-boot copy offsets up to 6.7% (2026-09-30). A plan that
+    does not match the running engine fails the launch. The plan names ``pinned`` schedulers, one per lane
+    GPU in device order: a prefill/decode pair pins the ``companion`` prefill server's ranks to the first
+    ``schedulers`` and the decode ranks to the rest; one engine of a pair's lane runs on the first.
+    """
+    if not plan:
+        return
+    spec = json.loads(plan)
+    scheduler_cpus, pool = list(spec["schedulers"]), set(spec["pool"])
+    if len(scheduler_cpus) != pinned:
+        raise RuntimeError(f"CPU pin plan covers {len(scheduler_cpus)} schedulers; the lane pins {pinned}")
+    prefill = set(_process_tree(companion)) if companion else set()
+    ranks: dict[int, list[int]] = {}
+    for pid in _process_tree(os.getpid()):
         with contextlib.suppress(ProcessLookupError, FileNotFoundError):
             title = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
             rank = re.search(r"^sglang::scheduler\S*_TP(\d+)", title)
+            offset = schedulers if companion and pid not in prefill else 0
             if rank:
-                ranks.append(int(rank[1]))
-            cpus = {scheduler_cpus[int(rank[1])]} if rank else pool
+                ranks.setdefault(offset, []).append(int(rank[1]))
+            cpus = {scheduler_cpus[offset + int(rank[1])]} if rank else pool
             for task in os.listdir(f"/proc/{pid}/task"):
                 with contextlib.suppress(ProcessLookupError):
                     os.sched_setaffinity(int(task), cpus)
-    if sorted(ranks) != list(range(schedulers)):
-        raise RuntimeError(f"CPU pin plan found scheduler ranks {sorted(ranks)}; the engine runs {schedulers}")
+    if {offset: sorted(found) for offset, found in ranks.items()} != {
+            offset: list(range(schedulers)) for offset in ((0, schedulers) if companion else (0,))}:
+        raise RuntimeError(f"CPU pin plan found scheduler ranks {ranks}; each engine runs {schedulers}")
 
 
 @contextlib.contextmanager
@@ -576,6 +595,17 @@ def isolated_engine_session(
         seam.mark_driver()
         receipts = receipt_module
     receipt_dir = tempfile.mkdtemp(prefix="cacheon_receipts_") if active else ""
+    kwargs = engine_kwargs(cfg, active=active)
+    kwargs["custom_sigquit_handler"] = _engine_child_failed
+    tp = int(kwargs.get("tp_size", 1) or 1)
+    pinned = tp * 2 if pd_engine.is_pair(kwargs) else tp
+    prefill = None
+    # Only timed lifetimes run the pair; the eager audit and the seamless pristine reference run one engine.
+    if pd_engine.is_pair(kwargs) and audit_policy is None and install_seams:
+        prefill, prefill_env, kwargs, role_env = pd_engine.split(kwargs, {})
+    else:
+        kwargs, role_env = pd_engine.colocated(kwargs, {})
+    companion = None
     try:
         session_environment = build_session_environment(
             active=active,
@@ -589,8 +619,6 @@ def isolated_engine_session(
         with _environment(**session_environment):
             import sglang as sgl
 
-            kwargs = engine_kwargs(cfg, active=active)
-            kwargs["custom_sigquit_handler"] = _engine_child_failed
             if audit_policy is not None:
                 # This is a separate, untimed fidelity role.  Timed B/C/B' plans
                 # carry no audit policy and therefore retain their sealed graph
@@ -604,21 +632,36 @@ def isolated_engine_session(
             print(
                 ENGINE_CONFIG_PREFIX
                 + json.dumps(
-                    {"arm": "candidate" if active else "stock", "engine": kwargs},
+                    {"arm": "candidate" if active else "stock", "engine": kwargs,
+                     **({"prefill": prefill} if prefill else {})},
                     sort_keys=True,
                     default=str,
                 ),
                 file=sys.stderr,
                 flush=True,
             )
-            _bind_engine_boot(os.environ.get("CACHEON_CPU_PINS"))
-            engine = sgl.Engine(**kwargs)
+            plan = os.environ.get("CACHEON_CPU_PINS")
+            if prefill is not None:
+                # The prefill server boots on its own GPUs while the decode engine boots here.
+                _bind_engine_boot(plan, slice(0, tp))
+                companion = pd_engine.start_prefill(prefill, prefill_env)
+            _bind_engine_boot(plan, slice(tp, None) if prefill is not None else slice(0, tp))
+            with _environment(**role_env):
+                engine = sgl.Engine(**kwargs)
             active_receipts: list[dict] = []
             expected_slots: list[str] = []
-            expected_members = int(kwargs.get("tp_size", 1) or 1)
+            expected_members = tp * 2 if prefill is not None else tp
+            eager_members: frozenset[int] = frozenset()
             try:
-                _pin_engine_processes(os.environ.get("CACHEON_CPU_PINS"), schedulers=expected_members)
                 _report_running_engine_failures(engine)
+                if prefill is not None:
+                    url = pd_engine.wait_ready(companion, prefill, time.monotonic() + 1800)
+                    engine = pd_engine.PrefillDecodePair(
+                        engine, url, prefill["disaggregation_bootstrap_port"], companion,
+                        int(prefill.get("dp_size") or 1), int(kwargs.get("dp_size") or 1))
+                    eager_members = frozenset(_process_tree(companion.pid))
+                _pin_engine_processes(plan, schedulers=tp, pinned=pinned,
+                                      companion=companion.pid if companion else None)
                 if active:
                     assert receipts is not None
                     active_receipts = receipts.require(
@@ -644,6 +687,7 @@ def isolated_engine_session(
                             expected_member_count=expected_members,
                             audit_policy=audit_policy,
                             graphs=not kwargs.get("disable_cuda_graph", False),
+                            eager_members=eager_members,
                         )
 
                 def collect_audits() -> list[dict]:
@@ -682,6 +726,8 @@ def isolated_engine_session(
                 raise CandidateEngineFailure(failure) from exc
         raise
     finally:
+        if companion is not None and companion.poll() is None:
+            companion.kill()
         if receipt_dir:
             _emit_execution_summary(receipt_dir)
             shutil.rmtree(receipt_dir, ignore_errors=True)

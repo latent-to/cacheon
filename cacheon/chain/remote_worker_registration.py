@@ -111,7 +111,7 @@ class PodPaths:
 
 
 def verify_ready_receipt(row: object) -> dict[str, Any]:
-    from cacheon.eval.b300_arena_definition import B300DeploymentError, ready_lanes
+    from cacheon.eval.b300_arena_definition import B300DeploymentError, ready_lane
 
     if type(row) is dict and row.get("schema") == "cacheon-current-pod-commission-v1":
         fields = frozenset(
@@ -168,8 +168,6 @@ def verify_ready_receipt(row: object) -> dict[str, Any]:
             ("python", {"executable_sha256", "path", "resolved_path", "version"}),
             ("lane", {"devices", "lane_digest", "tensor_parallel_size"}),
         ):
-            if section == "lane" and type(value[section]) is dict and "baseline_devices" in value[section]:
-                expected = expected | {"baseline_devices"}
             if type(value[section]) is not dict or set(value[section]) != expected:
                 fail(f"current-pod commission {section} fields are not closed")
         for digest in (
@@ -194,7 +192,7 @@ def verify_ready_receipt(row: object) -> dict[str, Any]:
         ):
             fail("commissioned Python identity is malformed")
         try:
-            ready_lanes(value)
+            ready_lane(value)
         except B300DeploymentError as exc:
             fail(str(exc))
         return value

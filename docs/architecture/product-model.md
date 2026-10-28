@@ -56,14 +56,11 @@ Cacheon deliberately separates economic identity from process identity.
 
 The **execution unit** is a complete engine. Production version-3 qualification
 materializes the exact incumbent and one-target-transition candidate engines and
-measures them with the paired replay: speed policy 18 launches separate
-baseline and candidate engine processes on two disjoint TP lanes, replays the
-same sealed agent workload on both concurrently, then boots fresh engines with the
-lanes exchanged so a stable lane factor cancels out of an uninterrupted score.
-Completed paired windows survive worker replacement with their original physical
-bindings and clock domains; the replacement continues the sealed orientation
-sequence with the full calibrated boot uncertainty. Historical policy-17 evidence
-retains its original contract. The candidate
+measures them with speed policy 19: one engine at a time owns the whole
+commissioned TP lane. Fresh candidate boots replay the sealed agent workload and
+are graded against a retained stock reference measured on the same lane; after a
+speed PASS a stock bracket boot rechecks that reference. Retained policy 16–18
+evidence keeps its original contract. The candidate
 then runs in a separate eager, untimed audit role A, and
 pristine T runs candidate-free; candidate code never shares the controller's
 trust domain.
@@ -90,12 +87,11 @@ Assume the frozen evaluation stack already contains contribution **A** for one t
 is 7% faster than the original base engine. Miner **B** submits a different target delta
 that may add another 3%:
 
-1. The validator materializes the exact incumbent engine containing A and boots it on
-   the baseline lane.
+1. The validator materializes the exact incumbent engine containing A; its retained
+   stock reference on the commissioned lane supplies the baseline cost.
 2. It materializes the candidate engine from that same stack, replacing only B's
-   declared registered target, and boots it on the disjoint candidate lane. Both
-   engines replay the same sealed workload in paired windows; then fresh engines boot
-   with the lanes exchanged and replay the remaining windows.
+   declared registered target, and boots it fresh on the same lane, up to twice,
+   to replay the same sealed workload.
 3. B's hosted bundle does not need to contain A. The validator supplies A from the
    incumbent manifest and gives B attribution only for the selected delta introduced by B.
 4. The registered eager audit role checks the candidate delta outside the timed resident

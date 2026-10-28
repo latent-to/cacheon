@@ -14,8 +14,8 @@ from collections.abc import Callable
 from cacheon._strict import require_digest
 from cacheon.eval.b300_arena_provider import (
     B300DeclaredQualificationAuthorities,
-    B300QualificationLanePair,
-    b300_executor_role_policy_digest,
+    B300QualificationLanePolicy,
+    b300_executor_policy_digest,
 )
 from cacheon.eval.b300_registered_qualification_inputs import (
     B300RegisteredQualificationError,
@@ -46,7 +46,7 @@ def derive_b300_qualification_declaration(
     prompt_identity: dict[str, str],
     catalog: TargetCatalog,
     registered_target_ids: tuple[str, ...],
-    lane_pair: B300QualificationLanePair,
+    lane: B300QualificationLanePolicy,
     backend_config_factory: Callable[[str], OCIBackendConfig],
 ) -> tuple[B300DeclaredQualificationAuthorities, dict[str, object] | None]:
     """Derive the path-free qualification declaration and sealed block.
@@ -119,13 +119,8 @@ def derive_b300_qualification_declaration(
     declared = B300DeclaredQualificationAuthorities(
         qualification_policy_digest=qualification_policy_digest,
         qualification_builder_digest=qualification_builder_digest,
-        candidate_executor_policy_digest=b300_executor_role_policy_digest(
-            lane_config, role="candidate"
-        ),
-        resident_baseline_executor_policy_digest=b300_executor_role_policy_digest(
-            lane_config, role="resident_baseline"
-        ),
-        lane_pair=lane_pair,
+        executor_policy_digest=b300_executor_policy_digest(lane_config),
+        lane=lane,
         entropy_provider_digest=declared_qualification_entropy_digest(
             prompt_identity["selection_policy_digest"]
         ),

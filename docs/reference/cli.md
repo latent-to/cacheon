@@ -343,7 +343,7 @@ cannot disagree about a verdict.
 The command opens the live WAL database read-only and takes one consistent SQLite read
 snapshot. It does not acquire the `FinalizedIntakeStore` process lock, mutate a row, or
 interrupt the intake daemon. Its queue position is a position among work that is
-actually selectable: reproduction work precedes new primary work, both lanes retain
+actually selectable: reproduction work precedes new primary work, each class retains
 finalized arrival order, and active qualification is reported as active rather than
 assigned a fictitious queue rank. Work held by an active remote evaluation lease is
 reported as `leased`, is excluded from waiting position and depth, and includes the

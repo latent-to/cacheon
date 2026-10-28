@@ -105,28 +105,28 @@ before working on an advanced target.
 
 For a registered target, the validator constructs an exact marginal comparison:
 
-- **B**: the exact incumbent, replaying the sealed agent workload on one lane;
-- **C**: the one-target-transition candidate, replaying the same workload
-  concurrently on the disjoint lane;
+- **B**: the exact incumbent, measured once per lane as a retained stock
+  reference of four fresh boots;
+- **C**: the one-target-transition candidate, replaying the same workload in
+  up to two fresh boots on the same lane;
 - **A**: a registered eager, untimed audit role for the candidate delta; and
 - **T**: a candidate-free pristine reference used after candidate teardown.
 
-The candidate does not choose the rest of the stack. The validator boots the
-exact incumbent and candidate engines as separate processes on two lanes and
-replays the sealed workload through both in paired windows. The windows are split
-between two lane orientations: after the first half, the lanes swap and both
-engines boot fresh, so a stable lane factor cancels. Costs pool within each
-orientation, and the score is the geometric mean of the two pooled
-elapsed-work ratios against the incumbent. The candidate passes only when the
-statistical lower bound on that gain exceeds one and service attainment holds;
-the last sealed window always yields PASS or FAIL. An arena may seal a futility
-margin (the GLM arena seals 1.5%): a first orientation that reads more than that
-much slower fails without running the second. There is no separate admission
-screen.
+The candidate does not choose the rest of the stack. One engine at a time owns
+the whole commissioned lane, and every boot replays the sealed workload for the
+same number of windows. The score compares the log mean elapsed time per boot:
+the four reference boots against the candidate's boots. The candidate passes
+only when the statistical lower bound on that gain exceeds one and service
+attainment holds; the second candidate boot always yields PASS or FAIL. An arena
+may seal a futility margin (the GLM arena seals 1.5%): a first candidate boot
+that reads more than that much slower fails without running the second. There is
+no separate admission screen.
 
-After a speed PASS the incumbent generates the quality gate's stock-drift
-controls, A supplies the registered sampled slot regrade, and T prevents “fast
-because behavior changed” from becoming a win.
+After a speed PASS a fresh stock bracket boot rechecks the reference and
+generates the quality gate's stock-drift controls; a stock bracket faster than
+its reference makes the result `NO_DECISION`, never a FAIL. Then A supplies the
+registered sampled slot regrade, and T prevents “fast because behavior changed”
+from becoming a win.
 
 One complete audited PASS qualifies a proposal for settlement; no reproduction
 run is scheduled. After the complete audited attempt, the durable intake state is

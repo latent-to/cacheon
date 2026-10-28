@@ -121,7 +121,8 @@ the commissioned incumbent, including the existing kernels and cache.
 
 1. Start with the exact arena model, image, engine configuration and topology.
 2. Choose the smallest supported module enclosing the computation you change.
-3. Preserve the rest of the method, its result structure and engine-state writes.
+3. Preserve the rest of the method, its result structure and engine-state writes;
+   a whole decoder layer also keeps the residual stream it leaves for the next layer.
 4. Run `verify` for import/interface errors, then `check` with the published
    development inputs. Inspect every claimed address and rank in the table.
 5. Measure complete-engine performance against the current incumbent; the
