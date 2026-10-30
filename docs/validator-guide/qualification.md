@@ -268,7 +268,9 @@ matches, and otherwise measures its own. Acknowledged execution of completed
 stages counts toward the qualification budget; downtime is excluded.
 
 The standing CPU relay saves compressed checkpoints of completed speed, audit,
-and pristine-T stages. Each checkpoint preserves the original plan,
+and pristine-T stages. The worker writes one only when a stage completes, joining
+the stage records' canonical bytes rather than re-encoding them, so the GPUs do not
+wait on a checkpoint. Each checkpoint preserves the original plan,
 calibration, private selection state, stage records, and clock domains. It becomes
 available for replacement only after the CPU has copied, verified and fsynced it.
 The relay's `checkpoints/` directory must live on storage independent of the GPU
