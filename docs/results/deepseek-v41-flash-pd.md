@@ -105,3 +105,10 @@ every candidate about 0.5 percent against a 1.206 percent bar: ten tickets on
 2026-10-28 averaged +0.46 percent, and −0.08 percent against the reference's
 first two boots; the one PASS (+1.42 percent, +0.88 there) was revoked. Policy
 21 measures each stock pair as the first two lifetimes of its own process.
+
+The first policy-21 reference, on an 8-GPU AWS B300 node (2026-10-30), read
+mean window costs of 237.13 and 237.73 seconds in its first pair's process
+and 236.88 and 237.84 in its second's: the second lifetime cost 0.25 and 0.41
+percent more than the first, and stock against stock at matched positions,
+the second pair read against the first, came to 1.0003 (99 percent band 0.973
+to 1.028).
