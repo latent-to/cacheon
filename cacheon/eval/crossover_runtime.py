@@ -117,7 +117,7 @@ class ResidentCrossoverPlan:
         replay = self.baseline.session_plan.replay
         if (replay is None or len(replay.loads) != 1 or replay.contract != self.policy.goodput.contract
                 or replay.elapsed_cost != bool(self.policy.goodput.error_rate)
-                or replay.closed_loop != (self.policy.version == 20)):
+                or replay.closed_loop != (self.policy.version in (20, 21))):
             raise CrossoverRuntimeError("goodput plan requires one sealed load and its service contract")
         allowed_differences = {
             "stack_digest",
@@ -135,7 +135,7 @@ class ResidentCrossoverPlan:
         hardware = self.candidate.launch.hardware
         # Version 20 times a prefill/decode pair, each engine on half the lane; nothing else may.
         pair = pd_engine.is_pair(dict(self.candidate.session_plan.engine_config.engine_kwargs))
-        if (pair != (self.policy.version == 20)
+        if (pair != (self.policy.version in (20, 21))
                 or hardware.visible_gpu_count != hardware.tp_size * (2 if pair else 1)
                 or _expected_lane_digest(self.baseline) != _expected_lane_digest(self.candidate)):
             raise CrossoverRuntimeError("stock and candidate do not share one whole lane")

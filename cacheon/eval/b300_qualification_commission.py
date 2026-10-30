@@ -492,9 +492,9 @@ def _compose_locked(
         calibration=calibration_manifest,
         context=calibration_context,
         # New commissions run one engine on the whole lane against a retained
-        # stock reference (v19); a sealed decode floor makes it the PD pair at a
-        # closed-loop session count (v20). v16-v18 evidence keeps its paired arithmetic.
-        version=20 if goodput.decode_floor else 19,
+        # stock reference (v19); PD references use ticket-shaped pairs (v21).
+        # Historical witnesses retain their original policy and arithmetic.
+        version=21 if goodput.decode_floor else 19,
         min_windows=speed_block["min_windows"],
         max_window_scatter=float(speed_block["max_window_scatter"]),
         max_conditioning_slowdown=float(speed_block["max_conditioning_slowdown"]),

@@ -25,10 +25,12 @@ symmetric-memory multicast and Engram peer shards are off. Two parts of the pair
 are still unmeasured under confidential computing: the KV transfer (legacy CUDA IPC
 handles, as SGLang's custom all-reduce uses) and MegaMoE's symmetric memory.
 
-Speed policy 20 replays 192 sessions in a closed loop from a 247-session pool of
+Speed policy 21 replays 192 sessions in a closed loop from a 247-session pool of
 agent traces, each session capped at 16,000 output tokens, and scores served output
 tokens per second against the retained stock reference, gated on a pooled
-per-user decode median of at least 150 tokens per second. The session count is where
+per-user decode median of at least 150 tokens per second. Its four stock reference
+boots run as two ticket-shaped pairs with a 750-second no-engine interval before
+each pair; the same interval precedes the post-PASS stock check. The session count is where
 stock holds that floor: a development harness sending HTTP straight to the engines
 measured 17,920 tokens/s at a 163.4 decode median at 192 sessions, and 160.8 and 164.4
 on a re-run (8xB300, 2026-10-27). The production replay first read 130 there because

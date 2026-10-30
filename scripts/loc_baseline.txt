@@ -139,13 +139,15 @@
 # Dashboard outage: compact completed-report caches and request-scoped process reads replace repeated parsing
 # and scans; include the deployed frontend's independent refresh and explicit health states. Production
 # +154/-49, tests +122/-0, dashboard docs +9, and these +3 notes (2026-10-28).
+# PD policy 21 replaces consecutive stock boots with two ticket-shaped pairs and validates the idle gaps;
+# retained v19/v20 arithmetic stays unchanged. Runtime +64/-15, docs +29/-4, examples +3/-1 (2026-10-30).
 (root) 1157
 .github 338
 bundles 2398
-cacheon 92008
+cacheon 92057
 cacheon_kernels 936
 dashboard 4393
-docs 13361
-examples 743
-scripts 4402
+docs 13386
+examples 745
+scripts 4404
 tests 13985

@@ -202,7 +202,7 @@ def _reward_min_margin(db, qualifications):
     policies = [report["speed_witness"]["resident_policy"] for report in _reward_reports(db, qualifications)]
     # Versions 18 (paired windows), 19 and 20 (retained reference) are statistical too; read as a
     # sealed margin, v18's 0 broke weights 2026-10-15.
-    statistical = [policy.get("version") in (17, 18, 19, 20) for policy in policies]
+    statistical = [policy.get("version") in (17, 18, 19, 20, 21) for policy in policies]
     if any(statistical) and not all(statistical):
         raise IntakeError("reward comparison mixes statistical and historical qualifications")
     if any(statistical):
