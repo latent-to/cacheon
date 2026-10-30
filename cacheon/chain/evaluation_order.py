@@ -74,7 +74,7 @@ def reward_visibility_sql(db) -> str:
 
 
 def reward_comparisons(db) -> dict[str, dict]:
-    """Compare each PASS with the best preceding rewarded PASS on its measured baseline.
+    """Compare each PASS with the best preceding rewarded PASS on its measured baseline, or stock.
 
     Prefix eligibility only says earlier work finished. It does not establish a
     performance record. Recompute this filter for historical and new PASSes so
@@ -118,10 +118,10 @@ def reward_comparisons(db) -> dict[str, dict]:
         previous, previous_id = best.get(group, (Decimal(1), None))
         relative = score / previous
         margin = Decimal(0)
-        if not exempt and previous_id is not None and score > previous:
+        # The first PASS clears the margin over stock too: Shiv, 2026-10-30, after a +1.42% first PASS was paid.
+        if not exempt and score > previous:
             margin = _reward_min_margin(db, qualifications)
-        eligible = exempt or previous_id is None or (score > previous and
-            score >= previous * (1 + margin))
+        eligible = exempt or (score > previous and score >= previous * (1 + margin))
         comparisons[row["reservation_id"]] = {
             "previous_best_reservation_id": previous_id,
             "previous_best_speedup": previous,

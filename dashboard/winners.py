@@ -245,7 +245,7 @@ def settlement_hold_notice(connection: Any, reservation_id: str,
     if lost or reason == "lost_potential":
         # On 2026-10-01 a PASS earning 17% of the offer was titled "lost comparison": its crown hold, not its pay.
         title = "Potential winner lost comparison" if lost else "Passed evaluation — did not take the crown"
-        comparison = ("the best earlier PASS by the reward margin" if lost
+        comparison = ("the best earlier PASS, or stock for the first PASS, by the reward margin" if lost
                       else "the current champion on the measured baseline. Rewards are decided separately from the crown")
         message = ("This submission passed evaluation, but did not beat " + comparison
                    + ". Its PASS and measurements are retained.")

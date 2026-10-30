@@ -274,7 +274,7 @@ def test_statistical_records_pay_one_and_a_half_percent_over_the_previous_best(t
     policy = GoodputPolicy(CONTRACT, 1.0, 0.0003, 0.0, 0.0, 0.01, 0.0001)
     with _store(tmp_path) as store:
         candidates = []
-        for index, score in enumerate((1.05, 1.06, 1.07)):
+        for index, score in enumerate((1.01, 1.05, 1.06, 1.07)):
             baseline, candidate = [], []
             for window, lane in enumerate(("A", "A", "B", "B"), 1):
                 baseline.append(_read("incumbent", lane, window, 100))
@@ -291,8 +291,8 @@ def test_statistical_records_pay_one_and_a_half_percent_over_the_previous_best(t
             ))
         store.passed_reward_claims()
         comparisons = reward_comparisons(store._db)
-        first, unpaid, paid = (comparisons[c.reservation_digest] for c in candidates)
-        assert first["reward_eligible"] and not unpaid["reward_eligible"] and paid["reward_eligible"]
-        assert paid["previous_best_reservation_id"] == candidates[0].reservation_digest
+        below, first, unpaid, paid = (comparisons[c.reservation_digest] for c in candidates)
+        assert [r["reward_eligible"] for r in (below, first, unpaid, paid)] == [False, True, False, True]
+        assert paid["previous_best_reservation_id"] == candidates[1].reservation_digest
         assert paid["score_speedup"] == Decimal("1.07") / Decimal("1.05")
-        assert {c.hotkey for c in store.passed_reward_claims()} == {candidates[i].hotkey for i in (0, 2)}
+        assert {c.hotkey for c in store.passed_reward_claims()} == {candidates[i].hotkey for i in (1, 3)}

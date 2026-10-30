@@ -110,8 +110,8 @@ store under the commissioned root that later boots of the same tree reuse.
    SHA-256, workload digest, boot schedule) measures four fresh stock boots. PD
    policy 21 measures them as two pairs, each the first two engine lifetimes of
    its own evaluator process, the position every candidate pair holds: replay
-   rates fall with each lifetime one evaluator process runs and recover in a new
-   process, not after idle GPUs
+   rates fall with each lifetime one evaluator process runs and recover in the
+   next qualification's process, not after idle GPUs
    ([measurement](../results/deepseek-v41-flash-pd.md#reference-position)). A
    qualification that measures a stock pair retains it and ends `NO_DECISION`
    (infrastructure, never a candidate FAIL) without reading its candidate; the
@@ -805,9 +805,9 @@ bar is +2.1% (v18: +2.24% at look 4, +4.28% at look 3). Boot spread is the floor
 [Full-node qualification and noise](../results/full-node-qualification-noise.md)
 records the TP8 run, its measured spreads and an outcome census.
 
-Reward credit uses the point estimate, not a confidence-bound haircut; a later
-V17, V18 or V19 PASS is paid only when that estimate beats the best earlier
-rewarded PASS against the same arena and incumbent stack by 1.5%. Regrading
+Reward credit uses the point estimate, not a confidence-bound haircut; a V17
+through V21 PASS is paid only when that estimate beats the best earlier rewarded
+PASS against the same arena and incumbent stack, or stock for the first PASS, by 1.5%. Regrading
 checks the exact stopping point, all engine identities, host timings, and
 controls. Retained v16–v18 witnesses regrade under their own paired arithmetic.
 

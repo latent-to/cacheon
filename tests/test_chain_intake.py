@@ -1289,7 +1289,7 @@ def test_weight_projection_reopens_every_active_crown_and_holds_on_loss(
             / evidence[0].primary_attempt_ref.sha256
         )
         artifact.unlink()
-        with pytest.raises(IntakeError, match="cannot reopen"):
+        with pytest.raises(IntakeError, match="cannot reopen|cannot read retained margin"):
             store.build_weight_projection(
                 policy=POLICY,
                 context=context,

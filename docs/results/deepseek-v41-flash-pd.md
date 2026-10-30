@@ -94,8 +94,8 @@ lifetimes one to four: the reference position below accounts for it.
 Replay rates fall with every engine lifetime one evaluator process runs:
 against its first lifetime, PD stock costs 1.4 percent more in the second,
 about 2 percent in the third and fourth and about 2.4 percent in the fifth and
-sixth. A new process starts fast again; 750 idle seconds with the GPUs back at
-24 to 26 °C do not. All of the added time is before the first token, while
+sixth. The next qualification, a new process that first builds its bundle, starts fast again;
+750 idle seconds inside one process, the GPUs back at 24 to 26 °C, do not. All of the added time is before the first token, while
 decode time per token, the replay bridge's delay, turnaround and sessions in
 flight stay flat. The in-process cause is not yet identified.
 
