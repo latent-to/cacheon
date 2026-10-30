@@ -1,6 +1,7 @@
 """Arrival-ordered reward records preserve PASS evidence and pre-policy claims."""
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -296,3 +297,12 @@ def test_statistical_records_pay_one_and_a_half_percent_over_the_previous_best(t
         assert paid["previous_best_reservation_id"] == candidates[1].reservation_digest
         assert paid["score_speedup"] == Decimal("1.07") / Decimal("1.05")
         assert {c.hotkey for c in store.passed_reward_claims()} == {candidates[i].hotkey for i in (1, 3)}
+        from cacheon.chain.evaluation_order import payment_bar
+        from cacheon.eval.speed_verdict import fail_reason
+        stack = candidates[0].incumbent_manifest
+        assert [payment_bar(store._db, stack, c.reservation_digest) for c in candidates] == [
+            "1.015", "1.015", "1.06575", "1.06575"]
+        for bar, decision in (("1.06575", "PASS"), ("1.0701", "FAIL")):
+            grade = replace(reads, payment_bar=bar).grade(policy)
+            assert grade.decision.value == decision
+        assert fail_reason(grade.verdict) == "below_payment_bar"

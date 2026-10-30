@@ -14,17 +14,23 @@ LEGACY_QUALIFICATION_FIELDS = frozenset({
 INCUMBENT_FIELDS = frozenset({"incumbent_stack_digest", "incumbent_tree_digest"})
 QUALIFICATION_FIELDS = LEGACY_QUALIFICATION_FIELDS | INCUMBENT_FIELDS
 CHECKPOINT_QUALIFICATION_FIELDS = QUALIFICATION_FIELDS | {"checkpoint_digest"}
+BOUND_QUALIFICATION_SHAPES = tuple(
+    fields | extra for fields in (QUALIFICATION_FIELDS, CHECKPOINT_QUALIFICATION_FIELDS)
+    for extra in (frozenset(), {"payment_bar"})
+)
 
 
 def qualification_request_body(
     coordinator, claim, *, incumbent_stack_digest: str, incumbent_tree_digest: str,
-    retained_body: dict[str, object] | None = None,
+    payment_bar: str = "", retained_body: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Write a bound request, or reconstruct an existing request without upgrading it.
 
     A retained request keeps its original pin and grammar. The caller re-seals
     this reconstruction and compares every byte with the retained authenticated
     request; this function does not authorize a different carrier or execution.
+    ``payment_bar`` (``cacheon.chain.evaluation_order.payment_bar``) is written
+    only into a new request, so a later crown never changes a retained one.
     """
 
     body = {
@@ -50,10 +56,13 @@ def qualification_request_body(
             incumbent_stack_digest=incumbent_stack_digest,
             incumbent_tree_digest=incumbent_tree_digest,
         )
+        if payment_bar:
+            body["payment_bar"] = payment_bar
     elif INCUMBENT_FIELDS.issubset(retained_body):
         body.update((field, retained_body[field]) for field in INCUMBENT_FIELDS)
-    if retained_body is not None and "checkpoint_digest" in retained_body:
-        body["checkpoint_digest"] = retained_body["checkpoint_digest"]
+    if retained_body is not None:
+        body.update((field, retained_body[field]) for field in ("checkpoint_digest", "payment_bar")
+                    if field in retained_body)
     return body
 
 

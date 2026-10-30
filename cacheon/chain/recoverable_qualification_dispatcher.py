@@ -601,7 +601,7 @@ class RecoverableQualificationDispatcher:
             ) from exc
 
     def _expected_request(
-        self, claim: ClaimedQualificationEvaluation, retained_body=None,
+        self, claim: ClaimedQualificationEvaluation, retained_body=None, payment_bar="",
     ) -> RemoteEvaluationRequest:
         return seal_remote_request(
             claim.lease,
@@ -609,7 +609,7 @@ class RecoverableQualificationDispatcher:
             self.coordinator.service.manifest.service_id,
             self.transport_identity,
             self.credential,
-            checkpoints.request_body(self, claim, retained_body),
+            checkpoints.request_body(self, claim, retained_body, payment_bar),
         )
 
     def _reopen_plan(
@@ -638,7 +638,7 @@ class RecoverableQualificationDispatcher:
         recovery: EvaluationRecovery,
         claim: ClaimedQualificationEvaluation,
     ) -> EvaluationRecovery:
-        request = self._expected_request(claim)
+        request = self._expected_request(claim, payment_bar=checkpoints.claim_payment_bar(self, recovery, claim))
         plan = self.transport.plan_qualification_request(request)
         if type(plan) is not QualificationRequestPlan or plan.remote_request != request:
             raise RecoverableQualificationDispatcherError(

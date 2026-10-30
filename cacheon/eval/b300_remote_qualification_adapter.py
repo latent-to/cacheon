@@ -56,7 +56,7 @@ from cacheon.eval.qualification_intake import (
 )
 from cacheon.stack_identity import canonical_digest
 from cacheon.chain.qualification_request import (
-    QUALIFICATION_FIELDS, CHECKPOINT_QUALIFICATION_FIELDS, require_commissioned_incumbent,
+    BOUND_QUALIFICATION_SHAPES, require_commissioned_incumbent,
 )
 
 
@@ -419,7 +419,7 @@ class B300RemoteQualificationAdapter:
         body = request.body
         manifest = self.deployment.manifest
         if (
-            frozenset(body) not in (QUALIFICATION_FIELDS, CHECKPOINT_QUALIFICATION_FIELDS)
+            frozenset(body) not in BOUND_QUALIFICATION_SHAPES
             or body["kind"] != "qualification_work"
             or type(body["candidates"]) is not list
             or not 1 <= len(body["candidates"]) <= manifest.capacity.max_cohort_size
@@ -493,6 +493,7 @@ class B300RemoteQualificationAdapter:
                 screen_lane=self.deployment.screen_lane,
                 continuation_store=self.continuation_store,
                 request_digest=request.digest,
+                payment_bar=body.get("payment_bar", ""),
             )
         except OuterSessionWorkerError as exc:
             diagnostic = exc.diagnostic

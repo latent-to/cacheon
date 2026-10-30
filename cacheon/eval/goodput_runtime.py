@@ -16,6 +16,7 @@ import math
 import os
 import time
 from dataclasses import asdict, dataclass, field, replace
+from decimal import Decimal
 from pathlib import Path
 
 from cacheon.eval.continuation_codec import ContinuationCodec
@@ -116,6 +117,9 @@ class GoodputReadSet:
     Paired policies hold one incumbent read per candidate read. Version 19 holds the stock reference
     campaign (``reference_boots`` lifetimes, then at most one stock sentinel lifetime) as the incumbent
     and up to ``boots`` candidate lifetimes, every lifetime ``window_limit`` windows on one lane.
+
+    ``payment_bar`` is the speedup settlement would pay, sealed by the dispatcher in the request. A PASS
+    below it grades FAIL, so it ends before the stock bracket, audit and T (Shiv, 2026-10-30).
     """
 
     incumbent: tuple[LoadRead, ...]
@@ -125,6 +129,7 @@ class GoodputReadSet:
     orientations: tuple[int, ...] = field(default=(), metadata={"wire_optional": True})
     boots: int = field(default=0, metadata={"wire_optional": True})
     reference_boots: int = field(default=0, metadata={"wire_optional": True})
+    payment_bar: str = field(default="", metadata={"wire_optional": True})
 
     def __post_init__(self):
         if (not self.incumbent or not self.candidate
@@ -192,6 +197,10 @@ class GoodputReadSet:
         if (type(result) is not ServiceVerdict or (not policy.error_rate and result.required != policy.required)
             or not math.isfinite(result.ratio) or result.ratio <= 0):
             raise ValueError("service scorer returned another policy or result type")
+        if (self.payment_bar and result.decision is SpeedStageDecision.PASS
+                and Decimal(format(result.ratio, ".17g")) < Decimal(self.payment_bar)):
+            result = replace(result, decision=SpeedStageDecision.FAIL, detail=(
+                f"below_payment_bar: speedup {result.ratio:.4f} is below the payment bar {self.payment_bar}"))
         confident = result.decision is not SpeedStageDecision.NO_DECISION
         passed = result.decision is SpeedStageDecision.PASS
         verdict = SpeedupVerdict(
@@ -334,7 +343,7 @@ def _expected(replay):
 
 
 def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root, deadline, clock,
-                        quality_control):
+                        quality_control, payment_bar=""):
     """Read whole candidate lifetimes against the reference; a PASS adds the stock bracket lifetime."""
     from cacheon.eval.crossover_runtime import ResidentCrossoverEvidence, _lane_digest
 
@@ -354,7 +363,7 @@ def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root
                            deadline=deadline, tokenizer=tokenizer))
         reads = GoodputReadSet(stock, tuple(read for row in boots for read in row[0].session.replay_reads),
                                _expected(replay), replay.windows, boots=CANDIDATE_BOOTS,
-                               reference_boots=REFERENCE_BOOTS)
+                               reference_boots=REFERENCE_BOOTS, payment_bar=payment_bar)
         grade = reads.grade(plan.policy.goodput)
         if grade.decision is not SpeedStageDecision.NO_DECISION:
             break
@@ -417,7 +426,8 @@ def regrade_reference_speed(evidence, plan):
     stock = tuple(read for row in reference for read in row.session.replay_reads)
     rebuilt = GoodputReadSet(stock + (bracket.session.replay_reads if bracket else ()),
                              tuple(read for row in candidates for read in row.session.replay_reads),
-                             _expected(replay), replay.windows, boots=CANDIDATE_BOOTS, reference_boots=REFERENCE_BOOTS)
+                             _expected(replay), replay.windows, boots=CANDIDATE_BOOTS, reference_boots=REFERENCE_BOOTS,
+                             payment_bar=evidence.goodput.payment_bar)
     if rebuilt != evidence.goodput:
         raise CrossoverRuntimeError("reference speed reads differ from their engine sessions")
     for count in range(1, len(candidates) + 1):

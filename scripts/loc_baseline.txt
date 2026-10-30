@@ -144,13 +144,15 @@
 # PD evidence writes: a PASS held the GPUs idle ~28 min re-encoding its 727 MB speed record; canonical JSON now checks
 # plain data in C, records encode once, checkpoints join record bytes per completed stage, and the codec maps scalar
 # tuples in C. Runtime +163/-36, docs +3/-1 plus the AWS reference result's +7, +3 notes (2026-10-30).
+# Payment bar: each new request carries 1.5% over the best earlier rewarded PASS, or stock, and a speed PASS below
+# it grades FAIL before the bracket, audit and T. Runtime +100/-27, tests +10, docs +25/-8, +2 notes (2026-10-30).
 (root) 1157
 .github 338
 bundles 2398
-cacheon 92163
+cacheon 92236
 cacheon_kernels 936
 dashboard 4393
-docs 13420
+docs 13437
 examples 745
-scripts 4407
-tests 13985
+scripts 4409
+tests 13995

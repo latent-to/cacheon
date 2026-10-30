@@ -204,6 +204,7 @@ class B300MainnetWorker:
         screen_lane: str,
         continuation_store: QualificationContinuationStore,
         request_digest: str,
+        payment_bar: str = "",
     ) -> B300RemoteQualificationRun | RemoteQualificationWorkerHold:
         """Run one path-free, lane-bound remote qualification cohort.
 
@@ -244,6 +245,7 @@ class B300MainnetWorker:
                 candidate_rows,
                 continuation_store=continuation_store,
                 request_digest=request_digest,
+                payment_bar=payment_bar,
             )
             if type(execution) is RemoteQualificationWorkerHold:
                 return execution
@@ -287,6 +289,7 @@ class B300MainnetWorker:
         *,
         continuation_store: QualificationContinuationStore | None = None,
         request_digest: str | None = None,
+        payment_bar: str = "",
     ) -> (
         tuple[
             QualificationIntakeBatch,
@@ -331,6 +334,7 @@ class B300MainnetWorker:
                 continuation_store=continuation_store,
                 request_digest=request_digest,
                 prebuilt_plan=plan if request_digest is not None else None,
+                payment_bar=payment_bar,
             )
         except (QualificationContinuationError, OuterSessionInfrastructureError) as exc:
             if request_digest is None:

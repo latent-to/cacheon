@@ -129,6 +129,10 @@ store under the commissioned root that later boots of the same tree reuse.
    Looks fall at boot boundaries: after boot 1 the stage can end only on the
    sealed `futility_margin` (FAIL); a PASS needs both boots. They are the first
    two engine lifetimes of the qualification's evaluator process.
+   A PASS whose point estimate is below the request's `payment_bar` (1.5% over
+   the best earlier rewarded PASS on the same arena and stack, or over stock)
+   grades `FAIL` (`below_payment_bar`): settlement could not pay it, so the
+   bracket, audit and T do not run.
 3. **Stock bracket.** After a speed PASS, one fresh stock boot replays N windows
    and then generates the quality controls. If it reads faster than the
    reference beyond a one-sided 1% test, the result becomes `NO_DECISION`
@@ -794,7 +798,8 @@ as independent replications. Looks fall at candidate boot boundaries and spend t
 sealed 12.5% one-sided error budget under v17's alpha-spending shares; the final
 look spends 80% of it, so `z` is the 90% one-sided quantile. After the first boot
 the stage can end only on the futility margin. The last candidate boot yields
-`PASS` or `FAIL`; only the stock bracket can turn a PASS into `NO_DECISION`. This
+`PASS` or `FAIL`; a PASS below the request's payment bar becomes `FAIL`
+(`below_payment_bar`), and only the stock bracket can turn a PASS into `NO_DECISION`. This
 normal-model guarantee depends on the sealed noise bounds and independent boot
 contrasts; it does not establish runtime resolution by itself. A fixed 1% gain
 floor is absent.
@@ -809,7 +814,8 @@ records the TP8 run, its measured spreads and an outcome census.
 
 Reward credit uses the point estimate, not a confidence-bound haircut; a V17
 through V21 PASS is paid only when that estimate beats the best earlier rewarded
-PASS against the same arena and incumbent stack, or stock for the first PASS, by 1.5%. Regrading
+PASS against the same arena and incumbent stack, or stock for the first PASS, by 1.5%. The
+dispatcher seals that bar into each new request, so a PASS below it stops at the speed stage. Regrading
 checks the exact stopping point, all engine identities, host timings, and
 controls. Retained v16–v18 witnesses regrade under their own paired arithmetic.
 

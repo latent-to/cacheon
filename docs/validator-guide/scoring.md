@@ -125,9 +125,10 @@ rules live in
 
 A qualified PASS earns reward only when its speedup beats the best earlier
 rewarded PASS against the same arena and incumbent stack by the reward margin:
-1.5% for V17, V18 and V19, the sealed `min_margin` for historical policies. The first PASS
-against a commissioned baseline is eligible; see
-[Settlement and weights](settlement-and-weights.md).
+1.5% for V17 through V21, the sealed `min_margin` for historical policies. The first PASS
+against a commissioned baseline must beat stock by the same margin; see
+[Settlement and weights](settlement-and-weights.md). Qualification ends a speed PASS
+below this bar at the speed stage as `FAIL` (`below_payment_bar`).
 
 Standing-claim age begins at the proposal's finalized submission block, which
 settlement stores as `crowned_block`; discovery lifetime likewise begins at
