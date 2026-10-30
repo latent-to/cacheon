@@ -60,8 +60,8 @@ measures them with the retained-reference speed policies: one engine at a time o
 commissioned TP lane. Fresh candidate boots replay the sealed agent workload and
 are graded against a retained stock reference measured on the same lane; after a
 speed PASS a stock bracket boot rechecks that reference. PD policy 21 measures
-the reference as two ticket-shaped pairs with the same idle interval as a
-candidate ticket, and applies that interval before the stock check. Retained policy 16–18
+the reference as two stock pairs, each the first two engine lifetimes of its own
+evaluator process, the position every candidate pair holds. Retained policy 16–18
 evidence keeps its original contract. The candidate
 then runs in a separate eager, untimed audit role A, and
 pristine T runs candidate-free; candidate code never shares the controller's

@@ -108,12 +108,15 @@ store under the commissioned root that later boots of the same tree reuse.
 1. **Stock reference.** The first qualification that finds no current reference
    for the stock identity (lane digest, stock launch digest, runtime preflight
    SHA-256, workload digest, boot schedule) measures four fresh stock boots. PD
-   policy 21 runs them as two pairs: idle, stock, stock, idle, stock, stock.
-   Each pair starts after 750 seconds with no engine, matching the roughly
-   12.5-minute build interval before a candidate ticket (about 18 minutes
-   including the subsequent engine startup). The second boot within a pair
-   uses the ordinary restart gap. Policies 19–20 retain their historical
-   consecutive reference campaign. The producer
+   policy 21 measures them as two pairs, each the first two engine lifetimes of
+   its own evaluator process, the position every candidate pair holds: replay
+   rates fall with each lifetime one evaluator process runs and recover in a new
+   process, not after idle GPUs
+   ([measurement](../results/deepseek-v41-flash-pd.md#reference-position)). A
+   qualification that measures a stock pair retains it and ends `NO_DECISION`
+   (infrastructure, never a candidate FAIL) without reading its candidate; the
+   next such qualification completes the reference. Policies 19–20 retain their
+   historical consecutive reference campaign. The producer
    publishes them to the evidence store (domain
    `cacheon.qualification.stock-reference`, schema
    `cacheon.qualification.stock-reference.v1`) and names them by
@@ -124,16 +127,16 @@ store under the commissioned root that later boots of the same tree reuse.
    four-hour deadline.
 2. **Candidate boots.** Up to two fresh candidate boots run on the same lane.
    Looks fall at boot boundaries: after boot 1 the stage can end only on the
-   sealed `futility_margin` (FAIL); a PASS needs both boots. If this ticket just
-   created the reference, policy 21 first allows the same 750-second idle
-   interval after its last stock boot. Reusing an older reference adds no wait.
+   sealed `futility_margin` (FAIL); a PASS needs both boots. They are the first
+   two engine lifetimes of the qualification's evaluator process.
 3. **Stock bracket.** After a speed PASS, one fresh stock boot replays N windows
-   and then generates the quality controls. Policy 21 waits the same
-   750-second idle interval first: the check is a new ticket's first boot,
-   rather than the candidate pair's third consecutive boot. If it reads faster than the
+   and then generates the quality controls. If it reads faster than the
    reference beyond a one-sided 1% test, the result becomes `NO_DECISION`
    (infrastructure, never a candidate FAIL) and the reference pointer is retired
    by a non-destructive rename, so the next qualification measures a new reference.
+   Under policy 21 the bracket is the process's third lifetime, so it reads
+   slower than the reference's first-two-lifetime mean (about 1.3% on the PD
+   arena) and the sentinel sees only faster stock beyond that gap.
 
 Every replay record carries the engine-observed prompt token count and the
 controller's host timing, and the regrade rejects a window whose records differ
@@ -148,19 +151,17 @@ sequenceDiagram
     participant A as Audit-only role
     participant T as Pristine reference
     opt no current stock reference
-        loop two stock pairs
-            H->>H: policy 21: wait for ticket-shaped idle
-            H->>L: two stock boots, each condition, flush, replay N windows
+        loop four stock boots (policy 21: one pair)
+            H->>L: boot stock, condition, flush, replay N windows
         end
-        H->>H: publish the reference and its pointer
+        H->>H: publish the reference and its pointer (policy 21: a first pair)
+        H->>H: policy 21: end NO_DECISION without a candidate read
     end
     H->>H: start the qualification and speed-stage clocks
-    H->>H: policy 21: idle after a newly created reference
     H->>L: candidate boot 1, condition, flush, replay N windows
     H->>H: grade, a sealed futility margin may FAIL here
     H->>L: candidate boot 2, condition, flush, replay N windows
     H->>H: grade the final look
-    H->>H: policy 21: on PASS, wait for ticket-shaped idle
     H->>L: on PASS, stock bracket boot, replay N windows
     H->>H: bind entropy to candidate quiescence, select quality prompts
     H->>L: generate the selected incumbent controls
@@ -179,14 +180,14 @@ decides how many run. The retained witness records every boot's turn records,
 including the reference boots, the lane identity, operational timing, and the
 stage and total budgets.
 
-Policy 21 changes reference scheduling, not the four-reference/two-candidate
+Policy 21 changes where the reference boots run, not the four-reference/two-candidate
 sample count, sealed noise, error rate, log-mean estimator or reward margin.
-Normal two-boot speed failures have no extra GPU work or wait. A speed PASS
-adds the idle interval before its already-required stock check. The initial
-reference campaign and its first candidate also include the explicit idle
-intervals; these are commissioning costs, not repeated stock measurements for
-each ticket. Regrade checks the retained pre/post device timestamps at the
-pair boundary and before the first candidate and stock check.
+Candidate qualifications add no GPU work or wait. The reference costs its four
+stock boots across two qualifications that end without a candidate read; on a
+connected pair each such result holds its reservation, so measure the reference
+with the off-chain twin before connecting
+([New arena](new-arena.md#6-prove-then-connect)) and again after a sentinel
+retires it.
 
 Speed is graded before the expensive audit and pristine-reference stages. An ordinary
 speed non-PASS emits a durable stage-exit and does not run audit or T. A

@@ -4,7 +4,8 @@ Only the replay policies remain: version 16 (fixed cutoff), 17 (statistical) and
 windows) are historical evidence; version 19 runs one engine per node against a retained stock reference,
 and version 20 runs version 19's arithmetic over a prefill/decode engine pair at a sealed closed-loop
 concurrency, failing a candidate whose pooled per-user decode p50 falls under the contract's floor.
-Version 21 keeps that arithmetic and measures stock in two ticket-shaped boot pairs.
+Version 21 keeps that arithmetic and measures stock as two boot pairs, each the first two engine lifetimes
+of its own evaluator process, as every candidate pair is read.
 The batch-cell fields stay on the wire at zero so sealed replay witnesses decode byte for byte.
 """
 
@@ -13,9 +14,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field as dataclass_field
 
-from cacheon.eval.goodput_runtime import (
-    CANDIDATE_BOOTS, REFERENCE_BOOTS, _REFERENCE_PAIR_IDLE_SECONDS, GoodputPolicy,
-)
+from cacheon.eval.goodput_runtime import CANDIDATE_BOOTS, REFERENCE_BOOTS, GoodputPolicy
 from cacheon.eval.scoring import CrossoverRuntimeError
 from cacheon.stack_identity import canonical_digest, require_sha256_hex
 
@@ -106,8 +105,8 @@ class ResidentSpeedPolicy:
                 "sentinel": "stock_bracket_after_pass_one_sided_0.01", "continuation": "completed_stage",
                 **({"topology": "pd_prefill_decode_on_one_node", "arrival": "closed_loop_after_cold_round",
                     "gate": "pooled_decode_p50_at_every_look"} if self.version in (20, 21) else {}),
-                **({"reference_pair_boots": CANDIDATE_BOOTS, "reference_pair_idle_seconds": _REFERENCE_PAIR_IDLE_SECONDS,
-                    "sentinel_idle_seconds": _REFERENCE_PAIR_IDLE_SECONDS} if self.version >= 21 else {}),
+                **({"reference_pair_boots": CANDIDATE_BOOTS,
+                    "reference_pair_process": "first_lifetimes_of_a_fresh_evaluator"} if self.version >= 21 else {}),
             })
         return canonical_digest("cacheon.qualification.goodput-speed-policy.v1", {
             **self.to_dict(), "read_order": ["B", "C"],

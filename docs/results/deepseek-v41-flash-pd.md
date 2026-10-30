@@ -84,6 +84,24 @@ check now covers only the GPUs the audit engine occupies (`ebda4441`).
 | Faithful identity on `model.layers.*.mlp` (`c0c31952`) | `FAIL`, every window within noise of 1.00 | `FAIL` `speed_threshold_not_met`: ratio 0.985 (standard error 0.012, required 1.027), stopped after one candidate boot by the futility margin; candidate windows 15,693 / 15,883 / 15,871 against a stock reference mean of 16,058 |
 | Wrong MLP under the registered-control audit policy (`ebda4441`) | Speed non-`PASS`, then audit `FAIL` with violations | Speed non-`PASS` over two candidate boots (15,688 to 15,935 tokens/s), then `FAIL` `slot_audit_failed`: passing fraction 0.0 against 0.75 on all 40 layers and 4 ranks; attempt record 20.3 MB |
 
-A faithful identity reads about 0.985 of stock on pairs `n`, `o` and `p`, so a
-candidate's arm carries about 1.5 percent the stock arm does not; the cause is
-not yet measured.
+A faithful identity reads about 0.985 of stock on pairs `n`, `o` and `p`. Those
+runs measured the reference in the identity's own evaluator process, so its
+first candidate boot was the process's fifth engine lifetime, read against
+lifetimes one to four: the reference position below accounts for it.
+
+## Reference position
+
+Replay rates fall with every engine lifetime one evaluator process runs:
+against its first lifetime, PD stock costs 1.4 percent more in the second,
+about 2 percent in the third and fourth and about 2.4 percent in the fifth and
+sixth. A new process starts fast again; 750 idle seconds with the GPUs back at
+24 to 26 °C do not. All of the added time is before the first token, while
+decode time per token, the replay bridge's delay, turnaround and sessions in
+flight stay flat. The in-process cause is not yet identified.
+
+Each qualification runs in a new process, so candidates read as its first two
+lifetimes. Policy 20 measured all four reference boots in one process, handing
+every candidate about 0.5 percent against a 1.206 percent bar: ten tickets on
+2026-10-28 averaged +0.46 percent, and −0.08 percent against the reference's
+first two boots; the one PASS (+1.42 percent, +0.88 there) was revoked. Policy
+21 measures each stock pair as the first two lifetimes of its own process.

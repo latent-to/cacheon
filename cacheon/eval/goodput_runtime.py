@@ -3,8 +3,8 @@
 Version 19 gives one engine the whole node. A stock reference campaign is measured once per lane
 identity and retained; each candidate reads whole lifetimes against it; a PASS adds one stock bracket
 lifetime that is both the drift sentinel and the incumbent quality control. Paired read sets (versions
-16-18) stay readable for the witnesses that retain them. Version 21 measures the four stock boots as
-two ticket-shaped pairs, including the GPU-idle interval that separates ordinary candidate tickets.
+16-18) stay readable for the witnesses that retain them. Version 21 reads stock and candidate only as
+the first two engine lifetimes of their own evaluator process: the reference is two such stock pairs.
 """
 
 from __future__ import annotations
@@ -27,9 +27,10 @@ from cacheon.stack_identity import canonical_digest, canonical_json_bytes
 # Version 19: stock lifetimes in one reference campaign, and the most candidate lifetimes a stage reads.
 REFERENCE_BOOTS = 4
 CANDIDATE_BOOTS = 2
-# The 2026-10-28 PD tickets had an approximately 18-minute end-to-first-read gap: about 12.5 minutes
-# with no engine, then the ordinary 5-minute boot. Four consecutive stock boots omitted that idle.
-_REFERENCE_PAIR_IDLE_SECONDS = 750
+# Replay rates fall with every engine lifetime one evaluator process runs and recover only in a new
+# process, not after idle GPUs: PD stock read 1.4% slower in its second lifetime and about 2% from the
+# third, also after 12.5 idle minutes (2026-10-30). Four stock lifetimes in one process gave every
+# two-boot candidate about 0.5% (policy 20), so version 21 measures each stock pair in its own process.
 REFERENCE_DOMAIN = "cacheon.qualification.stock-reference"
 REFERENCE_SCHEMA = "cacheon.qualification.stock-reference.v1"
 _REFERENCE_BYTES = 512 << 20
@@ -254,37 +255,21 @@ def _reference_pointer(plan, evidence_root) -> Path:
         "boots": REFERENCE_BOOTS, "lane": plan.baseline_lane_digest, "launch": plan.baseline.launch.digest,
         "runtime": plan.baseline.binding.runtime_preflight_receipt.sha256,
         "workload": marginal_workload_digest(plan.baseline.session_plan),
-        **({"pair_boots": CANDIDATE_BOOTS, "pair_idle_seconds": _REFERENCE_PAIR_IDLE_SECONDS}
+        **({"pair_boots": CANDIDATE_BOOTS, "pair_processes": REFERENCE_BOOTS // CANDIDATE_BOOTS}
            if plan.policy.version >= 21 else {}),
     })
     # A dot name can never be an evidence domain directory.
     return Path(evidence_root) / ".stock-references" / f"{identity}.json"
 
 
-def _ticket_idle(executor, *, deadline, since=None):
-    """Reproduce the ticket's no-engine interval without changing either timed workload."""
-    now = float(executor.manager.clock())
-    until = (now if since is None else since) + _REFERENCE_PAIR_IDLE_SECONDS
-    if until >= deadline:
-        raise CrossoverRuntimeError("ticket-shaped stock schedule has no idle budget remaining")
-    executor.prove_quiescent()
-    while now < until:
-        time.sleep(min(5.0, until - now))
-        now = float(executor.manager.clock())
-    executor.prove_quiescent()
-
-
-def _require_pair_idle(before, after):
-    gap = after.device_receipts[0].started_monotonic_s - before.device_receipts[2].completed_monotonic_s
-    if gap < _REFERENCE_PAIR_IDLE_SECONDS:
-        raise CrossoverRuntimeError("stock schedule omitted its ticket-shaped idle interval")
-
-
 def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
     """Reopen the lane's current stock reference, or measure its campaign when none is current.
 
     The campaign runs before the speed clock starts. A missing or retired reference is measured
-    again on this lane, never borrowed from another lane, image, launch or workload.
+    again on this lane, never borrowed from another lane, image, launch or workload. Version 21
+    measures one stock pair as the first lifetimes of this evaluator process, as every candidate pair
+    is read, then ends the qualification without a candidate read (infrastructure, never a candidate
+    FAIL); the second such pair completes the reference.
     """
     from cacheon.eval.crossover_runtime import _lane_digest
     from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence, reopen_evidence
@@ -292,39 +277,45 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
 
     codec = ContinuationCodec((EngineExecutionEvidence,))
     pointer = _reference_pointer(plan, evidence_root)
+    first = pointer.with_name(f"{pointer.stem}.first-pair.json")
     lane = _lane_digest(executor, plan.baseline)
-    if pointer.exists():
+
+    def reopen(path):
         record = json.loads(reopen_evidence(evidence_root, EvidenceArtifactRef.from_dict(
-            json.loads(pointer.read_text())), max_bytes=_REFERENCE_BYTES))
+            json.loads(path.read_text())), max_bytes=_REFERENCE_BYTES))
         if record.get("identity") != pointer.stem:
             raise CrossoverRuntimeError("stock reference names another lane identity")
-        executions = tuple(codec.decode(row) for row in record["executions"])
+        return tuple(codec.decode(row) for row in record["executions"])
+
+    paired = plan.policy.version >= 21
+    if pointer.exists():
+        executions, target = reopen(pointer), None
     else:
         tokenizer = _tokenizer(plan)
-        measured = []
-        for index in range(REFERENCE_BOOTS):
-            if plan.policy.version >= 21 and index % CANDIDATE_BOOTS == 0:
-                _ticket_idle(executor, deadline=deadline,
-                             since=measured[-1].device_receipts[2].completed_monotonic_s if measured else None)
-            measured.append(_boot(executor, plan.baseline, lane, model_mount, prefix="incumbent",
-                                  deadline=deadline, tokenizer=tokenizer)[0])
-        executions = tuple(measured)
-    if len(executions) != REFERENCE_BOOTS or any(type(row) is not EngineExecutionEvidence for row in executions):
+        measured = tuple(_boot(executor, plan.baseline, lane, model_mount, prefix="incumbent", deadline=deadline,
+                               tokenizer=tokenizer)[0] for _ in range(CANDIDATE_BOOTS if paired else REFERENCE_BOOTS))
+        executions = (reopen(first) if paired and first.exists() else ()) + measured
+        target = pointer if len(executions) == REFERENCE_BOOTS else first
+    if (len(executions) != (CANDIDATE_BOOTS if target == first else REFERENCE_BOOTS)
+            or any(type(row) is not EngineExecutionEvidence for row in executions)):
         raise CrossoverRuntimeError("stock reference lacks its sealed lifetimes")
     _validate_replay_sessions([(row.session.replay_reads, row, plan.baseline, ()) for row in executions],
                               plan.baseline.session_plan.replay)
-    if plan.policy.version >= 21:
-        _require_pair_idle(executions[1], executions[2])
-    if not pointer.exists():
+    if target is not None:
         reference = publish_evidence(evidence_root, canonical_json_bytes({
             "identity": pointer.stem, "executions": [codec.encode(row) for row in executions],
         }), domain=REFERENCE_DOMAIN, media_type="application/json", schema=REFERENCE_SCHEMA,
             max_bytes=_REFERENCE_BYTES)
-        pointer.parent.mkdir(mode=0o700, exist_ok=True)
-        with pointer.open("x") as handle:
+        if paired and target == pointer:
+            # Before the pointer exists, so a reference the sentinel later retires never lends its first pair.
+            first.rename(first.with_name(f"{first.stem}.merged-{time.time_ns()}.json"))
+        target.parent.mkdir(mode=0o700, exist_ok=True)
+        with target.open("x") as handle:
             handle.write(json.dumps(reference.to_dict(), sort_keys=True) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
+        if paired:
+            raise CrossoverRuntimeError("stock reference pair retained; candidates are read in a fresh evaluator process")
     goodput = plan.policy.goodput
     if goodput.decode_floor:
         from cacheon.eval.service_capacity import decode_p50
@@ -354,10 +345,6 @@ def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root
     deadline = min(deadline, started + plan.policy.max_stage_seconds)
     if not math.isfinite(deadline) or deadline <= started:
         raise ValueError("goodput stage has no remaining execution budget")
-    if plan.policy.version >= 21:
-        # A lazily-created reference otherwise puts the first candidate in the fifth consecutive boot.
-        # Reusing the retained reference costs no wait: its last boot is already older than this interval.
-        _ticket_idle(executor, deadline=deadline, since=reference[-1].device_receipts[2].completed_monotonic_s)
     lane = _lane_digest(executor, plan.candidate)
     replay = plan.candidate.session_plan.replay
     stock = tuple(read for row in reference for read in row.session.replay_reads)
@@ -374,8 +361,6 @@ def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root
     candidate, candidate_quiet, candidate_directory, _ = boots[-1]
     bracket, bracket_quiet, quality = None, candidate_quiet, ((), (), None)
     if grade.decision is SpeedStageDecision.PASS:
-        if plan.policy.version >= 21:
-            _ticket_idle(executor, deadline=deadline, since=candidate.device_receipts[2].completed_monotonic_s)
         bracket, bracket_quiet, _, quality = _boot(
             executor, plan.baseline, lane, model_mount, prefix="incumbent", deadline=deadline, tokenizer=tokenizer,
             after=lambda controller, directory: quality_control(
@@ -417,11 +402,6 @@ def regrade_reference_speed(evidence, plan):
         or any(row.namespace_digest != plan.candidate.executor_namespace_digest
                or (row.container_ids, row.lease_records, row.resource_entries) != ((), (), ()) for row in quiet)):
         raise CrossoverRuntimeError("reference speed evidence names another sealed plan")
-    if plan.policy.version >= 21:
-        _require_pair_idle(reference[1], reference[2])
-        _require_pair_idle(reference[-1], candidates[0])
-        if bracket is not None:
-            _require_pair_idle(candidates[-1], bracket)
     _validate_replay_sessions([
         *((row.session.replay_reads, row, plan.baseline, ()) for row in reference),
         *((row.session.replay_reads, row, plan.candidate, ()) for row in candidates),

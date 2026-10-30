@@ -29,8 +29,8 @@ Speed policy 21 replays 192 sessions in a closed loop from a 247-session pool of
 agent traces, each session capped at 16,000 output tokens, and scores served output
 tokens per second against the retained stock reference, gated on a pooled
 per-user decode median of at least 150 tokens per second. Its four stock reference
-boots run as two ticket-shaped pairs with a 750-second no-engine interval before
-each pair; the same interval precedes the post-PASS stock check. The session count is where
+boots run as two pairs, each the first two engine lifetimes of its own evaluator
+process, as every candidate pair is read. The session count is where
 stock holds that floor: a development harness sending HTTP straight to the engines
 measured 17,920 tokens/s at a 163.4 decode median at 192 sessions, and 160.8 and 164.4
 on a re-run (8xB300, 2026-10-27). The production replay first read 130 there because
