@@ -27,8 +27,9 @@ from cacheon.eval.oci_process import OCIQuiescenceReceipt
 from cacheon.eval.qualification import SelectionEntropyReceipt
 from cacheon.eval.reference_protocol import ReferenceRequest
 from cacheon.stack_identity import (
-    canonical_digest,
     canonical_json_bytes,
+    canonical_object_bytes,
+    canonical_payload_digest,
     require_sha256_hex,
 )
 
@@ -180,18 +181,26 @@ class QualificationContinuation:
 
     # -- closed record file handling ----------------------------------------
 
-    def _record_bytes(self, stage: str, payload: object) -> bytes:
-        body = {
-            "authority_digest": self.authority_digest,
-            "payload": payload,
-            "request_digest": self.request_digest,
-            "schema": RECORD_SCHEMA,
-            "source_digest": self.source_digest,
-            "stage": stage,
+    def _record_parts(self, stage: str, payload: object) -> tuple[str, bytes]:
+        """The record digest and canonical record bytes, encoding the payload once.
+
+        A DeepSeek PD speed payload is 727 MB of canonical JSON, and encoding it for the
+        digest and again for the record cost two walks of minutes each (2026-10-30).
+        """
+        members = {
+            "authority_digest": canonical_json_bytes(self.authority_digest),
+            "payload": canonical_json_bytes(payload),
+            "request_digest": canonical_json_bytes(self.request_digest),
+            "schema": canonical_json_bytes(RECORD_SCHEMA),
+            "source_digest": canonical_json_bytes(self.source_digest),
+            "stage": canonical_json_bytes(stage),
         }
-        record = dict(body)
-        record["record_digest"] = canonical_digest(RECORD_SCHEMA, body)
-        return canonical_json_bytes(record)
+        digest = canonical_payload_digest(RECORD_SCHEMA, canonical_object_bytes(members))
+        members["record_digest"] = canonical_json_bytes(digest)
+        return digest, canonical_object_bytes(members)
+
+    def _record_bytes(self, stage: str, payload: object) -> bytes:
+        return self._record_parts(stage, payload)[1]
 
     def _record(self, stage: str, payload: object) -> None:
         if stage not in _STAGES:
@@ -279,19 +288,22 @@ class QualificationContinuation:
             raise QualificationContinuationError(
                 f"continuation {stage} record is not closed"
             )
-        body = {key: record[key] for key in record if key != "record_digest"}
         if (
             record["schema"] != RECORD_SCHEMA
             or record["stage"] != stage
             or record["request_digest"] != self.request_digest
             or record["authority_digest"] != self.authority_digest
             or record["source_digest"] != self.source_digest
-            or record["record_digest"] != canonical_digest(RECORD_SCHEMA, body)
         ):
             raise QualificationContinuationError(
                 f"continuation {stage} record names another sealed identity"
             )
-        if self._record_bytes(stage, record["payload"]) != raw:
+        digest, encoded = self._record_parts(stage, record["payload"])
+        if record["record_digest"] != digest:
+            raise QualificationContinuationError(
+                f"continuation {stage} record names another sealed identity"
+            )
+        if encoded != raw:
             raise QualificationContinuationError(
                 f"continuation {stage} record bytes are not canonical"
             )

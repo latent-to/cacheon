@@ -29,6 +29,7 @@ import math
 import types
 import typing
 from enum import Enum
+from itertools import chain
 from pathlib import Path
 
 
@@ -37,10 +38,30 @@ class ContinuationCodecError(RuntimeError):
 
 
 _PRIMITIVES = (str, int, float, bool)
+_IDENTITY = (str, int, bool)
 
 
 def _type_key(cls: type) -> str:
     return f"{cls.__module__}.{cls.__qualname__}"
+
+
+def _uniform(rows: object, hint: object, container: type) -> bool:
+    """Whether every row of a homogeneous tuple field maps to itself, checked in C.
+
+    True for rows of exactly one str, int or bool type, and for rows that are
+    themselves ``container`` sequences of such scalars, or empty. A DeepSeek PD
+    engine execution holds about 12 million output token ids and an empty
+    top-logprob tuple per token, and the per-row walk below cost about a minute
+    per speed record on the pod (2026-10-30). Any other row takes that walk.
+    """
+    if hint in _IDENTITY:
+        return set(map(type, rows)) <= {hint}
+    arguments = typing.get_args(hint)
+    if (typing.get_origin(hint) is not tuple or len(arguments) != 2 or arguments[1] is not Ellipsis
+            or not set(map(type, rows)) <= {container}):
+        return False
+    allowed = {arguments[0]} if arguments[0] in _IDENTITY else set()
+    return set(map(type, chain.from_iterable(rows))) <= allowed
 
 
 class ContinuationCodec:
@@ -196,6 +217,8 @@ class ContinuationCodec:
                 raise ContinuationCodecError(f"{where} is not a tuple")
             arguments = typing.get_args(hint)
             if len(arguments) == 2 and arguments[1] is Ellipsis:
+                if _uniform(value, arguments[0], tuple):
+                    return list(value) if arguments[0] in _IDENTITY else list(map(list, value))
                 return [
                     self._encode_value(row, arguments[0], where) for row in value
                 ]
@@ -307,6 +330,8 @@ class ContinuationCodec:
                 raise ContinuationCodecError(f"{where} is not a sequence")
             arguments = typing.get_args(hint)
             if len(arguments) == 2 and arguments[1] is Ellipsis:
+                if _uniform(value, arguments[0], list):
+                    return tuple(value) if arguments[0] in _IDENTITY else tuple(map(tuple, value))
                 return tuple(
                     self._decode_value(row, arguments[0], where) for row in value
                 )

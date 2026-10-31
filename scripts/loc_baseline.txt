@@ -139,13 +139,22 @@
 # Dashboard outage: compact completed-report caches and request-scoped process reads replace repeated parsing
 # and scans; include the deployed frontend's independent refresh and explicit health states. Production
 # +154/-49, tests +122/-0, dashboard docs +9, and these +3 notes (2026-10-28).
+# PD policy 21 measures each stock pair as the first two lifetimes of its own evaluator process, as candidates read,
+# with the PD results page's measurement. Runtime +50/-22, docs +62/-12, examples +4/-2 (2026-10-30).
+# PD evidence writes: a PASS held the GPUs idle ~28 min re-encoding its 727 MB speed record; canonical JSON now checks
+# plain data in C, records encode once, checkpoints join record bytes per completed stage, and the codec maps scalar
+# tuples in C. Runtime +163/-36, docs +3/-1 plus the AWS reference result's +7, +3 notes (2026-10-30).
+# Payment bar: each new request carries 1.5% over the best earlier rewarded PASS, or stock, and a speed PASS below
+# it grades FAIL before the bracket, audit and T. Runtime +100/-27, tests +10, docs +25/-8, +2 notes (2026-10-30).
+# The PD results page records the first live below_payment_bar stop and its timing: +13 docs, +1 note (2026-10-31).
+# The miner guide states that bundle modules run under a generated package name: +11 docs, +1 note (2026-10-31).
 (root) 1157
 .github 338
 bundles 2398
-cacheon 92008
+cacheon 92236
 cacheon_kernels 936
 dashboard 4393
-docs 13361
-examples 743
-scripts 4402
-tests 13985
+docs 13461
+examples 745
+scripts 4411
+tests 13995

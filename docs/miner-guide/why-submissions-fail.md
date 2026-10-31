@@ -108,8 +108,10 @@ without the second boot, and its detail names that margin. A candidate
 that clears the speed bound but misses service attainment fails with
 `service_contract_not_met`. On a policy-20 arena, a candidate whose median per-user
 decode rate falls below the sealed floor fails with `service_floor_not_met`, however
-much it raises served throughput. Verdicts settled under older policies may carry the
-combined code `speed_regression`.
+much it raises served throughput. A candidate that clears the bound but not the
+payment bar, 1.5% over the best paid PASS on its baseline or over stock, fails with
+`below_payment_bar` at the speed stage, since it could not be paid. Verdicts settled
+under older policies may carry the combined code `speed_regression`.
 
 ## CUDA graphs are part of the contract
 

@@ -179,14 +179,27 @@ def _previous_work_checkpoint(transport, body):
     return max(matches, key=lambda row: row[:2])[2] if matches else None
 
 
-def request_body(dispatcher, claim, retained_body):
+def claim_payment_bar(dispatcher, recovery, claim):
+    """Read the claimed bundle's payment bar from the intake store before its request is sealed."""
+    from cacheon.chain.evaluation_order import payment_bar
+
+    (candidate,) = claim.candidates
+    store, _point, _current = dispatcher._current_recovery(recovery.recovery_id)
+    try:
+        return payment_bar(store._db, dispatcher.qualification_incumbent_stack,
+                           candidate.reservation.reservation_digest)
+    finally:
+        store.close()
+
+
+def request_body(dispatcher, claim, retained_body, payment_bar=""):
     """Preserve an old request verbatim or bind one CPU-held progress snapshot."""
     from cacheon.chain.qualification_request import qualification_request_body
 
     body = qualification_request_body(dispatcher.coordinator, claim,
         incumbent_stack_digest=dispatcher.qualification_incumbent_stack.digest,
         incumbent_tree_digest=dispatcher.qualification_incumbent_tree_digest,
-        retained_body=retained_body)
+        payment_bar=payment_bar, retained_body=retained_body)
     if retained_body is None:
         checkpoint = checkpoint_for_request(dispatcher.transport, body)
         if checkpoint is not None:

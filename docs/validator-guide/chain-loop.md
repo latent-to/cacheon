@@ -319,7 +319,12 @@ New qualification requests bind `incumbent_stack_digest` and
 `incumbent_tree_digest` from the CPU's commissioned authority. The worker checks
 both against its one commission before resolving publications or marking
 resident entry; a request for the `reproduction` screen lane is refused. A returned product
-must match that authenticated request pin. Retained requests keep their original
+must match that authenticated request pin. A new request also carries
+`payment_bar`: the speedup settlement would pay, 1.5% over the best rewarded PASS
+that arrived before the bundle against the same arena and incumbent stack, or over
+stock. A speed PASS below it is graded `FAIL` (`below_payment_bar`) and ends before the
+stock bracket, audit and T. A crown revoked after dispatch leaves that FAIL standing;
+re-run the bundle. Retained requests keep their original
 bytes and grammar when reopened; an older unbound request remains readable for
 completed-result recovery but cannot start execution on the new worker.
 

@@ -135,7 +135,7 @@ def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
             "lanes": lanes, "speedup": float(grade.settled_speedup),
             "policy_version": retained.resident_policy.version,
             "score_basis": {16: "fastest_pass_latency", 19: "retained_reference_boots",
-                            20: "retained_reference_boots"}.get(
+                            20: "retained_reference_boots", 21: "retained_reference_boots"}.get(
                 retained.resident_policy.version, "pooled_elapsed_orientation"),
             "speed_stage_seconds": retained.completed_monotonic_s - retained.started_monotonic_s,
             "workload_digest": retained.workload_digest,

@@ -1,6 +1,7 @@
 """Arrival-ordered reward records preserve PASS evidence and pre-policy claims."""
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -257,7 +258,7 @@ def test_scoring_compares_all_slots_without_advancing_unpaid_or_later_records(tm
         assert comparisons[candidates[0].reservation_digest]["score_speedup"] == Decimal("1.1")
 
 
-@pytest.mark.parametrize("version", [17, 18])
+@pytest.mark.parametrize("version", [17, 18, 19, 20, 21])
 def test_statistical_records_pay_one_and_a_half_percent_over_the_previous_best(tmp_path, version):
     from decimal import Decimal
     from cacheon.chain.evaluation_order import reward_comparisons
@@ -274,7 +275,7 @@ def test_statistical_records_pay_one_and_a_half_percent_over_the_previous_best(t
     policy = GoodputPolicy(CONTRACT, 1.0, 0.0003, 0.0, 0.0, 0.01, 0.0001)
     with _store(tmp_path) as store:
         candidates = []
-        for index, score in enumerate((1.05, 1.06, 1.07)):
+        for index, score in enumerate((1.01, 1.05, 1.06, 1.07)):
             baseline, candidate = [], []
             for window, lane in enumerate(("A", "A", "B", "B"), 1):
                 baseline.append(_read("incumbent", lane, window, 100))
@@ -291,8 +292,17 @@ def test_statistical_records_pay_one_and_a_half_percent_over_the_previous_best(t
             ))
         store.passed_reward_claims()
         comparisons = reward_comparisons(store._db)
-        first, unpaid, paid = (comparisons[c.reservation_digest] for c in candidates)
-        assert first["reward_eligible"] and not unpaid["reward_eligible"] and paid["reward_eligible"]
-        assert paid["previous_best_reservation_id"] == candidates[0].reservation_digest
+        below, first, unpaid, paid = (comparisons[c.reservation_digest] for c in candidates)
+        assert [r["reward_eligible"] for r in (below, first, unpaid, paid)] == [False, True, False, True]
+        assert paid["previous_best_reservation_id"] == candidates[1].reservation_digest
         assert paid["score_speedup"] == Decimal("1.07") / Decimal("1.05")
-        assert {c.hotkey for c in store.passed_reward_claims()} == {candidates[i].hotkey for i in (0, 2)}
+        assert {c.hotkey for c in store.passed_reward_claims()} == {candidates[i].hotkey for i in (1, 3)}
+        from cacheon.chain.evaluation_order import payment_bar
+        from cacheon.eval.speed_verdict import fail_reason
+        stack = candidates[0].incumbent_manifest
+        assert [payment_bar(store._db, stack, c.reservation_digest) for c in candidates] == [
+            "1.015", "1.015", "1.06575", "1.06575"]
+        for bar, decision in (("1.06575", "PASS"), ("1.0701", "FAIL")):
+            grade = replace(reads, payment_bar=bar).grade(policy)
+            assert grade.decision.value == decision
+        assert fail_reason(grade.verdict) == "below_payment_bar"

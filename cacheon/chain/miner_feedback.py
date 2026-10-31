@@ -43,8 +43,15 @@ SCHEMA = "cacheon.miner.submission-report.v1"
 _GUIDANCE: dict[str, tuple[str, str]] = {
     "qualified": (
         "The bundle beat its baseline and passed qualification.",
-        "One audited PASS qualifies. It earns reward credit when it is the first "
-        "PASS on its baseline or beats the previous best PASS by 1.5%.",
+        "One audited PASS qualifies. It earns reward credit when it beats the "
+        "previous best PASS on its baseline, or stock for the first, by 1.5%.",
+    ),
+    "below_payment_bar": (
+        "The bundle was faster than the baseline, but its speedup was below the "
+        "payment bar: 1.5% over the best paid PASS on its baseline, or over stock "
+        "when there is none. Qualification stopped at the speed stage.",
+        "Only a speedup that clears the bar can be paid, so the audit and quality "
+        "stages did not run. A larger gain clears it.",
     ),
     "candidate_kernel_does_not_compile": (
         "A @triton.jit kernel in the bundle cannot be traced, so it never "

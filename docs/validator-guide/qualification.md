@@ -107,22 +107,40 @@ store under the commissioned root that later boots of the same tree reuse.
 
 1. **Stock reference.** The first qualification that finds no current reference
    for the stock identity (lane digest, stock launch digest, runtime preflight
-   SHA-256, workload digest, boot count) measures four fresh stock boots. It
+   SHA-256, workload digest, boot schedule) measures four fresh stock boots. PD
+   policy 21 measures them as two pairs, each the first two engine lifetimes of
+   its own evaluator process, the position every candidate pair holds: replay
+   rates fall with each lifetime one evaluator process runs and recover in the
+   next qualification's process, not after idle GPUs
+   ([measurement](../results/deepseek-v41-flash-pd.md#reference-position)). A
+   qualification that measures a stock pair retains it and ends `NO_DECISION`
+   (infrastructure, never a candidate FAIL) without reading its candidate; the
+   next such qualification completes the reference. Policies 19–20 retain their
+   historical consecutive reference campaign. The producer
    publishes them to the evidence store (domain
    `cacheon.qualification.stock-reference`, schema
    `cacheon.qualification.stock-reference.v1`) and names them by
    `<evidence_root>/.stock-references/<identity>.json`; later candidates reuse
-   them. The campaign runs before the `max_qualification_seconds` and
+   them. The paired schedule is part of the reference identity, so a policy-20
+   reference cannot satisfy policy 21. The campaign runs before the `max_qualification_seconds` and
    `max_stage_seconds` clocks start, so it counts only against the job's
    four-hour deadline.
 2. **Candidate boots.** Up to two fresh candidate boots run on the same lane.
    Looks fall at boot boundaries: after boot 1 the stage can end only on the
-   sealed `futility_margin` (FAIL); a PASS needs both boots.
+   sealed `futility_margin` (FAIL); a PASS needs both boots. They are the first
+   two engine lifetimes of the qualification's evaluator process.
+   A PASS whose point estimate is below the request's `payment_bar` (1.5% over
+   the best earlier rewarded PASS on the same arena and stack, or over stock)
+   grades `FAIL` (`below_payment_bar`): settlement could not pay it, so the
+   bracket, audit and T do not run.
 3. **Stock bracket.** After a speed PASS, one fresh stock boot replays N windows
    and then generates the quality controls. If it reads faster than the
    reference beyond a one-sided 1% test, the result becomes `NO_DECISION`
    (infrastructure, never a candidate FAIL) and the reference pointer is retired
    by a non-destructive rename, so the next qualification measures a new reference.
+   Under policy 21 the bracket is the process's third lifetime, so it reads
+   slower than the reference's first-two-lifetime mean (about 1.3% on the PD
+   arena) and the sentinel sees only faster stock beyond that gap.
 
 Every replay record carries the engine-observed prompt token count and the
 controller's host timing, and the regrade rejects a window whose records differ
@@ -137,10 +155,11 @@ sequenceDiagram
     participant A as Audit-only role
     participant T as Pristine reference
     opt no current stock reference
-        loop four fresh stock boots
+        loop four stock boots (policy 21: one pair)
             H->>L: boot stock, condition, flush, replay N windows
         end
-        H->>H: publish the reference and its pointer
+        H->>H: publish the reference and its pointer (policy 21: a first pair)
+        H->>H: policy 21: end NO_DECISION without a candidate read
     end
     H->>H: start the qualification and speed-stage clocks
     H->>L: candidate boot 1, condition, flush, replay N windows
@@ -164,6 +183,15 @@ The candidate cannot request extra boots or windows; the sealed stopping rule
 decides how many run. The retained witness records every boot's turn records,
 including the reference boots, the lane identity, operational timing, and the
 stage and total budgets.
+
+Policy 21 changes where the reference boots run, not the four-reference/two-candidate
+sample count, sealed noise, error rate, log-mean estimator or reward margin.
+Candidate qualifications add no GPU work or wait. The reference costs its four
+stock boots across two qualifications that end without a candidate read; on a
+connected pair each such result holds its reservation, so measure the reference
+with the off-chain twin before connecting
+([New arena](new-arena.md#6-prove-then-connect)) and again after a sentinel
+retires it.
 
 Speed is graded before the expensive audit and pristine-reference stages. An ordinary
 speed non-PASS emits a durable stage-exit and does not run audit or T. A
@@ -244,7 +272,9 @@ matches, and otherwise measures its own. Acknowledged execution of completed
 stages counts toward the qualification budget; downtime is excluded.
 
 The standing CPU relay saves compressed checkpoints of completed speed, audit,
-and pristine-T stages. Each checkpoint preserves the original plan,
+and pristine-T stages. The worker writes one only when a stage completes, joining
+the stage records' canonical bytes rather than re-encoding them, so the GPUs do not
+wait on a checkpoint. Each checkpoint preserves the original plan,
 calibration, private selection state, stage records, and clock domains. It becomes
 available for replacement only after the CPU has copied, verified and fsynced it.
 The relay's `checkpoints/` directory must live on storage independent of the GPU
@@ -745,14 +775,14 @@ profile (`hidden_tasks_per_prompt=0`, `hidden_tasks_required=false`), not numeri
 answer tasks. Its reference token maximum equals the largest output budget in
 the selected slice; conditioning generates 16 tokens.
 
-New replay commissions seal V19. The commissioner rejects a legacy
+New replay commissions seal V19, or V21 for the PD closed-loop workload. The commissioner rejects a legacy
 fixed-threshold goodput declaration before staging a run. A noise estimate
 for summed request latency cannot calibrate elapsed serving cost. Calibration
 must cover the commissioned workload, arrivals, engine state and boot schedule.
 An error budget is conditional on those noise bounds; merely setting it does
 not establish a measured false-positive rate.
 
-V19 grades engine boots, not windows:
+V19–V21 use the same arithmetic over engine boots, not individual turns:
 
 ```text
 cost(b)     = log(mean same-work elapsed time over boot b's N windows)
@@ -768,7 +798,8 @@ as independent replications. Looks fall at candidate boot boundaries and spend t
 sealed 12.5% one-sided error budget under v17's alpha-spending shares; the final
 look spends 80% of it, so `z` is the 90% one-sided quantile. After the first boot
 the stage can end only on the futility margin. The last candidate boot yields
-`PASS` or `FAIL`; only the stock bracket can turn a PASS into `NO_DECISION`. This
+`PASS` or `FAIL`; a PASS below the request's payment bar becomes `FAIL`
+(`below_payment_bar`), and only the stock bracket can turn a PASS into `NO_DECISION`. This
 normal-model guarantee depends on the sealed noise bounds and independent boot
 contrasts; it does not establish runtime resolution by itself. A fixed 1% gain
 floor is absent.
@@ -781,9 +812,10 @@ bar is +2.1% (v18: +2.24% at look 4, +4.28% at look 3). Boot spread is the floor
 [Full-node qualification and noise](../results/full-node-qualification-noise.md)
 records the TP8 run, its measured spreads and an outcome census.
 
-Reward credit uses the point estimate, not a confidence-bound haircut; a later
-V17, V18 or V19 PASS is paid only when that estimate beats the best earlier
-rewarded PASS against the same arena and incumbent stack by 1.5%. Regrading
+Reward credit uses the point estimate, not a confidence-bound haircut; a V17
+through V21 PASS is paid only when that estimate beats the best earlier rewarded
+PASS against the same arena and incumbent stack, or stock for the first PASS, by 1.5%. The
+dispatcher seals that bar into each new request, so a PASS below it stops at the speed stage. Regrading
 checks the exact stopping point, all engine identities, host timings, and
 controls. Retained v16–v18 witnesses regrade under their own paired arithmetic.
 

@@ -3,7 +3,8 @@
 Version 19 gives one engine the whole node. A stock reference campaign is measured once per lane
 identity and retained; each candidate reads whole lifetimes against it; a PASS adds one stock bracket
 lifetime that is both the drift sentinel and the incumbent quality control. Paired read sets (versions
-16-18) stay readable for the witnesses that retain them.
+16-18) stay readable for the witnesses that retain them. Version 21 reads stock and candidate only as
+the first two engine lifetimes of their own evaluator process: the reference is two such stock pairs.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import math
 import os
 import time
 from dataclasses import asdict, dataclass, field, replace
+from decimal import Decimal
 from pathlib import Path
 
 from cacheon.eval.continuation_codec import ContinuationCodec
@@ -26,6 +28,10 @@ from cacheon.stack_identity import canonical_digest, canonical_json_bytes
 # Version 19: stock lifetimes in one reference campaign, and the most candidate lifetimes a stage reads.
 REFERENCE_BOOTS = 4
 CANDIDATE_BOOTS = 2
+# Replay rates fall with every engine lifetime one evaluator process runs and recover only in a new
+# process, not after idle GPUs: PD stock read 1.4% slower in its second lifetime and about 2% from the
+# third, also after 12.5 idle minutes (2026-10-30). Four stock lifetimes in one process gave every
+# two-boot candidate about 0.5% (policy 20), so version 21 measures each stock pair in its own process.
 REFERENCE_DOMAIN = "cacheon.qualification.stock-reference"
 REFERENCE_SCHEMA = "cacheon.qualification.stock-reference.v1"
 _REFERENCE_BYTES = 512 << 20
@@ -111,6 +117,9 @@ class GoodputReadSet:
     Paired policies hold one incumbent read per candidate read. Version 19 holds the stock reference
     campaign (``reference_boots`` lifetimes, then at most one stock sentinel lifetime) as the incumbent
     and up to ``boots`` candidate lifetimes, every lifetime ``window_limit`` windows on one lane.
+
+    ``payment_bar`` is the speedup settlement would pay, sealed by the dispatcher in the request. A PASS
+    below it grades FAIL, so it ends before the stock bracket, audit and T (Shiv, 2026-10-30).
     """
 
     incumbent: tuple[LoadRead, ...]
@@ -120,6 +129,7 @@ class GoodputReadSet:
     orientations: tuple[int, ...] = field(default=(), metadata={"wire_optional": True})
     boots: int = field(default=0, metadata={"wire_optional": True})
     reference_boots: int = field(default=0, metadata={"wire_optional": True})
+    payment_bar: str = field(default="", metadata={"wire_optional": True})
 
     def __post_init__(self):
         if (not self.incumbent or not self.candidate
@@ -187,6 +197,10 @@ class GoodputReadSet:
         if (type(result) is not ServiceVerdict or (not policy.error_rate and result.required != policy.required)
             or not math.isfinite(result.ratio) or result.ratio <= 0):
             raise ValueError("service scorer returned another policy or result type")
+        if (self.payment_bar and result.decision is SpeedStageDecision.PASS
+                and Decimal(format(result.ratio, ".17g")) < Decimal(self.payment_bar)):
+            result = replace(result, decision=SpeedStageDecision.FAIL, detail=(
+                f"below_payment_bar: speedup {result.ratio:.4f} is below the payment bar {self.payment_bar}"))
         confident = result.decision is not SpeedStageDecision.NO_DECISION
         passed = result.decision is SpeedStageDecision.PASS
         verdict = SpeedupVerdict(
@@ -250,6 +264,8 @@ def _reference_pointer(plan, evidence_root) -> Path:
         "boots": REFERENCE_BOOTS, "lane": plan.baseline_lane_digest, "launch": plan.baseline.launch.digest,
         "runtime": plan.baseline.binding.runtime_preflight_receipt.sha256,
         "workload": marginal_workload_digest(plan.baseline.session_plan),
+        **({"pair_boots": CANDIDATE_BOOTS, "pair_processes": REFERENCE_BOOTS // CANDIDATE_BOOTS}
+           if plan.policy.version >= 21 else {}),
     })
     # A dot name can never be an evidence domain directory.
     return Path(evidence_root) / ".stock-references" / f"{identity}.json"
@@ -259,7 +275,10 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
     """Reopen the lane's current stock reference, or measure its campaign when none is current.
 
     The campaign runs before the speed clock starts. A missing or retired reference is measured
-    again on this lane, never borrowed from another lane, image, launch or workload.
+    again on this lane, never borrowed from another lane, image, launch or workload. Version 21
+    measures one stock pair as the first lifetimes of this evaluator process, as every candidate pair
+    is read, then ends the qualification without a candidate read (infrastructure, never a candidate
+    FAIL); the second such pair completes the reference.
     """
     from cacheon.eval.crossover_runtime import _lane_digest
     from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence, reopen_evidence
@@ -267,31 +286,45 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
 
     codec = ContinuationCodec((EngineExecutionEvidence,))
     pointer = _reference_pointer(plan, evidence_root)
+    first = pointer.with_name(f"{pointer.stem}.first-pair.json")
     lane = _lane_digest(executor, plan.baseline)
-    if pointer.exists():
+
+    def reopen(path):
         record = json.loads(reopen_evidence(evidence_root, EvidenceArtifactRef.from_dict(
-            json.loads(pointer.read_text())), max_bytes=_REFERENCE_BYTES))
+            json.loads(path.read_text())), max_bytes=_REFERENCE_BYTES))
         if record.get("identity") != pointer.stem:
             raise CrossoverRuntimeError("stock reference names another lane identity")
-        executions = tuple(codec.decode(row) for row in record["executions"])
+        return tuple(codec.decode(row) for row in record["executions"])
+
+    paired = plan.policy.version >= 21
+    if pointer.exists():
+        executions, target = reopen(pointer), None
     else:
         tokenizer = _tokenizer(plan)
-        executions = tuple(_boot(executor, plan.baseline, lane, model_mount, prefix="incumbent",
-                                 deadline=deadline, tokenizer=tokenizer)[0] for _ in range(REFERENCE_BOOTS))
-    if len(executions) != REFERENCE_BOOTS or any(type(row) is not EngineExecutionEvidence for row in executions):
+        measured = tuple(_boot(executor, plan.baseline, lane, model_mount, prefix="incumbent", deadline=deadline,
+                               tokenizer=tokenizer)[0] for _ in range(CANDIDATE_BOOTS if paired else REFERENCE_BOOTS))
+        executions = (reopen(first) if paired and first.exists() else ()) + measured
+        target = pointer if len(executions) == REFERENCE_BOOTS else first
+    if (len(executions) != (CANDIDATE_BOOTS if target == first else REFERENCE_BOOTS)
+            or any(type(row) is not EngineExecutionEvidence for row in executions)):
         raise CrossoverRuntimeError("stock reference lacks its sealed lifetimes")
     _validate_replay_sessions([(row.session.replay_reads, row, plan.baseline, ()) for row in executions],
                               plan.baseline.session_plan.replay)
-    if not pointer.exists():
+    if target is not None:
         reference = publish_evidence(evidence_root, canonical_json_bytes({
             "identity": pointer.stem, "executions": [codec.encode(row) for row in executions],
         }), domain=REFERENCE_DOMAIN, media_type="application/json", schema=REFERENCE_SCHEMA,
             max_bytes=_REFERENCE_BYTES)
-        pointer.parent.mkdir(mode=0o700, exist_ok=True)
-        with pointer.open("x") as handle:
+        if paired and target == pointer:
+            # Before the pointer exists, so a reference the sentinel later retires never lends its first pair.
+            first.rename(first.with_name(f"{first.stem}.merged-{time.time_ns()}.json"))
+        target.parent.mkdir(mode=0o700, exist_ok=True)
+        with target.open("x") as handle:
             handle.write(json.dumps(reference.to_dict(), sort_keys=True) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
+        if paired:
+            raise CrossoverRuntimeError("stock reference pair retained; candidates are read in a fresh evaluator process")
     goodput = plan.policy.goodput
     if goodput.decode_floor:
         from cacheon.eval.service_capacity import decode_p50
@@ -310,7 +343,7 @@ def _expected(replay):
 
 
 def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root, deadline, clock,
-                        quality_control):
+                        quality_control, payment_bar=""):
     """Read whole candidate lifetimes against the reference; a PASS adds the stock bracket lifetime."""
     from cacheon.eval.crossover_runtime import ResidentCrossoverEvidence, _lane_digest
 
@@ -330,7 +363,7 @@ def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root
                            deadline=deadline, tokenizer=tokenizer))
         reads = GoodputReadSet(stock, tuple(read for row in boots for read in row[0].session.replay_reads),
                                _expected(replay), replay.windows, boots=CANDIDATE_BOOTS,
-                               reference_boots=REFERENCE_BOOTS)
+                               reference_boots=REFERENCE_BOOTS, payment_bar=payment_bar)
         grade = reads.grade(plan.policy.goodput)
         if grade.decision is not SpeedStageDecision.NO_DECISION:
             break
@@ -393,7 +426,8 @@ def regrade_reference_speed(evidence, plan):
     stock = tuple(read for row in reference for read in row.session.replay_reads)
     rebuilt = GoodputReadSet(stock + (bracket.session.replay_reads if bracket else ()),
                              tuple(read for row in candidates for read in row.session.replay_reads),
-                             _expected(replay), replay.windows, boots=CANDIDATE_BOOTS, reference_boots=REFERENCE_BOOTS)
+                             _expected(replay), replay.windows, boots=CANDIDATE_BOOTS, reference_boots=REFERENCE_BOOTS,
+                             payment_bar=evidence.goodput.payment_bar)
     if rebuilt != evidence.goodput:
         raise CrossoverRuntimeError("reference speed reads differ from their engine sessions")
     for count in range(1, len(candidates) + 1):

@@ -21,7 +21,7 @@ from cacheon.eval.qualification_continuation import (
     QualificationContinuationError, QualificationContinuationStore,
 )
 from cacheon.eval.runtime_preflight import RuntimePreflightReceipt
-from cacheon.stack_identity import canonical_digest, canonical_json_bytes
+from cacheon.stack_identity import canonical_digest, canonical_json_bytes, canonical_object_bytes
 
 
 SCHEMA = "cacheon.qualification.worker-checkpoint.v1"
@@ -331,23 +331,37 @@ def restore_origin(value, origin):
 
 
 def publish_snapshot(continuation):
-    """Publish complete immutable records for the standing CPU transfer loop."""
+    """Publish complete immutable records for the standing CPU transfer loop.
+
+    Only a completed stage changes the snapshot, so a record that completes none publishes
+    nothing, and the snapshot joins the records' own canonical bytes. Reloading and
+    re-encoding a DeepSeek PD speed record (727 MB) after every record write, then gzip at
+    level 9, held all eight GPUs idle about 17 minutes of each PASS (2026-10-30).
+    """
     origin = getattr(continuation, "checkpoint_origin", None)
     if origin is None:
         return
     from cacheon.chain.remote_worker_spool import atomic_bytes, atomic_json
 
-    stages = dict(getattr(continuation, "restored_stages", {}))
-    for name, records in _COMPLETE.items():
-        paths = [continuation.directory / (record + ".json") for record in records]
-        if all(path.is_file() for path in paths):
-            stages[name] = {"origin": origin,
-                            "records": {path.stem: json.loads(path.read_bytes()) for path in paths}}
-    body = {"schema": SCHEMA, "origin": origin, "stages": stages}
-    raw = canonical_json_bytes(body)
+    restored = dict(getattr(continuation, "restored_stages", {}))
+    complete = {name: [continuation.directory / (record + ".json") for record in records]
+                for name, records in _COMPLETE.items()}
+    complete = {name: paths for name, paths in complete.items() if all(path.is_file() for path in paths)}
+    published = (frozenset(restored), frozenset(complete))
+    if getattr(continuation, "published_stages", None) == published:
+        return
+    origin_bytes = canonical_json_bytes(origin)
+    stages = {name: canonical_json_bytes(row) for name, row in restored.items()}
+    for name, paths in complete.items():
+        stages[name] = canonical_object_bytes({
+            "origin": origin_bytes,
+            "records": canonical_object_bytes({path.stem: path.read_bytes() for path in paths}),
+        })
+    raw = canonical_object_bytes({"origin": origin_bytes, "schema": canonical_json_bytes(SCHEMA),
+                                  "stages": canonical_object_bytes(stages)})
     if len(raw) > MAX_CHECKPOINT_BYTES:
         raise QualificationContinuationError("worker checkpoint exceeds its retained byte bound")
-    data = gzip.compress(raw, mtime=0)
+    data = gzip.compress(raw, compresslevel=1, mtime=0)
     digest = hashlib.sha256(data).hexdigest()
     root = continuation.checkpoint_root
     root.mkdir(mode=0o700, exist_ok=True)
@@ -357,6 +371,7 @@ def publish_snapshot(continuation):
     atomic_json(root / (continuation.request_digest + ".json"),
                 {"sha256": digest, "size": len(data), "request_digest": continuation.request_digest},
                 mode=0o400)
+    continuation.published_stages = published
 
 
 def read_snapshot(path, digest):

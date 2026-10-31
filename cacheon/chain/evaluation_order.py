@@ -74,14 +74,35 @@ def reward_visibility_sql(db) -> str:
 
 
 def reward_comparisons(db) -> dict[str, dict]:
-    """Compare each PASS with the best preceding rewarded PASS on its measured baseline.
+    """Compare each PASS with the best preceding rewarded PASS on its measured baseline, or stock.
 
     Prefix eligibility only says earlier work finished. It does not establish a
     performance record. Recompute this filter for historical and new PASSes so
     an old eligibility bit cannot preserve a non-winning reward claim.
     """
+    return _reward_walk(db)[0]
+
+
+def payment_bar(db, stack, reservation_id: str) -> str:
+    """The speedup at which settlement would pay a PASS of this reservation on ``stack``; "" for any PASS.
+
+    That is 1.5 percent over the best rewarded PASS that arrived before it in the stack's reward
+    group, or over stock; a grandfathered runtime pays every PASS. The dispatcher seals it into a
+    new request and a speed PASS below it ends as a FAIL, skipping the stock bracket, audit and T
+    (Shiv, 2026-10-30). Should the crown above it later be revoked, that FAIL stands; re-run it.
+    """
+    if stack.runtime_digest in reward_grandfathered_runtimes(db):
+        return ""
+    arrival = db.execute("SELECT block,event_index,event_subindex,hotkey,content_hash FROM reservations "
+                         "WHERE reservation_id=?", (reservation_id,)).fetchone()
+    best = _reward_walk(db, tuple(arrival))[1]
+    group = _continued_group(reward_group_continuations(db), f"{stack.arena_digest}:{stack.digest}")
+    return str(best.get(group, (Decimal(1), None))[0] * (1 + V17_REWARD_MARGIN))
+
+
+def _reward_walk(db, before: tuple | None = None) -> tuple[dict[str, dict], dict[str, tuple]]:
+    """Walk the rewarded PASSes in arrival order, or only those arriving before ``before``."""
     import json
-    from decimal import Decimal
 
     best = {}
     seen = set()
@@ -92,7 +113,8 @@ def reward_comparisons(db) -> dict[str, dict]:
         "SELECT sc.* FROM settlement_candidates sc JOIN reservations r USING(reservation_id) "
         "WHERE r.status='qualified' AND r.decision='PASS' "
         "AND sc.status!='duplicate_proposal' AND " + reward_visibility_sql(db) +
-        " ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash"
+        ("" if before is None else " AND (r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash)<(?,?,?,?,?)")
+        + " ORDER BY r.block,r.event_index,r.event_subindex,r.hotkey,r.content_hash", before or ()
     ).fetchall()
     for row in rows:
         payload = json.loads(row["candidate_json"])
@@ -118,10 +140,10 @@ def reward_comparisons(db) -> dict[str, dict]:
         previous, previous_id = best.get(group, (Decimal(1), None))
         relative = score / previous
         margin = Decimal(0)
-        if not exempt and previous_id is not None and score > previous:
+        # The first PASS clears the margin over stock too: Shiv, 2026-10-30, after a +1.42% first PASS was paid.
+        if not exempt and score > previous:
             margin = _reward_min_margin(db, qualifications)
-        eligible = exempt or previous_id is None or (score > previous and
-            score >= previous * (1 + margin))
+        eligible = exempt or (score > previous and score >= previous * (1 + margin))
         comparisons[row["reservation_id"]] = {
             "previous_best_reservation_id": previous_id,
             "previous_best_speedup": previous,
@@ -132,7 +154,7 @@ def reward_comparisons(db) -> dict[str, dict]:
         }
         if eligible and score > previous:
             best[group] = (score, row["reservation_id"])
-    return comparisons
+    return comparisons, best
 
 
 def reward_grandfathered_runtimes(db) -> list[str]:
@@ -202,7 +224,7 @@ def _reward_min_margin(db, qualifications):
     policies = [report["speed_witness"]["resident_policy"] for report in _reward_reports(db, qualifications)]
     # Versions 18 (paired windows), 19 and 20 (retained reference) are statistical too; read as a
     # sealed margin, v18's 0 broke weights 2026-10-15.
-    statistical = [policy.get("version") in (17, 18, 19, 20) for policy in policies]
+    statistical = [policy.get("version") in (17, 18, 19, 20, 21) for policy in policies]
     if any(statistical) and not all(statistical):
         raise IntakeError("reward comparison mixes statistical and historical qualifications")
     if any(statistical):

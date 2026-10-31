@@ -292,7 +292,7 @@ explicitly fenced incentive paths:
   [Finite-debt V2](../reference/emissions-policy.md#finite-debt-v2).
 
 A qualified PASS is paid only when it beats the best earlier rewarded PASS against the
-same arena and incumbent stack by the reward margin (1.5% for V17, V18 and V19).
+same arena and incumbent stack, or stock for the first PASS, by the reward margin (1.5% for V17 through V21).
 
 The publisher persists intent and later readback states. An SDK return value does not
 prove inclusion, and the publisher may not advance economic authority from an

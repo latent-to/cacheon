@@ -2089,6 +2089,7 @@ def run_causal_qualification(
     deadline: float,
     id_factory: Callable[[], str] | None = None,
     continuation: QualificationContinuation | None = None,
+    payment_bar: str = "",
 ) -> EvidenceArtifactRef:
     """Run one complete causal cohort or raise without a partial PASS.
 
@@ -2097,7 +2098,8 @@ def run_causal_qualification(
 
     A ``continuation`` retains the completed speed stage, audit, pristine T and
     the final product. Reinvoking the original sealed scope reuses completed
-    work and executes only its missing stages.
+    work and executes only its missing stages. ``payment_bar`` is the request's
+    (``GoodputReadSet``): a speed PASS below it ends here as a speed FAIL.
     """
 
     if value.speed_evidence_policy.version != 3:
@@ -2210,7 +2212,7 @@ def run_causal_qualification(
                 model_mount=value.model_mount,
                 reference=reference,
                 evidence_root=value.evidence_root,
-                deadline=float(deadline),
+                deadline=float(deadline), payment_bar=payment_bar,
                 quality_control=lambda controller, candidate, baseline_dir, candidate_dir, quiescence:
                     create_controls(value, controller, candidate, baseline_dir, candidate_dir,
                                     quiescence, entropy_provider),

@@ -214,7 +214,7 @@ def test_one_offer_pays_each_arena_by_the_terms_frozen_at_arrival(tmp_path, monk
     original, offer = attempt.read_bytes(), _offer(gateway)
     _rewrite(attempt, original[:-1])
     advance(state, 410)
-    assert "retained settlement evidence cannot reopen" in produce(code=2) and _offer(gateway) == offer
+    assert "reward comparison cannot read retained margin" in produce(code=2) and _offer(gateway) == offer
     _rewrite(attempt, original)
     # A recipient that left the subnet is paid to the validator's own attribution, not burned.
     hotkeys = json.loads(state.read_text())["hotkeys"]

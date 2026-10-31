@@ -188,6 +188,12 @@ sh /path/to/workers/<tag>/recovery-operator/twin_<slug>.sh /data/<arena> <tag> s
 sh /path/to/workers/<tag>/recovery-operator/twin_<slug>.sh /data/<arena> <tag> status
 ```
 
+A PD (policy 21) pair measures its stock reference here: the first two twin
+requests each measure one stock pair and end `NO_DECISION`, and the third
+reads its bundle against the completed reference. A connected pair would hold
+the reservations those two results name, so a reference the post-PASS sentinel
+retires is measured the same way, with the worker stopped.
+
 The identity bundle reads about 1.00 and fails the speed floor, and the
 registered broken and faithful controls grade as documented in
 [Arena service](arena-service.md#deployment-composition). Connecting the

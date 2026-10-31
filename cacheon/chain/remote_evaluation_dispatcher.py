@@ -24,7 +24,7 @@ from typing import Iterable
 from cacheon.chain.evaluation_coordinator import WorkerReadiness
 from cacheon.chain.evaluation_leases import EvaluationLease, EvaluationLeaseMember
 from cacheon.chain.qualification_request import (
-    INCUMBENT_FIELDS, LEGACY_QUALIFICATION_FIELDS, QUALIFICATION_FIELDS, CHECKPOINT_QUALIFICATION_FIELDS,
+    BOUND_QUALIFICATION_SHAPES, INCUMBENT_FIELDS, LEGACY_QUALIFICATION_FIELDS,
 )
 from cacheon.chain.remote_qualification_evidence import (
     _SCHEMA_VERSION,
@@ -536,10 +536,12 @@ def _payload_encoding(payload: object) -> tuple[str, bytes, str]:
 
 def _validate_request_body(value: dict[str, object]) -> None:
     if (
-        frozenset(value) not in (LEGACY_QUALIFICATION_FIELDS, QUALIFICATION_FIELDS, CHECKPOINT_QUALIFICATION_FIELDS)
+        frozenset(value) not in (LEGACY_QUALIFICATION_FIELDS, *BOUND_QUALIFICATION_SHAPES)
         or value["kind"] != "qualification_work"
         or value["schema_version"] != _SCHEMA_VERSION
         or type(value["candidates"]) is not list
+        or ("payment_bar" in value and (type(value["payment_bar"]) is not str
+                                        or re.fullmatch(r"[0-9]+\.[0-9]+", value["payment_bar"]) is None))
     ):
         raise RemoteEvaluationDispatcherError("qualification request body is not closed")
     try:

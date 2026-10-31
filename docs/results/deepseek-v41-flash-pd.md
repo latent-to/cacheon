@@ -84,6 +84,44 @@ check now covers only the GPUs the audit engine occupies (`ebda4441`).
 | Faithful identity on `model.layers.*.mlp` (`c0c31952`) | `FAIL`, every window within noise of 1.00 | `FAIL` `speed_threshold_not_met`: ratio 0.985 (standard error 0.012, required 1.027), stopped after one candidate boot by the futility margin; candidate windows 15,693 / 15,883 / 15,871 against a stock reference mean of 16,058 |
 | Wrong MLP under the registered-control audit policy (`ebda4441`) | Speed non-`PASS`, then audit `FAIL` with violations | Speed non-`PASS` over two candidate boots (15,688 to 15,935 tokens/s), then `FAIL` `slot_audit_failed`: passing fraction 0.0 against 0.75 on all 40 layers and 4 ranks; attempt record 20.3 MB |
 
-A faithful identity reads about 0.985 of stock on pairs `n`, `o` and `p`, so a
-candidate's arm carries about 1.5 percent the stock arm does not; the cause is
-not yet measured.
+A faithful identity reads about 0.985 of stock on pairs `n`, `o` and `p`. Those
+runs measured the reference in the identity's own evaluator process, so its
+first candidate boot was the process's fifth engine lifetime, read against
+lifetimes one to four: the reference position below accounts for it.
+
+## Reference position
+
+Replay rates fall with every engine lifetime one evaluator process runs:
+against its first lifetime, PD stock costs 1.4 percent more in the second,
+about 2 percent in the third and fourth and about 2.4 percent in the fifth and
+sixth. The next qualification, a new process that first builds its bundle, starts fast again;
+750 idle seconds inside one process, the GPUs back at 24 to 26 °C, do not. All of the added time is before the first token, while
+decode time per token, the replay bridge's delay, turnaround and sessions in
+flight stay flat. The in-process cause is not yet identified.
+
+Each qualification runs in a new process, so candidates read as its first two
+lifetimes. Policy 20 measured all four reference boots in one process, handing
+every candidate about 0.5 percent against a 1.206 percent bar: ten tickets on
+2026-10-28 averaged +0.46 percent, and −0.08 percent against the reference's
+first two boots; the one PASS (+1.42 percent, +0.88 there) was revoked. Policy
+21 measures each stock pair as the first two lifetimes of its own process.
+
+The first policy-21 reference, on an 8-GPU AWS B300 node (2026-10-30), read
+mean window costs of 237.13 and 237.73 seconds in its first pair's process
+and 236.88 and 237.84 in its second's: the second lifetime cost 0.25 and 0.41
+percent more than the first, and stock against stock at matched positions,
+the second pair read against the first, came to 1.0003 (99 percent band 0.973
+to 1.028).
+
+## Time per qualification
+
+On `f951c47e` (2026-10-31), a candidate whose speedup of 1.0252 cleared the
+speed boundary but not its payment bar of 1.0393 ended `FAIL`
+`below_payment_bar` at its speed stage, with no stock bracket, audit or
+pristine T. The request took 37.3 minutes: two candidate lifetimes of three
+windows each, then 90 seconds after the second lifetime's engines exited, in
+which the worker graded the windows and wrote the 619 MB speed record (53
+seconds), the 107 MB worker checkpoint (8 seconds), and the stage exit and
+result (29 seconds). On the previous write path, the 727 MB speed record of a
+PASS on 2026-10-30 was written 7.4 minutes after its stock bracket ended, and
+that qualification ran 91 minutes with its audit and pristine T.

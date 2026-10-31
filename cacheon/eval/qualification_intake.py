@@ -576,6 +576,7 @@ def run_qualification_intake(
     continuation_store: QualificationContinuationStore | None = None,
     request_digest: str | None = None,
     prebuilt_plan: CausalQualificationInput | None = None,
+    payment_bar: str = "",
 ) -> QualificationIntakeBatch:
     """Run, reopen, and project one finalized cohort without settlement authority.
 
@@ -647,6 +648,7 @@ def run_qualification_intake(
             "hidden_judge": hidden_judge,
             "deadline": deadline,
             "continuation": continuation,
+            "payment_bar": payment_bar,
         }
         reference = run_causal_qualification(value, **runner_kwargs)
         if type(reference) is not EvidenceArtifactRef:

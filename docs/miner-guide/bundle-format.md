@@ -124,6 +124,17 @@ all other spellings are refused.
 Unknown op keys are preserved as extra data, but that does not make them
 meaningful or allowed by target policy.
 
+### Module names at run time
+
+The engine imports a copy of the bundle whose Python files are modules of the
+package `cacheon_c_<digest>`: `kernels/mlp.py` runs as
+`cacheon_c_<digest>.kernels.mlp`. Only import statements that name bundle
+modules, absolute or relative, are rewritten to these names. A function's
+`__module__`, a module's `__name__` and any module path written as a string
+carry the generated name, so a comparison with a submitted path such as
+`"kernels.mlp"` is false at run time; compare objects (`fn is original`) or the
+module's own `__name__` (`fn.__module__ == mlp.__name__`).
+
 ## Capability metadata
 
 The validator routes a variant only when its entire declared domain matches a
