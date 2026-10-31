@@ -147,13 +147,14 @@
 # Payment bar: each new request carries 1.5% over the best earlier rewarded PASS, or stock, and a speed PASS below
 # it grades FAIL before the bracket, audit and T. Runtime +100/-27, tests +10, docs +25/-8, +2 notes (2026-10-30).
 # The PD results page records the first live below_payment_bar stop and its timing: +13 docs, +1 note (2026-10-31).
+# The miner guide states that bundle modules run under a generated package name: +11 docs, +1 note (2026-10-31).
 (root) 1157
 .github 338
 bundles 2398
 cacheon 92236
 cacheon_kernels 936
 dashboard 4393
-docs 13450
+docs 13461
 examples 745
-scripts 4410
+scripts 4411
 tests 13995
