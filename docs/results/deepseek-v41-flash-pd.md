@@ -112,3 +112,16 @@ and 236.88 and 237.84 in its second's: the second lifetime cost 0.25 and 0.41
 percent more than the first, and stock against stock at matched positions,
 the second pair read against the first, came to 1.0003 (99 percent band 0.973
 to 1.028).
+
+## Time per qualification
+
+On `f951c47e` (2026-10-31), a candidate whose speedup of 1.0252 cleared the
+speed boundary but not its payment bar of 1.0393 ended `FAIL`
+`below_payment_bar` at its speed stage, with no stock bracket, audit or
+pristine T. The request took 37.3 minutes: two candidate lifetimes of three
+windows each, then 90 seconds after the second lifetime's engines exited, in
+which the worker graded the windows and wrote the 619 MB speed record (53
+seconds), the 107 MB worker checkpoint (8 seconds), and the stage exit and
+result (29 seconds). On the previous write path, the 727 MB speed record of a
+PASS on 2026-10-30 was written 7.4 minutes after its stock bracket ended, and
+that qualification ran 91 minutes with its audit and pristine T.
