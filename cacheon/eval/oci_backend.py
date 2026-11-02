@@ -19,7 +19,7 @@ import shutil
 import stat
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field as dc_field
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, Protocol
 
@@ -511,7 +511,7 @@ class OCIRuntimeResourcePolicy:
     # Physical GPU -> (scheduler vCPU, pool vCPUs...); see oci_cpuset.canonical_cpu_pins.
     cpu_pins: tuple[tuple[str, tuple[int, ...]], ...] | None = None
     # An engine's first GPU -> (DP controller vCPU, frontend vCPU); see oci_cpuset.canonical_cpu_roles.
-    cpu_roles: tuple[tuple[str, tuple[int, int]], ...] | None = field(default=None, metadata={"wire_optional": True})
+    cpu_roles: tuple[tuple[str, tuple[int, int]], ...] | None = dc_field(default=None, metadata={"wire_optional": True})
 
     def __post_init__(self) -> None:
         bounds = {
