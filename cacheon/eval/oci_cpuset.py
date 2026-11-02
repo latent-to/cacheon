@@ -144,8 +144,9 @@ def lane_cpu_pin_plan(pins: tuple[tuple[str, tuple[int, ...]], ...], gpu_ids: tu
 
 
 _SPIN_S = 0.05
-_FAST = 0.9
-_SHARED = 0.8
+# Verda 2026-11-02: fast vCPUs 0.99-1.00x, slow tier 0.49x; an SMT pair co-ran at 0.74x, separate cores >= 0.956x.
+_FAST = 0.75
+_SHARED = 0.85
 
 
 def _spin(index: int, cpus: list[int], barrier, results) -> None:
