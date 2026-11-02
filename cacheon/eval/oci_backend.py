@@ -19,7 +19,7 @@ import shutil
 import stat
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Callable, Iterator, Protocol
 
@@ -45,7 +45,7 @@ from cacheon.eval.native_artifact import (
     NativeArtifactLimits,
     NativeArtifactPublication,
 )
-from cacheon.eval.oci_cpuset import canonical_cpu_pins, lane_cpu_pin_plan, validate_cpuset_pair
+from cacheon.eval.oci_cpuset import canonical_cpu_pins, canonical_cpu_roles, lane_cpu_pin_plan, validate_cpuset_pair
 from cacheon.eval.oci_outer_session import (
     AttachedSessionTransport,
     OpenedOuterSession,
@@ -510,6 +510,8 @@ class OCIRuntimeResourcePolicy:
     cpuset_mems: str | None = None
     # Physical GPU -> (scheduler vCPU, pool vCPUs...); see oci_cpuset.canonical_cpu_pins.
     cpu_pins: tuple[tuple[str, tuple[int, ...]], ...] | None = None
+    # An engine's first GPU -> (DP controller vCPU, frontend vCPU); see oci_cpuset.canonical_cpu_roles.
+    cpu_roles: tuple[tuple[str, tuple[int, int]], ...] | None = field(default=None, metadata={"wire_optional": True})
 
     def __post_init__(self) -> None:
         bounds = {
@@ -548,6 +550,10 @@ class OCIRuntimeResourcePolicy:
                 cpu_millis=self.cpu_millis,
             )
             object.__setattr__(self, "cpu_pins", canonical_cpu_pins(self.cpu_pins))
+            object.__setattr__(self, "cpu_roles", canonical_cpu_roles(self.cpu_roles))
+            if self.cpu_roles is not None and (self.cpu_pins is None or {
+                    c for _, cpus in self.cpu_roles for c in cpus} & {cpus[0] for _, cpus in self.cpu_pins}):
+                raise ValueError("cpu_roles need cpu_pins and may not share a scheduler vCPU")
         except ValueError as exc:
             raise OCIBackendError(f"runtime resource {exc}") from None
         object.__setattr__(self, "cpuset_cpus", cpus)
@@ -582,6 +588,8 @@ class OCIRuntimeResourcePolicy:
             payload["cpuset_mems"] = self.cpuset_mems
         if self.cpu_pins is not None:
             payload["cpu_pins"] = [[gpu, list(cpus)] for gpu, cpus in self.cpu_pins]
+        if self.cpu_roles is not None:
+            payload["cpu_roles"] = [[gpu, list(cpus)] for gpu, cpus in self.cpu_roles]
         return canonical_digest("cacheon.eval.oci-runtime-resource-policy", payload)
 
 
@@ -757,7 +765,8 @@ def build_runtime_argv(
         "XDG_CACHE_HOME": f"{CONTAINER_CACHE}/xdg",
     }
     if runtime.cpu_pins is not None:
-        environment["CACHEON_CPU_PINS"] = lane_cpu_pin_plan(runtime.cpu_pins, resolved.physical_hardware.physical_gpu_ids)
+        environment["CACHEON_CPU_PINS"] = lane_cpu_pin_plan(runtime.cpu_pins, resolved.physical_hardware.physical_gpu_ids,
+                                                            runtime.cpu_roles)
     gpu_csv = ",".join(resolved.physical_hardware.physical_gpu_ids)
     # Docker parses --gpus with a CSV decoder. A multi-device request must be one
     # quoted CSV field even though argv is passed directly without a shell;

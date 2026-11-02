@@ -10,11 +10,13 @@ the first two engine lifetimes of their own evaluator process: the reference is 
 from __future__ import annotations
 
 import asyncio
+import gc
 import hashlib
 import json
 import math
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
@@ -231,15 +233,27 @@ def _tokenizer(plan):
 
 
 def _boot(executor, arm, lane, model_mount, *, prefix, deadline, tokenizer, after=None):
-    """Run one engine lifetime's sealed windows; ``after`` runs on the still-open engine."""
-    from cacheon.eval.agent_replay import run_replay
+    """Run one engine lifetime's sealed windows; ``after`` runs on the still-open engine.
+
+    The replay's bodies are tokenized while the engine boots, once per evaluator process. Before the windows, this
+    process's live objects move out of the collector's reach (``gc.freeze``): a later lifetime starts with the heap
+    the first one had, where its predecessors' retained evidence used to lengthen every full collection on the loop
+    that times first tokens (second lifetime +0.8% on pod16, +0.5-0.95% for every candidate on Verda z, 2026-11-02).
+    """
+    from cacheon.eval.agent_replay import prime_replay, run_replay
 
     replay = replace(arm.session_plan.replay, arm=prefix, lane=lane,
                      output_directory=arm.session_plan.replay.output_directory / prefix)
     session_plan = replace(arm.session_plan, replay=replay)
     held = {}
+    primer = ThreadPoolExecutor(1)
+    primed = primer.submit(prime_replay, replay,
+                           context_length=session_plan.engine_config.engine_kwargs.get("context_length"))
 
     def drive(controller):
+        primed.result()
+        gc.collect()
+        gc.freeze()
         for _ in range(session_plan.warmup_count):
             controller.execute_next()
         held["directory"] = replay.output_directory / controller.session_id
@@ -254,8 +268,11 @@ def _boot(executor, arm, lane, model_mount, *, prefix, deadline, tokenizer, afte
             held["after"] = after(controller, held["directory"])
         return controller.finish(require_all=False)
 
-    execution = executor.execute_opened(arm.launch, arm.binding, model_mount, session_plan,
-                                        deadline=deadline, driver=drive)
+    try:
+        execution = executor.execute_opened(arm.launch, arm.binding, model_mount, session_plan,
+                                            deadline=deadline, driver=drive)
+    finally:
+        primer.shutdown(wait=True)
     return execution, executor.prove_quiescent(), held["directory"], held.get("after")
 
 

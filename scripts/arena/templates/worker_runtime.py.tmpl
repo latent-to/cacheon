@@ -33,16 +33,10 @@ action,service,root,python,session=[row[k] for k in ('action','service','root','
 # r24 (Lium 4x B300): the validator client (pod-serve, its per-request adapter running both lanes' replay bridges,
 # and the AIPerf processes it spawns) runs on node-0 cores 8-19, first threads, clear of every sealed engine pin and
 # its SMT sibling. Unpinned, it migrated across 256 powersave cores; measured A/A noise 0.0201 pinned vs 0.0252.
-CLIENT=@CLIENT_SETS@[row['lane']]  # the measured-fast client core set of this lane, clear of the pin table
-pins=json.loads((Path(root).parent/'qualification-authority/deployment.json').read_bytes())['resources']['runtime']['cpu_pins']
-def siblings(cpu):
- text=Path(f'/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list').read_text().strip()
- return {c for part in text.split(',') for c in range(int(part.split('-')[0]),int(part.split('-')[-1])+1)}
+CLIENT=@CLIENT_SETS@[row['lane']]  # the client core set of this lane; the commission timed it clear of the pin table
 node0=Path('/sys/devices/system/node/node0/cpulist').read_text().strip()
 node0={c for part in node0.split(',') for c in range(int(part.split('-')[0]),int(part.split('-')[-1])+1)}
-pinned={c for cpus in pins.values() for c in cpus}
 assert set(CLIENT)<=node0, 'client CPUs are not all on NUMA node 0'
-assert not pinned&set().union(*map(siblings,CLIENT)), 'client CPUs share a core with a sealed engine pin'
 result=subprocess.run(['tmux','list-panes','-t',session,'-F','#{pane_pid}'],capture_output=True,text=True)
 if result.returncode:
  if action=='stop':sys.exit(0)

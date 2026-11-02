@@ -524,22 +524,38 @@ def _pin_engine_processes(plan: str | None, *, schedulers: int, pinned: int, com
     scheduler_cpus, pool = list(spec["schedulers"]), set(spec["pool"])
     if len(scheduler_cpus) != pinned:
         raise RuntimeError(f"CPU pin plan covers {len(scheduler_cpus)} schedulers; the lane pins {pinned}")
+    # Each engine's (DP controller, frontend) vCPUs, prefill first; the frontend is the engine's own root process.
+    engines = spec.get("engines")
+    roots = (companion, os.getpid()) if companion else (os.getpid(),)
+    if engines is not None and len(engines) != len(roots):
+        raise RuntimeError(f"CPU pin plan names {len(engines)} engines; the lane runs {len(roots)}")
     prefill = set(_process_tree(companion)) if companion else set()
     ranks: dict[int, list[int]] = {}
+    controllers = [0] * len(roots)
     for pid in _process_tree(os.getpid()):
         with contextlib.suppress(ProcessLookupError, FileNotFoundError):
             title = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
             rank = re.search(r"^sglang::scheduler\S*_TP(\d+)", title)
             offset = schedulers if companion and pid not in prefill else 0
+            side = 1 if companion and pid not in prefill else 0
             if rank:
                 ranks.setdefault(offset, []).append(int(rank[1]))
-            cpus = {scheduler_cpus[offset + int(rank[1])]} if rank else pool
+                cpus = {scheduler_cpus[offset + int(rank[1])]}
+            elif engines is not None and title.startswith("sglang::data_parallel_controller"):
+                controllers[side] += 1
+                cpus = {engines[side][0]}
+            elif engines is not None and pid in roots:
+                cpus = {engines[side][1]}
+            else:
+                cpus = pool
             for task in os.listdir(f"/proc/{pid}/task"):
                 with contextlib.suppress(ProcessLookupError):
                     os.sched_setaffinity(int(task), cpus)
     if {offset: sorted(found) for offset, found in ranks.items()} != {
             offset: list(range(schedulers)) for offset in ((0, schedulers) if companion else (0,))}:
         raise RuntimeError(f"CPU pin plan found scheduler ranks {ranks}; each engine runs {schedulers}")
+    if engines is not None and controllers != [1] * len(roots):
+        raise RuntimeError(f"CPU pin plan pins one DP controller per engine; found {controllers}")
 
 
 @contextlib.contextmanager
