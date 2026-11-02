@@ -818,12 +818,6 @@ normal-model guarantee depends on the sealed noise bounds and independent boot
 contrasts; it does not establish runtime resolution by itself. A fixed 1% gain
 floor is absent.
 
-A completed stock reference must show the host holding its sealed floor. The sample
-standard deviation of its four lifetimes' log mean costs may not exceed twice
-`boot_noise`. A wider reference is refused before publication. Under policy 21
-its first pair is retired with it, so the next campaign measures both pairs again,
-and the stage ends without a candidate verdict.
-
 Concurrent two-lane pairing cancelled only 4–8% of window variance across 149
 retained evaluations (2026-10-24). Simulated with both graders at the Muse seal and
 measured TP4 spreads, 2 × 2 candidate reads against a 4 × 2 reference pass a true

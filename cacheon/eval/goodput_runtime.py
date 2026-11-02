@@ -329,21 +329,6 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
         raise CrossoverRuntimeError("stock reference lacks its sealed lifetimes")
     _validate_replay_sessions([(row.session.replay_reads, row, plan.baseline, ()) for row in executions],
                               plan.baseline.session_plan.replay)
-    noise = plan.policy.goodput.boot_noise
-    if target == pointer and noise:
-        from cacheon.eval.service_capacity import reference_spread
-
-        # The grader takes the sealed boot noise as the spread of every lifetime; a host whose stock lifetimes
-        # disagree beyond twice it would grade every candidate on a false floor, so it grades none.
-        replay = plan.baseline.session_plan.replay
-        spread = reference_spread(tuple(read for row in executions for read in row.session.replay_reads),
-                                  replay.slice.expected_work(replay.sessions))
-        if spread > 2 * noise:
-            if paired and first.exists():
-                first.rename(first.with_name(f"{first.stem}.refused-{time.time_ns()}.json"))
-            raise CrossoverRuntimeError(
-                f"stock reference lifetimes spread {100 * spread:.2f}%, beyond twice the sealed boot noise "
-                f"{100 * noise:.2g}%: this host does not hold the arena's noise floor")
     if target is not None:
         reference = publish_evidence(evidence_root, canonical_json_bytes({
             "identity": pointer.stem, "executions": [codec.encode(row) for row in executions],

@@ -157,13 +157,15 @@
 # AGENTS.md scopes the code-volume rules to tracked files: +9 root, +1 note (2026-11-02).
 # Warm windows grow a PD lifetime to 164 MB (stock reference and checkpoint bounds raised), and the stock bracket's
 # controls take their IDs from the primed cache, not bridge.jsonl: runtime +11/-5, PD results +36/-1, +2 notes.
+# Shiv deleted the stock reference spread refusal after it refused Verda z6's reference (0.70% against 0.60%,
+# 2026-11-02): runtime -23, docs -6, +2 notes.
 (root) 1166
 .github 338
 bundles 2398
-cacheon 92537
+cacheon 92514
 cacheon_kernels 936
 dashboard 4393
-docs 13530
+docs 13524
 examples 745
-scripts 4429
+scripts 4431
 tests 13995

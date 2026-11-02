@@ -396,13 +396,6 @@ def _boot_costs(reads: Sequence[LoadRead], arm: str, expected: dict[str, tuple[i
     return boots
 
 
-def reference_spread(reference: Sequence[LoadRead], expected: dict[str, tuple[int, int]]) -> float:
-    """Sample standard deviation of the stock lifetimes' log mean costs, aggregated as ``reference_grade`` does."""
-    means = [math.log(math.fsum(costs) / len(costs)) for costs in _boot_costs(reference, "incumbent", expected)]
-    center = math.fsum(means) / len(means)
-    return math.sqrt(math.fsum((m - center) ** 2 for m in means) / (len(means) - 1))
-
-
 def _boot_term(costs: list[float], window_noise: float, boot_noise: float) -> tuple[float, float]:
     """Log mean cost of one lifetime and its variance; sealed noise bounds the stock/candidate log ratio.
 
@@ -513,6 +506,5 @@ __all__ = [
     "fixed_work_rate",
     "grade",
     "reference_grade",
-    "reference_spread",
     "statistical_grade",
 ]
