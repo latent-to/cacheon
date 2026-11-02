@@ -678,6 +678,14 @@ tool waiting; the bridge releases ready requests in lockstep rounds.
 Turn order and child joins remain intact. The loopback chat adapter passes canonical input IDs and
 sticky DP ranks, fixed at each session's first turn in release order, through the isolated-worker pipes.
 
+Every window sends the same request bodies, so each evaluator process tokenizes the slice once,
+while its first engine boots: AIPerf replays the slice with the window's exact arguments against a
+loopback responder that answers each request at once, and a spawn pool applies the chat template
+to every distinct body. A timed window then looks each body's IDs up by the SHA-256 of its bytes. A
+body the prime did not see fails the read, so templating never runs inside the clock. Before each
+lifetime's warmup the controller collects and freezes its own heap (`gc.freeze`), so every
+lifetime starts from the same heap.
+
 The slice loader verifies the named files in sealed order. A per-load directory
 contains only the first `load` files. Output budgets come from those traces;
 context overflow or an incomplete export fails the read. The client preserves
@@ -690,7 +698,8 @@ Each engine stays loaded across the windows of its boot. Before each load, the c
 requires an acknowledged SGLang cache flush covering device radix state and
 the HiCache host pool. Failure stops the window. Each load's fresh output
 directory retains the AIPerf command, log and raw export,
-`bridge.jsonl` with canonical inputs, actual output IDs and host timing,
+`bridge.jsonl` with each request's input digest (`input_sha256`, the SHA-256 of its
+canonical ID list in compact JSON), actual output IDs and host timing,
 `turns.jsonl` in the service-capacity record format, and `read.json` with fixed
 work rate and attainment. `window.json` retains the workload identity and the
 read. The existing engine-session evidence also carries

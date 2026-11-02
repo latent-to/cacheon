@@ -148,13 +148,17 @@
 # it grades FAIL before the bracket, audit and T. Runtime +100/-27, tests +10, docs +25/-8, +2 notes (2026-10-30).
 # The PD results page records the first live below_payment_bar stop and its timing: +13 docs, +1 note (2026-10-31).
 # The miner guide states that bundle modules run under a generated package name: +11 docs, +1 note (2026-10-31).
+# PD replay on a host that hides SMT and clock tiers (Verda 8x B300, 2026-11-02): each evaluator process tokenizes
+# the sealed slice once before its first lifetime and bridge.jsonl keeps each input's digest, every lifetime starts
+# from a frozen heap, DP controllers and frontends get their own vCPUs (cpu_roles), and the commission times the pin
+# table. Runtime +320/-64 (oci_backend.py ceiling raised), scripts +19/-10, docs +26/-3, +4 notes.
 (root) 1157
 .github 338
 bundles 2398
-cacheon 92236
+cacheon 92492
 cacheon_kernels 936
 dashboard 4393
-docs 13461
+docs 13484
 examples 745
-scripts 4411
+scripts 4424
 tests 13995

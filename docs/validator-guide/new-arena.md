@@ -116,9 +116,18 @@ the pod transport. One directory holds them:
 | `node.name` | the host class whose measured scheduler positions follow |
 | `node.scheduler_starts` | one measured-fast vCPU start per GPU of the host, in GPU order |
 | `node.client_cpus` | the validator client core set per lane, keyed by the lane's device list |
+| `node.engine_cpus` | optional: per engine, keyed by its first GPU, the data-parallel controller's vCPU and the frontend's vCPU |
 
 The node section is a measured fact of the host, not a tuning knob: scheduler
-pins and the client set bind the sealed runtime digest. A control's digest is
+pins, engine roles and the client set bind the sealed runtime digest. The
+commission times the table rather than trusting `lscpu` or sysfs, which a guest
+can misreport: Verda's 8x B300 VM listed 240 one-thread sockets while vCPU k and
+k+120 shared a core, and 16 of its 120 cores ran at twice the speed of the rest.
+`cacheon.eval.oci_cpuset.verify_cpu_plan` times every vCPU alone and every
+relevant pair together. It refuses a scheduler, engine-role or client vCPU
+slower than 0.75x the fastest, a scheduler or engine-role vCPU that shares a
+core with any other named vCPU, and a pool vCPU that shares a core with the
+client. A control's digest is
 what intake computes for it: with the control bundle on disk,
 `inspect_contribution(root, catalog=default_target_catalog()).selected_delta_digest`
 from `cacheon.engine_tree` and `cacheon.target_catalog`; the render writes the

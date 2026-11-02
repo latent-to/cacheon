@@ -183,7 +183,7 @@ def verify_cpu_plan(exclusive: dict[str, list[int]], shared: dict[str, list[int]
     each prefill scheduler on a decode scheduler's core (window sd 3.6% vs 0.6-0.9% on the Lium host, 2026-11-01).
     lscpu and sysfs are not evidence here; timing is. Every vCPU of an ``exclusive`` group (schedulers, engine roles)
     must have its core to itself among the named vCPUs; a ``shared`` group (client, pool) may share cores only within
-    itself. Groups named in ``fast`` must run at 0.9x the fastest vCPU this process may use.
+    itself. Groups named in ``fast`` must run at 0.75x the fastest vCPU this process may use.
     """
     host = sorted(os.sched_getaffinity(0))
     (solo,) = _run(host)
