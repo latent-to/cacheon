@@ -50,6 +50,9 @@ class AgentReplayPlan:
     elapsed_cost: bool = field(default=False, metadata={"wire_optional": True})
     max_work_seconds: int = field(default=0, metadata={"wire_optional": True})
     closed_loop: bool = field(default=False, metadata={"wire_optional": True})
+    # Untimed windows before the sealed ones. A lifetime's first full replay ran 1.4-2.9% slow on Verda z3 while its
+    # later windows agreed to 0.14%: the first cold burst at full scale warms the engine (2026-11-02).
+    warm_windows: int = field(default=0, metadata={"wire_optional": True})
     slice: SliceManifest = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -64,6 +67,8 @@ class AgentReplayPlan:
             raise ValueError("agent replay read identity is invalid")
         if type(self.windows) is not int or self.windows < 1:
             raise ValueError("agent replay needs at least one sealed window")
+        if type(self.warm_windows) is not int or not 0 <= self.warm_windows <= 2:
+            raise ValueError("agent replay warm windows are outside their bound")
         if type(self.elapsed_cost) is not bool or type(self.closed_loop) is not bool:
             raise ValueError("replay cost accounting and arrival must be boolean")
         if type(self.max_work_seconds) is not int or not 0 <= self.max_work_seconds <= 7200:
@@ -89,6 +94,7 @@ class AgentReplayPlan:
             "expected_work": {str(load): self.slice.expected_work(self.sessions) for load in self.loads},
             "loads": list(self.loads),
             "windows": self.windows,
+            **({"warm_windows": self.warm_windows} if self.warm_windows else {}),
             "arrival": "closed-loop-after-cold-round" if self.closed_loop else "lockstep-rounds",
             "contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
             "client": "aiperf-0.13.0", "scenario": None, "ignore_trace_delays": True,
@@ -638,6 +644,9 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRe
 async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None, before_read=None) -> tuple[LoadRead, ...]:
     """Execute the sealed windows of one load, flushing cache before each window's read.
 
+    The plan's warm windows replay first, each into its own retained directory; their reads never reach the
+    session's evidence or the grader.
+
     ``before_read`` synchronizes paired lanes after their cache flushes and
     before releasing either client's first request of that window, and returns
     whether the sealed sequential rule still wants that window. Single-lane
@@ -651,6 +660,10 @@ async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None, before_r
         tokenizer = AutoTokenizer.from_pretrained(plan.tokenizer_path, trust_remote_code=True, local_files_only=True)
     reads = []
     (load,) = plan.loads
+    for warm in range(1, plan.warm_windows + 1):
+        await flush_cache(session)
+        await _run_load_read(session, replace(plan, window=warm, output_directory=plan.output_directory / f"warm{warm}"),
+                             tokenizer=tokenizer)
     for window in range(1, plan.windows + 1):
         await flush_cache(session)
         if before_read is not None and not await before_read(load, window):

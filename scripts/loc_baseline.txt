@@ -152,13 +152,15 @@
 # the sealed slice once before its first lifetime and bridge.jsonl keeps each input's digest, every lifetime starts
 # from a frozen heap, DP controllers and frontends get their own vCPUs (cpu_roles), and the commission times the pin
 # table. Runtime +320/-64 (oci_backend.py ceiling raised), scripts +19/-10, docs +26/-3, +4 notes.
+# Owner order 2026-11-02 (a measured noise floor that holds on any host): sealed warm windows replay untimed first in
+# every lifetime, and a stock reference wider than twice the sealed boot noise is refused: runtime +40/-2, docs +12/-1, +2 notes.
 (root) 1157
 .github 338
 bundles 2398
-cacheon 92492
+cacheon 92531
 cacheon_kernels 936
 dashboard 4393
-docs 13484
+docs 13495
 examples 745
-scripts 4424
+scripts 4426
 tests 13995

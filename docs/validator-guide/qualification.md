@@ -759,7 +759,12 @@ Replay qualification is commissioned with `session.replay`: absolute `manifest_p
 `aiperf_binary` and `tokenizer_path`, the manifest's computed `slice_digest`, a
 single operating `load`, and the number of `windows` N each engine boot replays.
 Optional `max_work_seconds` bounds each boot's replay work; expiry aborts, never
-grades incomplete work. Engine startup retains its separate OCI initialization
+grades incomplete work. Optional `warm_windows` (1 or 2) replays that many whole
+windows untimed at the start of every lifetime, each after its own cache flush.
+Their directories (`warm1`, ...) are retained, but their reads never reach the
+session evidence or the grader. A lifetime's first full replay is its first cold
+burst at full scale: on an 8x B300 VM it ran 1.4 to 2.9 percent slower than the
+same lifetime's later windows, which agreed to 0.14 percent. Engine startup retains its separate OCI initialization
 deadline. `resident_speed.goodput` seals the service `contract`
 (`decode_floor_tps`, `ttft_bound_s`, `attainment`), `required` ratio,
 `null_noise`, fixed `attainment_tolerance`, and its calibrated one-sided
@@ -812,6 +817,12 @@ the stage can end only on the futility margin. The last candidate boot yields
 normal-model guarantee depends on the sealed noise bounds and independent boot
 contrasts; it does not establish runtime resolution by itself. A fixed 1% gain
 floor is absent.
+
+A completed stock reference must show the host holding its sealed floor. The sample
+standard deviation of its four lifetimes' log mean costs may not exceed twice
+`boot_noise`. A wider reference is refused before publication. Under policy 21
+its first pair is retired with it, so the next campaign measures both pairs again,
+and the stage ends without a candidate verdict.
 
 Concurrent two-lane pairing cancelled only 4–8% of window variance across 149
 retained evaluations (2026-10-24). Simulated with both graders at the Muse seal and
