@@ -36,7 +36,9 @@ CANDIDATE_BOOTS = 2
 # two-boot candidate about 0.5% (policy 20), so version 21 measures each stock pair in its own process.
 REFERENCE_DOMAIN = "cacheon.qualification.stock-reference"
 REFERENCE_SCHEMA = "cacheon.qualification.stock-reference.v1"
-_REFERENCE_BYTES = 512 << 20
+# Warm windows keep their rows in each lifetime: a PD stock lifetime with two of them is 164 MB against 100 MB
+# without, so four exceed 512 MiB (Verda z5, 2026-11-02). The evidence store's hard limit holds them.
+_REFERENCE_BYTES = 1 << 30
 
 
 @dataclass(frozen=True)

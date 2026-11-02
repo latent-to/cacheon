@@ -29,7 +29,8 @@ RECOVERY_DOMAIN = "qualification.worker-recovery"
 RECOVERY_SCHEMA = "cacheon.qualification.worker-recovery.v1"
 # Each engine lifetime keeps every turn's output IDs. Policy 20 on the DeepSeek-V4.1 PD slice (four stock boots and a
 # candidate boot, 3.9M output tokens a window) reached 516 MB and voided an identity run at 128 MiB (2026-10-27).
-MAX_CHECKPOINT_BYTES = 1 << 30
+# With two warm windows a lifetime is 164 MB, so a PASS's seven lifetimes are about 1.15 GB (Verda z5, 2026-11-02).
+MAX_CHECKPOINT_BYTES = 2 << 30
 _COMPLETE = {
     "speed": ("speed",),
     "audit": ("audit_armed", "audit_completed"),

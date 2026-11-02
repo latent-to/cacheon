@@ -116,15 +116,19 @@ def create_controls(value, controller, candidate, baseline_directory, candidate_
             controller.batch_rows, candidate.session.batches,
         ),
     )
+    from cacheon.eval.agent_replay import _PROMPTS
+
     by_request = {baseline[key].request_id: key for key in selection.selected_prompt_digests}
+    # bridge.jsonl names each input by digest; its IDs are the ones this evaluator process primed and sent.
+    primed = {digest: ids for ids, digest in _PROMPTS.values()}
     inputs = {}
     raw_path = baseline_directory / "window1" / "bridge.jsonl"
     with raw_path.open() as stream:
         for line in stream:
             row = json.loads(line)
             key = by_request.get(UUID(row["x_request_id"]).hex)
-            if key is not None:
-                inputs[key] = tuple(row["input_ids"])
+            if key is not None and row["input_sha256"] in primed:
+                inputs[key] = primed[row["input_sha256"]]
     if set(inputs) != set(selection.selected_prompt_digests):
         raise QualificationError("selected replay canonical inputs are incomplete")
 
@@ -158,7 +162,6 @@ def create_controls(value, controller, candidate, baseline_directory, candidate_
 
 def trajectory_rows(lifecycle: object):
     from cacheon.eval.crossover_runtime import ResidentMarginalLifecycleEvidence
-    from cacheon.eval.scoring import marginal_workload_digest
 
     if type(lifecycle) is not ResidentMarginalLifecycleEvidence:
         raise QualificationError("trajectory lifecycle is not typed")

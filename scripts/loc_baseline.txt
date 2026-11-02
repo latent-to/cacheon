@@ -155,13 +155,15 @@
 # Owner order 2026-11-02 (a measured noise floor that holds on any host): sealed warm windows replay untimed first in
 # every lifetime, and a stock reference wider than twice the sealed boot noise is refused: runtime +40/-2, docs +12/-1, +2 notes.
 # AGENTS.md scopes the code-volume rules to tracked files: +9 root, +1 note (2026-11-02).
+# Warm windows grow a PD lifetime to 164 MB (stock reference and checkpoint bounds raised), and the stock bracket's
+# controls take their IDs from the primed cache, not bridge.jsonl: runtime +11/-5, PD results +36/-1, +2 notes.
 (root) 1166
 .github 338
 bundles 2398
-cacheon 92531
+cacheon 92537
 cacheon_kernels 936
 dashboard 4393
-docs 13495
+docs 13530
 examples 745
-scripts 4427
+scripts 4429
 tests 13995

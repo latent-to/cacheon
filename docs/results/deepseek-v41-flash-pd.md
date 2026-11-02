@@ -97,7 +97,11 @@ about 2 percent in the third and fourth and about 2.4 percent in the fifth and
 sixth. The next qualification, a new process that first builds its bundle, starts fast again;
 750 idle seconds inside one process, the GPUs back at 24 to 26 °C, do not. All of the added time is before the first token, while
 decode time per token, the replay bridge's delay, turnaround and sessions in
-flight stay flat. The in-process cause is not yet identified.
+flight stay flat. Earlier lifetimes' retained evidence lengthened every full
+collection on the loop that times first tokens; with the evaluator's heap
+collected and frozen at each lifetime's start (`d7665c3e`), the two lifetimes
+of one process on the Verda host below agreed to 0.14 percent in their steady
+windows.
 
 Each qualification runs in a new process, so candidates read as its first two
 lifetimes. Policy 20 measured all four reference boots in one process, handing
@@ -112,6 +116,37 @@ and 236.88 and 237.84 in its second's: the second lifetime cost 0.25 and 0.41
 percent more than the first, and stock against stock at matched positions,
 the second pair read against the first, came to 1.0003 (99 percent band 0.973
 to 1.028).
+
+## A second host
+
+On an 8-GPU B300 VM from Verda (2026-11-01), the same sealed workload's stock
+windows took about 265 seconds against 237 on the AWS node, and stock lifetimes
+spread 0.52 percent against 0.20. None of the difference was in the engines.
+
+- **Tokenization on the clock.** The replay bridge re-templated and
+  re-tokenized every prompt in each timed window and wrote its token IDs to
+  `bridge.jsonl`. The client's gap between a turn's end and its next request
+  was 0.47 to 0.49 s on Verda and 0.42 to 0.43 s on AWS. The evaluator now
+  tokenizes the sealed slice once per process before the first timed window,
+  and the gap is 0.011 s.
+- **Pins from a topology the guest hides.** The VM lists 240 one-thread
+  sockets, yet vCPU k and k+120 share a core and 16 of its 120 cores run at
+  twice the speed of the rest. The sibling-free pin rule put each prefill
+  scheduler on a decode scheduler's core, and the DP controllers busy-polled
+  on slow cores. Engine-role processes now run on vCPUs the worker times at
+  prepare, and it refuses a table with a slow or shared-core pin.
+
+With both, stock windows took 214.6 to 222.9 s and the warm first-token
+median fell from 4.0-4.4 s to 1.02 s. The first window of each lifetime still
+ran 1.4 to 3.1 percent long: the stock Triton kernel `_committed_swa_locations`
+takes the KV pool size as a `constexpr`, the runtime seed was built at another
+pool size, and 43 variants compiled inside that window. Over four stock
+lifetimes the third windows read 214.73 to 214.94 s, the second up to 1.3
+percent long with nothing compiling. Stages from z4 on replay two sealed warm
+windows untimed before the three scored ones and seal null and boot noise of
+0.005 and 0.003, which puts the PASS boundary near 0.33 percent instead of
+about 1.2. The first such lifetime read 214.83, 214.60 and 216.40 s; the second
+215.38, 214.16 and 214.53 s.
 
 ## Time per qualification
 
