@@ -301,6 +301,15 @@ anywhere, files packed to just under the line cap, and tests split into
 numbered files. Deletion is a first-class outcome. These rules bind every
 contributor and subagent:
 
+Scope: these rules, and the 1,000-line gate under Execution control gates,
+cover tracked repository files only. Untracked or gitignored work, such as
+miner bundles, kernel sources, `.slot-run/`, and `/data/bundles/`, is judged
+only by served speed, exactness gates, and the slot rules (registered slot,
+scan clean, no names or comments in bundle source). Do not cap, split,
+shrink, or report line counts for it. A 10,000-line CUDA file that is faster
+is the right file, and vendoring the image's upstream sources into a bundle is
+fine.
+
 - Never land a production module without a same-change consumer reachable
   from a real entrypoint, registered seam, packaging metadata, or the declared
   capability manifest (`cacheon/capability_manifest.py`). "A future private
