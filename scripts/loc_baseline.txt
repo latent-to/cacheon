@@ -159,6 +159,7 @@
 # controls take their IDs from the primed cache, not bridge.jsonl: runtime +11/-5, PD results +36/-1, +2 notes.
 # Shiv deleted the stock reference spread refusal after it refused Verda z6's reference (0.70% against 0.60%,
 # 2026-11-02): runtime -23, docs -6, +2 notes.
+# PD audit/pristine CPU roles use the first group of the full lane plan: runtime/docs net 0, +51 regression lines.
 (root) 1166
 .github 338
 bundles 2398
@@ -167,5 +168,5 @@ cacheon_kernels 936
 dashboard 4393
 docs 13524
 examples 745
-scripts 4431
-tests 13995
+scripts 4432
+tests 14046

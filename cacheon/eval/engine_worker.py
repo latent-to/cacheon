@@ -524,11 +524,11 @@ def _pin_engine_processes(plan: str | None, *, schedulers: int, pinned: int, com
     scheduler_cpus, pool = list(spec["schedulers"]), set(spec["pool"])
     if len(scheduler_cpus) != pinned:
         raise RuntimeError(f"CPU pin plan covers {len(scheduler_cpus)} schedulers; the lane pins {pinned}")
-    # Each engine's (DP controller, frontend) vCPUs, prefill first; the frontend is the engine's own root process.
+    # Audit and pristine T use only the first engine of the full lane plan (z6 audit failure, 2026-11-02).
     engines = spec.get("engines")
     roots = (companion, os.getpid()) if companion else (os.getpid(),)
-    if engines is not None and len(engines) != len(roots):
-        raise RuntimeError(f"CPU pin plan names {len(engines)} engines; the lane runs {len(roots)}")
+    if engines is not None and len(engines) != pinned // schedulers:
+        raise RuntimeError(f"CPU pin plan names {len(engines)} engines; the lane pins {pinned // schedulers}")
     prefill = set(_process_tree(companion)) if companion else set()
     ranks: dict[int, list[int]] = {}
     controllers = [0] * len(roots)

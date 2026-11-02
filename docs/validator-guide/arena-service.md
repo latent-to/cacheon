@@ -120,9 +120,9 @@ pin, or an engine whose scheduler ranks do not match the plan, fails the launch.
 Use it on hosts whose vCPUs differ in speed. `resources.runtime.cpu_roles`, which
 requires `cpu_pins`, gives each engine, keyed by its first GPU, two vCPUs of its
 own: one for its data-parallel controller, which busy-polls, and one for its
-frontend, which parses every request. Neither may be a scheduler vCPU. Roles bind
-the runtime digest, and an engine without exactly one data-parallel controller
-fails the launch. The engine boots on the NUMA node(s)
+frontend, which parses every request. Neither may be a scheduler vCPU. Roles bind the runtime digest.
+A PD audit or pristine reference uses the first engine's roles; each running engine must have exactly
+one data-parallel controller. The engine boots on the NUMA node(s)
 of the lane's scheduler vCPUs, so host memory each rank allocates during boot
 (DeepSeek-V4.1's Engram tables) is local to its GPUs; the per-process pins apply
 once the engine is up. Every boot shares one native
