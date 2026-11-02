@@ -174,7 +174,7 @@ def validate_controls(evidence, plan):
         raise QualificationError("replay quality prompt pairs differ from the committed source pool")
     rows = (evidence.baseline_execution.session.batches, evidence.candidate_execution.session.batches)
     for role, arm in enumerate((plan.baseline, plan.candidate)):
-        first = arm.session_plan.warmup_count
+        first = arm.session_plan.warmup_count + arm.session_plan.replay.warm_windows * replay.slice.turns(replay.sessions)
         if {pair[role + 1] for pair in pairs} != set(range(first, first + len(pool))):
             raise QualificationError("replay source pairs do not cover the timed requests exactly")
     joined = {key: (rows[0][b], rows[1][c]) for key, b, c in pairs}

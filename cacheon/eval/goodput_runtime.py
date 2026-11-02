@@ -493,8 +493,8 @@ def _validate_replay_sessions(sessions, replay):
         session = execution.session
         if reads != session.replay_reads or len(reads) != arm.session_plan.replay.windows:
             raise CrossoverRuntimeError("goodput reads differ from their completed engine session")
-        warmup = arm.session_plan.warmup_count
         count = replay.slice.turns(replay.sessions)
+        warmup = arm.session_plan.warmup_count + arm.session_plan.replay.warm_windows * count
         measured = count * len(reads)
         if (len(session.batches) != warmup + measured + len(controls)
             or tuple(row.batch_index for row in session.batches) != tuple(range(len(session.batches)))
