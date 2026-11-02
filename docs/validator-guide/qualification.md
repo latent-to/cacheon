@@ -125,6 +125,13 @@ store under the commissioned root that later boots of the same tree reuse.
    reference cannot satisfy policy 21. The campaign runs before the `max_qualification_seconds` and
    `max_stage_seconds` clocks start, so it counts only against the job's
    four-hour deadline.
+   An explicit reference import may point to a retained publication and carry
+   its original stock arm, workload and speed policy, bound to the exact
+   replacement launch. Reopen and regrade validate the original stock lifetimes
+   under that arm; candidate and bracket lifetimes retain their current arm.
+   The importer must verify unchanged measured runtime and timing-client code
+   before publishing this binding. A new worker alone never authorizes reuse;
+   there is no automatic search or substitution of another reference.
 2. **Candidate boots.** Up to two fresh candidate boots run on the same lane.
    Looks fall at boot boundaries: after boot 1 the stage can end only on the
    sealed `futility_margin` (FAIL); a PASS needs both boots. They are the first

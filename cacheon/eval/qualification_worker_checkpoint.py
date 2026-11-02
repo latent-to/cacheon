@@ -206,28 +206,32 @@ def _restore_binding(template, row):
 
 def restore_speed_plan(plan, origin):
     """Reopen physical measurement identities without relabeling retained timings."""
-    from cacheon.eval.oci_backend import expected_runtime_preflight
     from cacheon.eval.resident_speed_policy import ResidentSpeedPolicy
-    arms = []
-    for template, row in zip((plan.baseline, plan.candidate), origin["arms"], strict=True):
-        launch, binding = _restore_binding(template.binding, row)
-        old, new = launch.to_dict(), template.launch.to_dict()
-        old["hardware"].pop("device_policy_digest")
-        new["hardware"].pop("device_policy_digest")
-        for field in ("arena_digest", "stack_digest", "tree_digest", "native_build_spec_digest",
-                      "resource_policy_digest", "controller_distribution_digest"):
-            old.pop(field)
-            new.pop(field)
-        if old != new:
-            raise CheckpointComputationChanged("worker checkpoint changed its executable envelope")
-        arms.append(replace(template, launch=launch, binding=binding,
-                            session_plan=replace(template.session_plan, launch_digest=launch.digest,
-                                expected_preflight=expected_runtime_preflight(launch, binding.runtime_preflight_receipt)),
-                            executor_namespace_digest=row["namespace"],
-                            runtime_resource_policy_digest=row["runtime_policy"],
-                            device_configuration_digest=row["configuration"]))
+    arms = [restore_speed_arm(template, row) for template, row in
+            zip((plan.baseline, plan.candidate), origin["arms"], strict=True)]
     return replace(plan, baseline=arms[0], candidate=arms[1],
                    policy=ResidentSpeedPolicy.from_dict(origin["speed_policy"]))
+
+
+def restore_speed_arm(template, row):
+    """Reconstruct an original arm without changing its measured engine envelope."""
+    from cacheon.eval.oci_backend import expected_runtime_preflight
+
+    launch, binding = _restore_binding(template.binding, row)
+    old, new = launch.to_dict(), template.launch.to_dict()
+    old["hardware"].pop("device_policy_digest")
+    new["hardware"].pop("device_policy_digest")
+    for field in ("arena_digest", "stack_digest", "tree_digest", "native_build_spec_digest",
+                  "resource_policy_digest", "controller_distribution_digest"):
+        old.pop(field)
+        new.pop(field)
+    if old != new:
+        raise CheckpointComputationChanged("worker checkpoint changed its executable envelope")
+    return replace(template, launch=launch, binding=binding,
+        session_plan=replace(template.session_plan, launch_digest=launch.digest,
+            expected_preflight=expected_runtime_preflight(launch, binding.runtime_preflight_receipt)),
+        executor_namespace_digest=row["namespace"], runtime_resource_policy_digest=row["runtime_policy"],
+        device_configuration_digest=row["configuration"])
 
 
 def restore_origin(value, origin):

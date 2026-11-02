@@ -134,6 +134,7 @@ class GoodputReadSet:
     boots: int = field(default=0, metadata={"wire_optional": True})
     reference_boots: int = field(default=0, metadata={"wire_optional": True})
     payment_bar: str = field(default="", metadata={"wire_optional": True})
+    reference_lane: str = field(default="", metadata={"wire_optional": True})
 
     def __post_init__(self):
         if (not self.incumbent or not self.candidate
@@ -152,7 +153,12 @@ class GoodputReadSet:
                        for index, read in enumerate(reads))
                 or any(read.arm != "incumbent" for read in self.incumbent)
                 or any(read.arm != "candidate" for read in self.candidate)
-                or len({(read.lane, read.load) for read in (*self.incumbent, *self.candidate)}) != 1):
+                or len({read.load for read in (*self.incumbent, *self.candidate)}) != 1
+                or len({read.lane for read in self.candidate}) != 1
+                or any(read.lane != (self.reference_lane or self.candidate[0].lane)
+                       for read in self.incumbent[:self.reference_boots * size])
+                or any(read.lane != self.candidate[0].lane
+                       for read in self.incumbent[self.reference_boots * size:])):
                 raise ValueError("reference read set is not whole lifetimes on one lane")
             for read in (*self.incumbent, *self.candidate):
                 fixed_work_rate(read, work)
@@ -186,6 +192,7 @@ class GoodputReadSet:
                 boot_noise=policy.boot_noise, error_rate=policy.error_rate, boots=self.boots,
                 futility_margin=policy.futility_margin, sentinel=self.incumbent[split:],
                 decode_floor=bool(policy.decode_floor), **service,
+                reference_lane=self.reference_lane,
             )
         elif policy.error_rate:
             result = service_capacity.statistical_grade(
@@ -290,6 +297,40 @@ def _reference_pointer(plan, evidence_root) -> Path:
     return Path(evidence_root) / ".stock-references" / f"{identity}.json"
 
 
+class _ReferenceExecutions(tuple):
+    """Retained lifetimes with their original arm when explicitly imported."""
+
+    def __new__(cls, rows, origin=""):
+        result = super().__new__(cls, rows)
+        result.origin = origin
+        return result
+
+
+def _reference_arm(plan, origin):
+    """Keep imported stock launches unchanged and compare their measured envelope."""
+    if not origin:
+        return plan.baseline
+    from cacheon.eval.qualification_worker_checkpoint import restore_speed_arm
+
+    row = json.loads(origin)
+    if (canonical_json_bytes(row).decode("ascii") != origin
+        or set(row) != {"arm", "replacement_launch", "reference", "reference_identity", "workload", "speed_policy"}
+        or row["replacement_launch"] != plan.baseline.launch.digest
+        or row["workload"] != marginal_workload_digest(plan.baseline.session_plan)):
+        raise CrossoverRuntimeError("stock reference import names another replacement launch")
+    old, new = dict(row["speed_policy"]), plan.policy.to_dict()
+    for policy in (old, new):
+        policy.pop("calibration_digest")
+        policy.pop("calibration_context_digest")
+    if old != new:
+        raise CrossoverRuntimeError("stock reference import changed its scoring policy")
+    arm = restore_speed_arm(plan.baseline, row["arm"])
+    if (arm.binding.physical_hardware.physical_gpu_ids != plan.baseline.binding.physical_hardware.physical_gpu_ids
+        or arm.device_configuration_digest != plan.baseline.device_configuration_digest):
+        raise CrossoverRuntimeError("stock reference import changed physical devices or configuration")
+    return arm
+
+
 def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
     """Reopen the lane's current stock reference, or measure its campaign when none is current.
 
@@ -313,7 +354,15 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
             json.loads(path.read_text())), max_bytes=_REFERENCE_BYTES))
         if record.get("identity") != pointer.stem:
             raise CrossoverRuntimeError("stock reference names another lane identity")
-        return tuple(codec.decode(row) for row in record["executions"])
+        origin = record.get("reference_origin", "")
+        if origin:
+            source = json.loads(origin)
+            _reference_arm(plan, origin)
+            record = json.loads(reopen_evidence(evidence_root, EvidenceArtifactRef.from_dict(
+                source["reference"]), max_bytes=_REFERENCE_BYTES))
+            if record.get("identity") != source["reference_identity"] or "reference_origin" in record:
+                raise CrossoverRuntimeError("stock reference import differs from its original publication")
+        return _ReferenceExecutions((codec.decode(row) for row in record["executions"]), origin)
 
     paired = plan.policy.version >= 21
     if pointer.exists():
@@ -327,7 +376,8 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
     if (len(executions) != (CANDIDATE_BOOTS if target == first else REFERENCE_BOOTS)
             or any(type(row) is not EngineExecutionEvidence for row in executions)):
         raise CrossoverRuntimeError("stock reference lacks its sealed lifetimes")
-    _validate_replay_sessions([(row.session.replay_reads, row, plan.baseline, ()) for row in executions],
+    reference_arm = _reference_arm(plan, getattr(executions, "origin", ""))
+    _validate_replay_sessions([(row.session.replay_reads, row, reference_arm, ()) for row in executions],
                               plan.baseline.session_plan.replay)
     if target is not None:
         reference = publish_evidence(evidence_root, canonical_json_bytes({
@@ -382,7 +432,8 @@ def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root
                            deadline=deadline, tokenizer=tokenizer))
         reads = GoodputReadSet(stock, tuple(read for row in boots for read in row[0].session.replay_reads),
                                _expected(replay), replay.windows, boots=CANDIDATE_BOOTS,
-                               reference_boots=REFERENCE_BOOTS, payment_bar=payment_bar)
+                               reference_boots=REFERENCE_BOOTS, payment_bar=payment_bar,
+                               reference_lane=stock[0].lane if getattr(reference, "origin", "") else "")
         grade = reads.grade(plan.policy.goodput)
         if grade.decision is not SpeedStageDecision.NO_DECISION:
             break
@@ -406,6 +457,7 @@ def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root
         grade.decision, "clear_" + grade.decision.value.lower(), started, float(clock()), goodput=reads,
         prompt_pairs=pairs, reference_inputs=controls, quality_entropy=entropy,
         prior_executions=(*reference, *(row[0] for row in boots[:-1])),
+        reference_origin=getattr(reference, "origin", ""),
     )
     evidence.regrade(plan)
     return evidence
@@ -420,6 +472,7 @@ def regrade_reference_speed(evidence, plan):
     reference = evidence.prior_executions[:REFERENCE_BOOTS]
     candidates = (*evidence.prior_executions[REFERENCE_BOOTS:], evidence.candidate_execution)
     bracket = evidence.baseline_execution
+    reference_arm = _reference_arm(plan, evidence.reference_origin)
     quiet = (evidence.candidate_quiescence, *((evidence.baseline_quiescence,) if bracket else ()))
     if (evidence.plan_digest != plan.digest or evidence.policy != plan.policy
         or evidence.selected_delta_digest != plan.selected_delta_digest
@@ -431,7 +484,7 @@ def regrade_reference_speed(evidence, plan):
                or (row.container_ids, row.lease_records, row.resource_entries) != ((), (), ()) for row in quiet)):
         raise CrossoverRuntimeError("reference speed evidence names another sealed plan")
     _validate_replay_sessions([
-        *((row.session.replay_reads, row, plan.baseline, ()) for row in reference),
+        *((row.session.replay_reads, row, reference_arm, ()) for row in reference),
         *((row.session.replay_reads, row, plan.candidate, ()) for row in candidates),
         *(((bracket.session.replay_reads, bracket, plan.baseline, evidence.reference_inputs),) if bracket else ()),
     ], replay)
@@ -446,7 +499,8 @@ def regrade_reference_speed(evidence, plan):
     rebuilt = GoodputReadSet(stock + (bracket.session.replay_reads if bracket else ()),
                              tuple(read for row in candidates for read in row.session.replay_reads),
                              _expected(replay), replay.windows, boots=CANDIDATE_BOOTS, reference_boots=REFERENCE_BOOTS,
-                             payment_bar=evidence.goodput.payment_bar)
+                             payment_bar=evidence.goodput.payment_bar,
+                             reference_lane=stock[0].lane if evidence.reference_origin else "")
     if rebuilt != evidence.goodput:
         raise CrossoverRuntimeError("reference speed reads differ from their engine sessions")
     for count in range(1, len(candidates) + 1):

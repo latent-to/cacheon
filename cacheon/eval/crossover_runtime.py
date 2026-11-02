@@ -311,6 +311,7 @@ class ResidentCrossoverEvidence:
     quality_entropy: SelectionEntropyReceipt | None = dataclass_field(default=None, metadata={"wire_optional": True})
     prior_executions: tuple[EngineExecutionEvidence, ...] = dataclass_field(default=(), metadata={"wire_optional": True})
     replay_windows: tuple[str, ...] = dataclass_field(default=(), metadata={"wire_optional": True})
+    reference_origin: str = dataclass_field(default="", metadata={"wire_optional": True})
 
     def __post_init__(self) -> None:
         if (type(self.policy) is not ResidentSpeedPolicy or self.policy.version < 19 or self.replay_windows
@@ -396,6 +397,7 @@ class ResidentCrossoverEvidence:
                 **({"prior_executions": [_execution_digest(row) for row in self.prior_executions]}
                    if self.prior_executions else {}),
                 **({"replay_windows": self.replay_windows} if self.replay_windows else {}),
+                **({"reference_origin": self.reference_origin} if self.reference_origin else {}),
                 **({"prompt_pairs": self.prompt_pairs,
                     "reference_inputs": [{"prompt": row.prompt_digest,
                                           "input": hashlib.sha256(row.input_bytes).hexdigest(),

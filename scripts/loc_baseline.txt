@@ -160,13 +160,14 @@
 # Shiv deleted the stock reference spread refusal after it refused Verda z6's reference (0.70% against 0.60%,
 # 2026-11-02): runtime -23, docs -6, +2 notes.
 # PD audit/pristine CPU roles use the first group of the full lane plan: runtime/docs net 0, +51 regression lines.
+# Explicit stock imports retain original arms across this audit repair: runtime +62, docs +7, tests +53; replaces repeat campaigns.
 (root) 1166
 .github 338
 bundles 2398
-cacheon 92514
+cacheon 92576
 cacheon_kernels 936
 dashboard 4393
-docs 13524
+docs 13531
 examples 745
-scripts 4432
-tests 14046
+scripts 4433
+tests 14099
