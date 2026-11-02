@@ -762,10 +762,10 @@ Optional `max_work_seconds` bounds each boot's replay work; expiry aborts, never
 grades incomplete work. Optional `warm_windows` (1 or 2) replays that many whole
 windows untimed at the start of every lifetime, each after its own cache flush.
 Their directories (`warm1`, ...) are retained, but their reads never reach the
-session evidence or the grader. A lifetime's first full replay is its first cold
-burst at full scale: on an 8x B300 VM it ran 1.4 to 2.9 percent slower than the
-same lifetime's later windows, which agreed to 0.14 percent. Engine startup retains its separate OCI initialization
-deadline. `resident_speed.goodput` seals the service `contract`
+session evidence or the grader. On an 8x B300 VM four stock lifetimes' third windows agreed to 0.04 percent,
+while their first ran 1.4 to 3.1 percent slow (stock Triton kernels keyed on the decode batch and KV pool size
+compile on the clock, so a seed harvested on another host never matches) and their second up to 1.3 percent, in
+its tail, with nothing compiling. Engine startup retains its separate OCI initialization deadline. `resident_speed.goodput` seals the service `contract`
 (`decode_floor_tps`, `ttft_bound_s`, `attainment`), `required` ratio,
 `null_noise`, fixed `attainment_tolerance`, and its calibrated one-sided
 `attainment_margin`. These values use canonical decimal strings. The

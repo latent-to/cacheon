@@ -50,8 +50,8 @@ class AgentReplayPlan:
     elapsed_cost: bool = field(default=False, metadata={"wire_optional": True})
     max_work_seconds: int = field(default=0, metadata={"wire_optional": True})
     closed_loop: bool = field(default=False, metadata={"wire_optional": True})
-    # Untimed windows before the sealed ones. A lifetime's first full replay ran 1.4-2.9% slow on Verda z3 while its
-    # later windows agreed to 0.14%: the first cold burst at full scale warms the engine (2026-11-02).
+    # Untimed windows before the sealed ones. Verda z3 lifetimes' third windows agreed to 0.04%; their first ran 1.4-3.1%
+    # slow (stock Triton kernels keyed on batch and KV pool size compile on the clock), their second up to 1.3% (11-02).
     warm_windows: int = field(default=0, metadata={"wire_optional": True})
     slice: SliceManifest = field(init=False, repr=False)
 
