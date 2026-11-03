@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from cacheon.chain.intake import FinalizedIntakeStore, IntakeReservation
 
-# Callers join reservations as r. An infrastructure HOLD remains unresolved;
-# a completed remote NO_DECISION has no reward or priority over later PASSes.
+# Callers join reservations as r. A completed remote HOLD retains its failure
+# evidence but has no reward or priority over later PASSes (owner, 2026-11-03).
 # Physical worker state is deliberately absent: later active jobs do not block
 # earlier completed submissions.
 COMPLETED_ARRIVAL_PREFIX = """
@@ -20,18 +20,18 @@ NOT EXISTS (
       AND predecessor.status NOT IN ('qualified','failed','expired')
       AND NOT (
           predecessor.status='held'
-          AND predecessor.reason='remote_qualification_hold:legacy_no_decision'
+          AND predecessor.reason GLOB 'remote_qualification_hold:*'
           AND predecessor.qualification_evidence_digest!=''
       )
 )
 """
 
 
-def _completed_no_decision(row: "IntakeReservation") -> bool:
+def _completed_hold(row: "IntakeReservation") -> bool:
     """Recognize the retained non-verdict written by remote HOLD completion."""
     return (
         row.status == "held"
-        and row.reason == "remote_qualification_hold:legacy_no_decision"
+        and row.reason.startswith("remote_qualification_hold:")
         and bool(row.qualification_evidence_digest)
     )
 

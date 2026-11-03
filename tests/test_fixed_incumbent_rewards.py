@@ -3,6 +3,7 @@
 import pytest
 
 from cacheon.chain.intake import IntakeError
+from cacheon.chain.remote_qualification_hold import RemoteQualificationHoldReason
 from cacheon.economics import EmissionsPolicyManifest
 from cacheon.stack_identity import canonical_digest
 from tests.test_chain_intake import (
@@ -43,10 +44,11 @@ def test_missing_pass_evidence_stops_reward_projection(tmp_path):
 
 
 @pytest.mark.parametrize("target", ("forward_pass", "prefix_cache"))
-def test_completed_no_decision_does_not_block_later_rewards_or_settlement(tmp_path, target):
+@pytest.mark.parametrize("reason", ("legacy_no_decision", *(r.value for r in RemoteQualificationHoldReason)))
+def test_completed_hold_does_not_block_later_rewards_or_settlement(tmp_path, target, reason):
     with _store(tmp_path) as store:
         held = _reserve_one(store, index=99, block=9, hotkey="inconclusive")
-        store.mark_held(held.reservation_id, "remote_qualification_hold:legacy_no_decision")
+        store.mark_held(held.reservation_id, f"remote_qualification_hold:{reason}")
         # Persist the result shape produced by commit_remote_qualification_hold.
         store._db.execute(
             "UPDATE reservations SET qualification_evidence_digest=? WHERE reservation_id=?",
@@ -69,6 +71,7 @@ def test_completed_no_decision_does_not_block_later_rewards_or_settlement(tmp_pa
 
 @pytest.mark.parametrize("reason,evidence", (
     ("remote_qualification_hold:legacy_no_decision", ""),
+    ("remote_qualification_hold:qualification_worker_error", ""),
     ("operator_hold", "e" * 64),
 ))
 def test_unresolved_hold_still_blocks_later_rewards(tmp_path, reason, evidence):

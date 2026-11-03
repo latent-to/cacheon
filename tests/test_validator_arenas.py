@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import signal
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -150,7 +149,8 @@ def test_pairs_and_arenas_qualify_at_once_and_settle_each_arrival_prefix(tmp_pat
                "b_first": roles.reward_credit(record["b-first"], None, 110, None)}
 
     # A commitment finalized after the crowns, while the validator is paused, is claimed on resume;
-    # its PASS waits behind the held a-third, earning and settling nothing until that resolves.
+    # its PASS settles and earns without releasing or rerunning the held a-third.
+    (third,) = (row for row in e2e.store_rows(root_a, "SELECT * FROM reservations") if row["hotkey"] == "a-third")
     late_hash, late_archive = e2e.package(e2e.miner_bundle(root_a, LATE[0], e2e.labelled(LATE[0])), key)
     chain = json.loads(state.read_text())
     amend(state, block=110, hotkeys=[*chain["hotkeys"], LATE[0]], revealed={**chain["revealed"], LATE[0]: [
@@ -160,22 +160,6 @@ def test_pairs_and_arenas_qualify_at_once_and_settle_each_arrival_prefix(tmp_pat
     with e2e.relay(root_a, sealed["arena-a"], name):
         pair, settle = supervisors(root_a, pair_config), supervisors(root_a, economics)
         _answer(root_a, sealed["arena-a"], pair, PASS, name, LATE[1][2])
-        resumed = int(time.time())
-        settle.until(lambda status: status["phase"] == "idle" and status["time_unix"] > resumed)
-        for supervisor in (pair, settle):
-            assert supervisor.stop(signal.SIGTERM) == 0
-    assert len(_events(root_a)) == 10
-    assert sign("--dry-run") == [] and sign.shares() == roles.reward_shares(**credits)
-
-    # The operator returns a-third to its queue; its FAIL completes the prefix and a-late settles and earns.
-    (third,) = (row for row in e2e.store_rows(root_a, "SELECT * FROM reservations") if row["hotkey"] == "a-third")
-    assert third["status"] == "held" and "status=published" in e2e.run(
-        "cacheon.cli", "chain-release-hold", "--netuid", str(e2e.NETUID), "--network", str(state),
-        "--intake-db", str(root_a / "validator" / "intake.sqlite3"), "--reservation-id", third["reservation_id"],
-        "--reason", "worker repaired", env=e2e.chain_env())
-    with e2e.relay(root_a, sealed["arena-a"], name):
-        pair, settle = supervisors(root_a, pair_config), supervisors(root_a, economics)
-        _answer(root_a, sealed["arena-a"], pair, FAIL, name)
         settle.until(lambda status: status["last_stage"] == "settlement" and len(_events(root_a)) == 14)
         for supervisor in (pair, settle):
             assert supervisor.stop(signal.SIGTERM) == 0
@@ -185,7 +169,9 @@ def test_pairs_and_arenas_qualify_at_once_and_settle_each_arrival_prefix(tmp_pat
     assert {row["hotkey"]: (row["status"], row["decision"]) for row in e2e.store_rows(
         root_a, "SELECT * FROM reservations")} == {
         "a-first": ("qualified", "PASS"), "a-second": ("qualified", "PASS"), "b-first": ("qualified", "PASS"),
-        "a-third": ("failed", "FAIL"), "b-second": ("failed", "FAIL"), "a-late": ("qualified", "PASS")}
+        "a-third": ("held", ""), "b-second": ("failed", "FAIL"), "a-late": ("qualified", "PASS")}
+    assert third in e2e.store_rows(root_a, "SELECT * FROM reservations")
+    assert len(e2e.carriers(root_a)) + len(e2e.carriers(root_a, "spool-pair-2")) == 4
     assert sign("--dry-run") == [] and sign.shares() == roles.reward_shares(
         **credits, a_late=roles.reward_credit(record["a-late"], record["a-second"], 110, None))
 

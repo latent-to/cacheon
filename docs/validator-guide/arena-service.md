@@ -243,10 +243,10 @@ idle, then start its pod service, relay and supervisor in that order. A stopped
 supervisor is the reservation control; it is not a host-wide GPU access lock.
 
 Completed jobs release their lane immediately. An authenticated terminal
-infrastructure HOLD also releases its lane while retaining the unresolved
-submission; it is not a candidate FAIL. Later jobs continue, but their final
-ranking and reward eligibility wait for every preceding submission in that arena
-to finish or receive an existing terminal disposition. `settlement_candidates`
+infrastructure HOLD releases its lane and economic priority while retaining the
+submission, failure reason and evidence; it is not a candidate FAIL or an automatic
+retry. Later PASSes can settle and earn. Unfinished submissions in that arena still
+block later ranking and reward eligibility. `settlement_candidates`
 retains `reward_eligible` once the completed prefix reaches a PASS, so reopening
 an older result cannot retract another miner's finalized credit. The dashboard
 and weight producer consume this same eligibility.
