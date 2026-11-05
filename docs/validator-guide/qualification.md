@@ -4,8 +4,8 @@ Qualification asks a narrow question: does one exact submitted delta improve one
 evaluation stack, in one registered arena, at acceptable quality?
 
 The production answer comes from the version-3 qualification protocol executed
-by a trusted host controller. One engine at a time owns the whole commissioned
-lane: a retained stock reference and fresh candidate boots replay the same
+by a trusted host controller. Every timed engine lifetime owns the whole commissioned
+lane alone: a retained stock reference and fresh candidate boots replay the same
 sealed agent workload on that lane. The answer does not come from a local diagnostic
 launch, candidate-side self-audit, miner report, or arbitrary evaluator command.
 
@@ -100,8 +100,9 @@ not change a qualification verdict.
 
 The version-3 protocol binds one physical lane — every GPU the arena's TP width
 names on the node — with one runtime namespace, lane-specific NUMA policy, exact
-workload, and a total qualification budget. One engine at a time owns the lane;
-there is no baseline lane and no second executor. Every boot conditions, flushes
+workload, and a total qualification budget. One engine at a time owns the lane for
+every timed lifetime; on a prefill/decode lane the two untimed roles after a PASS
+share it by halves (step 4). There is no baseline lane and no second executor. Every boot conditions, flushes
 its caches and replays the sealed `windows` N, and publishes native builds to one
 store under the commissioned root that later boots of the same tree reuse.
 
@@ -146,6 +147,12 @@ store under the commissioned root that later boots of the same tree reuse.
    bracket boot produced both and acted as a one-sided 1% drift sentinel; it
    cost 25.5 minutes per PASS and changed none of the PD arena's seven passing
    verdicts, so it was deleted. Retained evidence with a bracket still regrades.
+4. **Audit and pristine T.** The eager audit and pristine T need nothing from each
+   other: T scores trajectories and controls sealed by the speed stage. On a
+   prefill/decode lane they run at once, the audit on the prefill role's GPUs and T
+   on the decode role's GPUs, which are the only ones CUDA shows T. Each role's
+   device receipts drain and attest only its own half, and an audit `FAIL` or
+   `NO_DECISION` discards T's result. Other lanes run the audit, then T.
 
 Every replay record carries the engine-observed prompt token count and the
 controller's host timing, and the regrade rejects a window whose records differ
@@ -174,11 +181,14 @@ sequenceDiagram
     H->>H: on PASS, bind entropy to candidate quiescence, select quality prompts
     H->>H: take stock rollout and control from two stored stock boots
     H->>H: prove the speed executor quiescent
-    H->>A: run sealed audit-only plan
-    A-->>H: exact slot × rank witness
     H->>H: reveal the selection again; entropy must match
-    H->>T: run candidate-free quality authority
-    T-->>H: pristine quality evidence
+    par prefill/decode lane (other lanes: the audit, then T)
+        H->>A: run sealed audit-only plan on the prefill GPUs
+        A-->>H: exact slot × rank witness
+    and
+        H->>T: run candidate-free quality authority on the decode GPUs
+        T-->>H: pristine quality evidence
+    end
     H->>H: prove final quiescence and regrade
 ```
 
@@ -859,7 +869,7 @@ receipt and selects source occurrences from the last candidate boot's and the
 first stored stock boot's trajectories; the first boot of the second stored stock
 pair supplies each selected control from its own timed answers. Canonical input digests bind
 all three rollouts, and the speed stage retains the controls before the
-separate eager audit and pristine T run. Reopening selection after the audit must
+separate eager audit and pristine T run. Reopening selection before T must
 return the same retained entropy. Source identities use trace/outer/inner indices,
 so parallel child arrival order does not change which turn T evaluates.
 

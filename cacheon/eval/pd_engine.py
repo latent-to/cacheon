@@ -6,7 +6,8 @@ same worker serving HTTP on loopback. One request is one bootstrap room: the fac
 prefill server and hands it to the decode engine with the same room and DP rank, as SGLang's PD
 router does with ``--dp-aware``. Both roles inherit the session environment, so a bundle loads in
 both and both report coverage. Untimed roles (the eager audit, the pristine reference) run one
-colocated engine with the prefill role's settings, which size it for the long prefills it serves.
+colocated engine with the prefill role's settings, which size it for the long prefills it serves:
+the audit on the prefill role's GPUs and the reference on the decode role's, so they run at once.
 """
 
 from __future__ import annotations

@@ -37,7 +37,7 @@ flowchart TD
     C --> D["Qualification queue<br/>admission at first claim"]
     D -->|"copy of a loser"| F["Terminal invalid or attributable failure"]
     D -->|"post-crown commitment"| X["Returned unevaluated<br/>NO_DECISION, payment released"]
-    D -->|"claimed cohort"| Q["Replay speed vs retained stock reference<br/>audit, then pristine T"]
+    D -->|"claimed cohort"| Q["Replay speed vs retained stock reference<br/>audit and pristine T"]
     Q -->|"FAIL"| F
     Q -->|"NO_DECISION"| N["NO_DECISION / retry"]
     Q -->|"complete audited PASS"| S["Reopen retained evidence"]

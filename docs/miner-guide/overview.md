@@ -110,7 +110,8 @@ For a registered target, the validator constructs an exact marginal comparison:
 - **C**: the one-target-transition candidate, replaying the same workload in
   up to two fresh boots on the same lane;
 - **A**: a registered eager, untimed audit role for the candidate delta; and
-- **T**: a candidate-free pristine reference used after candidate teardown.
+- **T**: a candidate-free pristine reference used once the timed candidate boots
+  are torn down, beside A on a prefill/decode lane.
 
 The candidate does not choose the rest of the stack. One engine at a time owns
 the whole commissioned lane, and every boot replays the sealed workload for the

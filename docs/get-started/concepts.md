@@ -82,8 +82,9 @@ the `forward_pass` target and declares that it applies to BF16 calls on `sm90`.
    engine at a time owns the whole commissioned lane, and fresh candidate boots
    replay the sealed agent workload against a retained stock reference measured
    on that lane. A registered eager, untimed audit role
-   (**A**) then checks the candidate delta; after candidate teardown, the
-   pristine reference (**T**) supplies candidate-free quality evidence.
+   (**A**) then checks the candidate delta; after the timed candidate boots are
+   torn down, the pristine reference (**T**) supplies candidate-free quality
+   evidence, beside A on a prefill/decode lane.
 5. One complete audited PASS becomes `qualified` and eligible for settlement.
    Settlement reopens its retained evidence and may create the target crown;
    it does not schedule another qualification.

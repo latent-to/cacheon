@@ -64,7 +64,7 @@ proves registered measurement, not safe production source.
 | Candidate imports or patches trusted controller | Controller parses candidate as data and never imports candidate Python/native; complete engine runs in a separate OCI worker | A container/kernel/runtime escape can cross the boundary |
 | Candidate exfiltrates model/evidence | Runtime has no network, a disposable writable root, exact read-only validator mounts, a private writable cache, bounded protocol; prebuild has no model/GPU/network/home/wallet | GPU/driver side channels, co-tenancy, host compromise, and undiscovered runtime flaws remain possible |
 | Candidate tampers with timer or role | Host assigns the physical lane and the exact incumbent/candidate roles of every boot, owns clocks, validates every replay request's host timing and token counts, observes device state, and controls teardown | Host clocks, firmware, driver, and provider scheduling must be trustworthy and calibrated |
-| Candidate fakes quality | Any required audit is collected in a separate eager/untimed role and host-regraded; candidate speed lifetimes are destroyed before candidate-free pristine T teacher-forces sealed trajectories | Reference bugs, audit sampling limits, and finite hidden-work coverage remain possible |
+| Candidate fakes quality | Any required audit is collected in a separate eager/untimed role and host-regraded; candidate speed lifetimes are destroyed before candidate-free pristine T teacher-forces sealed trajectories | Reference bugs, audit sampling limits, and finite hidden-work coverage remain possible; on a prefill/decode lane the audit's candidate engine runs on the other GPU half while T scores, so GPU/driver side channels and contention reach T (contention can only deny the PASS) |
 | Candidate behaves only on known shapes/prompts | Post-commit selection, hidden work, typed graph requirements, and registered decode/long-prefill mixture | Workload overfitting cannot be eliminated; corpora and regimes need ongoing governance |
 | Candidate exploits noise | Sealed replay from flushed caches in fresh engine boots, a retained four-boot stock reference, a calibrated one-sided error budget at candidate boot boundaries, every window retained, and complete per-rank execution evidence before grading | Hardware drift since the stock reference was measured, boot-state outliers, cross-validator variance, and candidate-process receipt forgery remain operational concerns |
 | Candidate hangs or exhausts resources | Stage deadlines, CPU/memory/PID/file/shm/tmpfs bounds, cohort admission, retry budgets, forced container cleanup, durable leases | A GPU/driver hang may require host reset; sustained spam can still consume bounded capacity |
@@ -110,8 +110,9 @@ is bound to the exact candidate launch identity.
 ### “I will grade outputs that I know how to game”
 
 The candidate does not choose prompts, selection entropy, role, or quality reference. Its
-trajectory is sealed, the candidate is destroyed, and pristine T teacher-forces the
-selected trajectory and hidden work. This reduces self-grading and known-prompt attacks;
+trajectory is sealed, its speed lifetimes are destroyed, and pristine T teacher-forces the
+selected trajectory and hidden work, beside the candidate's eager audit on a
+prefill/decode lane. This reduces self-grading and known-prompt attacks;
 it does not eliminate finite-workload overfitting.
 
 ### “I will persist into the next candidate”

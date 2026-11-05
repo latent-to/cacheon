@@ -1041,7 +1041,8 @@ class OCIEngineExecutor:
         )
         self.session_runner = session_runner
         self.reference_session_runner = reference_session_runner
-        # One executor owns one manager, so its transaction lock serializes every lifecycle.
+        # One executor owns one manager, so its transaction lock serializes every lifecycle; only a pair
+        # lane's pristine T may run beside the owner's eager audit (execute_reference ``beside``).
         self._lock = self.manager.transaction_lock
         self._recovered: tuple[str, ...] | None = None
 
@@ -1067,6 +1068,7 @@ class OCIEngineExecutor:
         if not self._lock.acquire(blocking=False):
             raise OCIBackendError("executor manager already has an active transaction")
         try:
+            self._recover_once()  # recovery releases every lease, so it must not meet a beside T's
             yield self
         finally:
             self._lock.release()
@@ -1228,8 +1230,9 @@ class OCIEngineExecutor:
         model_root: Path,
         session_protocol: str,
         run: Callable[[AttachedSessionTransport, float, str, tuple], object],
+        gpu_ids: tuple[int, ...] | None = None,
     ) -> _RawRuntimeExecution:
-        """Own the common prebuild/lease/mount/teardown shell for ordinary and T."""
+        """Own the common prebuild/lease/mount/teardown shell for ordinary and T; drains cover ``gpu_ids``."""
 
         prebuild = run_oci_prebuild(
             launch,
@@ -1258,7 +1261,7 @@ class OCIEngineExecutor:
             self.config.prebuild.recovery_root,
         )
         launch_id = _new_runtime_id()
-        pre_receipt = self.device_guard.before_launch(launch_id, deadline=absolute)
+        pre_receipt = self.device_guard.before_launch(launch_id, deadline=absolute, gpu_ids=gpu_ids)
         post_receipt: DeviceStateReceipt | None = None
         value: object | None = None
         argv_digest = ""
@@ -1360,7 +1363,7 @@ class OCIEngineExecutor:
                     cleanup_failures.append(exc)
             try:
                 post_receipt = self.device_guard.after_launch(
-                    launch_id, deadline=absolute
+                    launch_id, deadline=absolute, gpu_ids=gpu_ids
                 )
             except BaseException as exc:
                 cleanup_failures.append(exc)
@@ -1415,16 +1418,17 @@ class OCIEngineExecutor:
             resolved, preflight, identity, expected, model_root = self._validate_launch(
                 launch, binding, mount, plan
             )
+            # The eager audit runs a PD pair's prefill role alone on the lane's first TP GPUs
+            # (pd_engine.colocated); requiring a process on the decode role's empty GPUs voided the PD
+            # arena's first audit (2026-10-28). Its receipts cover only those, so pristine T can run beside it.
+            colocated = plan.audit_policy is not None and pd_engine.is_pair(plan.engine_config.engine_kwargs)
+            engine_gpu_ids = self.device_guard.policy.physical_gpu_ids[:plan.engine_config.tp_size] if colocated else None
 
             def run(
                 transport: AttachedSessionTransport,
                 session_deadline: float,
                 launch_id: str,
             ) -> tuple[SessionExecutionEvidence, DeviceStateActiveReceipt]:
-                # The eager audit runs a PD pair's prefill role alone on the lane's first TP GPUs
-                # (pd_engine.colocated); requiring a process on the decode role's empty GPUs voided the PD
-                # arena's first audit (2026-10-28).
-                colocated = plan.audit_policy is not None and pd_engine.is_pair(plan.engine_config.engine_kwargs)
                 conditioner = _FinalWarmupConditioner(
                     self.device_guard,
                     launch_id=launch_id,
@@ -1432,8 +1436,7 @@ class OCIEngineExecutor:
                     first_timed_index=plan.warmup_count,
                     deadline=session_deadline,
                     clock=self.manager.clock,
-                    engine_gpu_ids=(self.device_guard.policy.physical_gpu_ids[:plan.engine_config.tp_size]
-                                    if colocated else None),
+                    engine_gpu_ids=engine_gpu_ids,
                 )
                 try:
                     kwargs = {
@@ -1473,6 +1476,7 @@ class OCIEngineExecutor:
                 model_root=model_root,
                 session_protocol="ordinary",
                 run=run,
+                gpu_ids=engine_gpu_ids,
             )
             if (
                 type(raw.value) is not tuple
@@ -1559,10 +1563,16 @@ class OCIEngineExecutor:
         completion_sink: (
             Callable[[PristineReferenceExecutionEvidence], None] | None
         ) = None,
+        beside: bool = False,
     ) -> PristineReferenceExecutionEvidence:
-        """Launch a separate empty-stack T and return only its raw transcript."""
+        """Launch a separate empty-stack T and return only its raw transcript.
 
-        if not self._lock.acquire(blocking=False):
+        A pair lane's T runs on the decode role's GPUs and drains only those, so the transaction owner may run
+        the eager audit on the prefill role's GPUs meanwhile; ``beside`` is that owner's helper thread.
+        """
+
+        locked = self._lock.acquire(blocking=False)
+        if not (locked or beside):
             raise OCIBackendError("one executor instance cannot run concurrent sessions")
         try:
             absolute = _deadline(deadline, clock=self.manager.clock)
@@ -1597,6 +1607,8 @@ class OCIEngineExecutor:
                 model_root=model_root,
                 session_protocol="reference",
                 run=run,
+                gpu_ids=(self.device_guard.policy.physical_gpu_ids[-plan.engine_config.tp_size:]
+                         if pd_engine.is_pair(plan.engine_config.engine_kwargs) else None),
             )
             if (
                 type(raw.value) is not ReferenceSessionEvidence
@@ -1609,7 +1621,7 @@ class OCIEngineExecutor:
             ):
                 raise OCIBackendError("reference runtime returned malformed raw evidence")
             receipts = (raw.pre_receipt, raw.post_receipt)
-            _validate_reference_device_receipts(receipts, launch_id=raw.launch_id)
+            _validate_device_receipts(receipts, launch_id=raw.launch_id)
             evidence = PristineReferenceExecutionEvidence(
                 "cacheon.oci-pristine-reference-execution.v1",
                 launch.digest,
@@ -1628,7 +1640,8 @@ class OCIEngineExecutor:
                 completion_sink(evidence)
             return evidence
         finally:
-            self._lock.release()
+            if locked:
+                self._lock.release()
 
 def _new_runtime_id() -> str:
     value = "runtime-" + secrets.token_hex(16)
@@ -1658,53 +1671,21 @@ def _validate_mount_roots(*roots: Path) -> None:
                 raise OCIBackendError("runtime mounts must not expose cwd/referee source")
 
 
-def _validate_device_receipts(
-    receipts: tuple[DeviceStateReceipt, DeviceStateActiveReceipt, DeviceStateReceipt],
-    *,
-    launch_id: str,
-) -> None:
-    pre, active, post = receipts
+def _validate_device_receipts(receipts: tuple, *, launch_id: str) -> None:
+    """One launch's pre drain, an ordinary session's final-warmup conditioning, then its post drain, in order."""
+    pre, *active, post = receipts
     if (
-        type(pre) is not DeviceStateReceipt
-        or type(active) is not DeviceStateActiveReceipt
-        or type(post) is not DeviceStateReceipt
-        or (pre.phase, active.event, post.phase) != ("pre", "final-warmup", "post")
+        len(active) > 1
+        or tuple(map(type, receipts))
+        != (DeviceStateReceipt, *(DeviceStateActiveReceipt,) * len(active), DeviceStateReceipt)
+        or (pre.phase, *(row.event for row in active), post.phase) != ("pre", *("final-warmup",) * len(active), "post")
         or any(row.launch_id != launch_id for row in receipts)
-        or not (pre.sequence < active.sequence < post.sequence)
-        or len({row.selected_physical_gpu_ids for row in receipts}) != 1
-        or len({row.configuration_sha256 for row in receipts}) != 1
-        or len({row.policy_sha256 for row in receipts}) != 1
-        or not (
-            pre.completed_monotonic_s
-            <= active.started_monotonic_s
-            <= active.completed_monotonic_s
-            <= post.started_monotonic_s
-            <= post.completed_monotonic_s
-        )
+        or len({(row.selected_physical_gpu_ids, row.configuration_sha256, row.policy_sha256) for row in receipts}) != 1
+        or not all(left.sequence < right.sequence
+                   and left.completed_monotonic_s <= right.started_monotonic_s <= right.completed_monotonic_s
+                   for left, right in zip(receipts, receipts[1:]))
     ):
-        raise OCIBackendError("device pre/active/post receipt triplet is invalid")
-
-
-def _validate_reference_device_receipts(
-    receipts: tuple[DeviceStateReceipt, DeviceStateReceipt],
-    *,
-    launch_id: str,
-) -> None:
-    pre, post = receipts
-    if (
-        type(pre) is not DeviceStateReceipt
-        or type(post) is not DeviceStateReceipt
-        or (pre.phase, post.phase) != ("pre", "post")
-        or pre.launch_id != launch_id
-        or post.launch_id != launch_id
-        or pre.sequence >= post.sequence
-        or pre.selected_physical_gpu_ids != post.selected_physical_gpu_ids
-        or pre.configuration_sha256 != post.configuration_sha256
-        or pre.policy_sha256 != post.policy_sha256
-        or pre.completed_monotonic_s > post.started_monotonic_s
-        or post.started_monotonic_s > post.completed_monotonic_s
-    ):
-        raise OCIBackendError("reference device pre/post receipt pair is invalid")
+        raise OCIBackendError("device pre/active/post receipts are invalid")
 
 
 __all__ = [

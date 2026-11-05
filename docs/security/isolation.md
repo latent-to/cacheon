@@ -121,7 +121,10 @@ deadline, and evidence identities remain exact.
 
 When a qualification plan requires sampled slot audit, the candidate also runs in a
 separate eager, untimed role. Its bounded facts are host-regraded and cannot be mixed into
-the charged speed evidence.
+the charged speed evidence. On a prefill/decode lane it holds the prefill role's GPUs while
+candidate-free pristine T scores on the decode role's GPUs in its own container, each
+attested only on its half. The audit container still has device nodes for every lane GPU:
+a hostile audit can slow or crash T, which denies the PASS, but cannot reach T's memory.
 
 ### 5. Pristine reference
 

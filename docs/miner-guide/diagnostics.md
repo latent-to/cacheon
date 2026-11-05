@@ -27,7 +27,7 @@ The production SQLite state machine currently exposes these statuses:
 | `fetching` | HTTPS fetch/extract/hash/publication work is active |
 | `transport_retry` | transient transport failure is eligible for another fetch attempt |
 | `published` | immutable worker publication and selected-delta identity exist; waiting in the qualification queue |
-| `qualifying` | one authority-bound version-3 attempt—candidate boots against the retained stock reference, registered eager audit A, then pristine T—is active |
+| `qualifying` | one authority-bound version-3 attempt—candidate boots against the retained stock reference, then registered eager audit A and pristine T—is active |
 | `reproduction_pending` | historical transition; a retained complete primary PASS is accepted on restart without another GPU run |
 | `qualified` | one complete audited PASS is retained; settlement is separate |
 | `no_decision` | retryable qualification evidence/failure product was retained |

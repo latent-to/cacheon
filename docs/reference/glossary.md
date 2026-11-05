@@ -46,7 +46,8 @@
 **Qualification**
 : The complete registered evidence procedure: a sealed current speed
   schedule (candidate boots against a retained stock reference, speed policy 19);
-  registered eager audit A; candidate teardown; pristine T quality grading;
+  registered eager audit A and pristine T quality grading (at once on a
+  prefill/decode lane, else in turn);
   exact-schema decision; and retained evidence.
 
 **Reproduction pending**

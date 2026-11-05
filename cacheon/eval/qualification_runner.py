@@ -1750,9 +1750,9 @@ def _validate_reference_execution(
             expected.expected_runtime_resource_policy_digest,
             expected.pristine_binding.native_build_spec.digest, plan_digest, session_digest,
             expected_requests)
-        or pre[2] != post[2] or pre[1] >= post[1] or pre[4] != post[4]
-        or pre[5:7] != post[5:7] or pre[6] != expected.expected_device_policy_digest
-        or len(pre[4]) != expected.pristine_launch.hardware.visible_gpu_count
+        or pre[2] != post[2] or pre[1] >= post[1] or pre[4:7] != post[4:7] or pre[6] != expected.expected_device_policy_digest
+        or len(pre[4]) not in {expected.pristine_launch.hardware.visible_gpu_count,  # a pair's T: its decode GPUs
+                               expected.pristine_launch.hardware.tp_size}
         or float(pre[7]) < attempt.entropy_observed_monotonic_s
         or float(pre[8]) > float(post[7])
         or float(post[8]) > attempt.teardown_after_t.observed_monotonic_s

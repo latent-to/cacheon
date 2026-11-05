@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import math
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from cacheon.audit_gate import infrastructure_failure
+from cacheon.eval import pd_engine
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,7 @@ def run_continuation_quality_stage(
     speed = resident_speed_witness
     recovery = {} if continuation is None else getattr(continuation, "worker_recovery", {})
     execution_value = (getattr(continuation, "replacement_execution", None) or value)
+    reference_value = recovery["quality"].execution if "quality" in recovery else execution_value
     current_clock = continuation.checkpoint_origin["boot"] if recovery else ""
     stage_clock = lambda stage: recovery[stage].origin["boot"] if stage in recovery else current_clock
     speed_same_clock = not recovery or stage_clock("speed") == current_clock
@@ -98,8 +101,76 @@ def run_continuation_quality_stage(
             raise owner.QualificationContinuationError(
                 "retained qualification exhausted its execution budget"
             )
+    # After a speed PASS a pair lane's pristine T scores the sealed trajectories on the decode GPUs while the
+    # eager audit runs on the prefill GPUs (2026-11-05); T needs nothing from the audit, whose FAIL discards T.
+    beside = (audit_state is None and quality_state is None and speed_grade is owner.QualificationDecision.PASS
+              and pd_engine.is_pair(reference_value.reference_engine_config.engine_kwargs))
+
+    def quality_inputs() -> tuple[Any, ...]:
+        """Pre-T quiescence, entropy, selection, requests and T's plan: fresh, or retained by the quality record."""
+        if quality_state is None:
+            teardown_before = executor.prove_quiescent()
+            # Bind quiescence to the last engine lifetime on the lane: the last
+            # candidate boot, a retained stock bracket, or a completed audit.
+            last_post = max(owner._lifecycle_causal_completion(lifecycle) if speed_same_clock else 0.0,
+                audit_state.audit_last_completed if audit_state is not None
+                and stage_clock("audit") == current_clock else 0.0)
+            if teardown_before.observed_monotonic_s < last_post:
+                raise owner.QualificationRunnerError("pre-T quiescence predates the final baseline teardown")
+            # Replay controls bound this entropy to the candidate's last lane, which V17 swaps away
+            # from this executor (every V17 PASS failed here, 2026-09-30); present that lane's receipt.
+            bound = lifecycle.crossover.candidate_quiescence
+            entropy = (lifecycle.crossover.quality_entropy if recovery
+                       else entropy_provider(value.commitment, bound))
+            if type(entropy) is not owner.SelectionEntropyReceipt:
+                raise owner.QualificationRunnerError("entropy provider returned an untyped receipt")
+            entropy_observed = float(executor.manager.clock())
+            if not math.isfinite(entropy_observed) or entropy_observed < teardown_before.observed_monotonic_s:
+                raise owner.QualificationRunnerError("entropy observation predates teardown")
+        else:
+            teardown_before = quality_state.teardown_before
+            entropy = quality_state.entropy
+            entropy_observed = float(quality_state.entropy_observed)
+        selection = owner.SelectionReceipt.reveal(
+            value.commitment, secret=value.selection_secret, entropy=entropy,
+            sealed_cohort_trajectory_digest=owner.cohort_trajectory_digest(lifecycle),
+        )
+        if entropy != lifecycle.crossover.quality_entropy:
+            raise owner.QualificationContinuationError("replay control selection entropy changed after execution")
+        request_plan_digest = owner.canonical_digest(
+            "cacheon.qualification.reference-request-plan",
+            {"candidate_deltas": [row.selected_delta_digest for row in value.candidates],
+             "cohort_trajectory_digest": owner.cohort_trajectory_digest(lifecycle),
+             "reference_manifest_digest": value.candidates[0].profile.reference.digest,
+             "selection_digest": selection.digest,
+             "speed_evidence_policy": value.speed_evidence_policy.to_dict(),
+             "resident_speed_evidence": speed.evidence_digest},
+        )
+        if quality_state is None:
+            session_id = make_id()
+            requests = tuple(owner._reference_request(
+                lifecycle, authority, selection, session_id=session_id,
+                plan_digest=request_plan_digest, request_id=make_id(), nonce=make_id(), index=index,
+            ) for index, authority in enumerate(reference_value.candidates))
+        else:
+            requests = quality_state.requests
+            if len(requests) != len(value.candidates) or any(row.plan_digest != request_plan_digest for row in requests):
+                raise owner.QualificationContinuationError(
+                    "quality continuation requests differ from the sealed request plan"
+                )
+        plan = owner.ReferenceSessionPlan(
+            reference_value.candidates[0].profile.reference, reference_value.pristine_stack,
+            reference_value.reference_engine_config.digest, reference_value.reference_engine_config,
+            reference_value.reference_preflight, request_plan_digest, requests,
+        )
+        return teardown_before, entropy, entropy_observed, selection, requests, plan
 
     with executor.exclusive_transaction() if quality_state is None else nullcontext():
+        if beside:
+            teardown_before, entropy, entropy_observed, selection, requests, plan = quality_inputs()
+            t_operation = _t_operation_digest(value, plan, owner)
+            t_nonce = "" if continuation is None else continuation.arm_evaluator("t", t_operation)
+            pool = ThreadPoolExecutor(1, thread_name_prefix="cacheon-pristine-t")
         if audit_state is None:
             completed_audits = []
             nonce = "" if continuation is None else continuation.arm_evaluator("audit", audit_operation)
@@ -115,11 +186,16 @@ def run_continuation_quality_stage(
                 continuation.record_audit(record)
                 completed_audits.append(record)
 
-            witnesses, last_completed = owner._run_slot_audits(
-                execution_value, lifecycle, executor=executor, deadline=float(deadline),
-                completion_sink=commit_audit if continuation is not None else None,
-                same_clock=speed_same_clock,
-            )
+            with pool if beside else nullcontext():  # leaving waits for T, however the audit ends
+                if beside:  # after audit_started, which the timing witness orders before T
+                    beside_t = pool.submit(executor.execute_reference, reference_value.pristine_launch,
+                                           reference_value.pristine_binding, reference_value.model_mount, plan,
+                                           deadline=float(deadline), beside=True)
+                witnesses, last_completed = owner._run_slot_audits(
+                    execution_value, lifecycle, executor=executor, deadline=float(deadline),
+                    completion_sink=commit_audit if continuation is not None else None,
+                    same_clock=speed_same_clock,
+                )
             if continuation is None:
                 audit_state = owner.AuditContinuation(
                     nonce, audit_operation, tuple(witnesses.items()), audit_started,
@@ -175,69 +251,17 @@ def run_continuation_quality_stage(
                 continuation.record_final(reference)
             return QualificationContinuationStageResult(True, reference)
 
-        if quality_state is None:
-            teardown_before = executor.prove_quiescent()
-            # Bind quiescence to the last engine lifetime on the lane: the last
-            # candidate boot, or a retained stock bracket.
-            last_post = max(owner._lifecycle_causal_completion(lifecycle) if speed_same_clock else 0.0,
-                audit_state.audit_last_completed if stage_clock("audit") == current_clock else 0.0)
-            if teardown_before.observed_monotonic_s < last_post:
-                raise owner.QualificationRunnerError("pre-T quiescence predates the final baseline teardown")
-            # Replay controls bound this entropy to the candidate's last lane, which V17 swaps away
-            # from this executor (every V17 PASS failed here, 2026-09-30); present that lane's receipt.
-            bound = lifecycle.crossover.candidate_quiescence
-            entropy = (lifecycle.crossover.quality_entropy if recovery
-                       else entropy_provider(value.commitment, bound))
-            if type(entropy) is not owner.SelectionEntropyReceipt:
-                raise owner.QualificationRunnerError("entropy provider returned an untyped receipt")
-            entropy_observed = float(executor.manager.clock())
-            if not math.isfinite(entropy_observed) or entropy_observed < teardown_before.observed_monotonic_s:
-                raise owner.QualificationRunnerError("entropy observation predates teardown")
-        else:
-            teardown_before = quality_state.teardown_before
-            entropy = quality_state.entropy
-            entropy_observed = float(quality_state.entropy_observed)
-        selection = owner.SelectionReceipt.reveal(
-            value.commitment, secret=value.selection_secret, entropy=entropy,
-            sealed_cohort_trajectory_digest=owner.cohort_trajectory_digest(lifecycle),
-        )
-        if entropy != lifecycle.crossover.quality_entropy:
-            raise owner.QualificationContinuationError("replay control selection entropy changed after execution")
-        request_plan_digest = owner.canonical_digest(
-            "cacheon.qualification.reference-request-plan",
-            {"candidate_deltas": [row.selected_delta_digest for row in value.candidates],
-             "cohort_trajectory_digest": owner.cohort_trajectory_digest(lifecycle),
-             "reference_manifest_digest": value.candidates[0].profile.reference.digest,
-             "selection_digest": selection.digest,
-             "speed_evidence_policy": value.speed_evidence_policy.to_dict(),
-             "resident_speed_evidence": speed.evidence_digest},
-        )
-        reference_value = recovery["quality"].execution if "quality" in recovery else execution_value
-        if quality_state is None:
-            session_id = make_id()
-            requests = tuple(owner._reference_request(
-                lifecycle, authority, selection, session_id=session_id,
-                plan_digest=request_plan_digest, request_id=make_id(), nonce=make_id(), index=index,
-            ) for index, authority in enumerate(reference_value.candidates))
-        else:
-            requests = quality_state.requests
-            if len(requests) != len(value.candidates) or any(row.plan_digest != request_plan_digest for row in requests):
-                raise owner.QualificationContinuationError(
-                    "quality continuation requests differ from the sealed request plan"
-                )
-        plan = owner.ReferenceSessionPlan(
-            reference_value.candidates[0].profile.reference, reference_value.pristine_stack,
-            reference_value.reference_engine_config.digest, reference_value.reference_engine_config,
-            reference_value.reference_preflight, request_plan_digest, requests,
-        )
-        t_operation = _t_operation_digest(value, plan, owner)
+        if not beside:
+            teardown_before, entropy, entropy_observed, selection, requests, plan = quality_inputs()
+            t_operation = _t_operation_digest(value, plan, owner)
         if quality_state is not None:
             if quality_state.t_operation_digest != t_operation:
                 raise owner.QualificationContinuationError("quality continuation differs from its pristine-T claim")
             reference_execution = quality_state.reference_execution
             teardown_after = quality_state.teardown_after
         else:
-            t_nonce = "" if continuation is None else continuation.arm_evaluator("t", t_operation)
+            if not beside:
+                t_nonce = "" if continuation is None else continuation.arm_evaluator("t", t_operation)
             quality_completion = []
 
             def close_reference(execution: Any) -> Any:
@@ -260,12 +284,17 @@ def run_continuation_quality_stage(
                 ))
                 quality_completion.append((execution, completed))
 
-            reference_execution = executor.execute_reference(
-                reference_value.pristine_launch, reference_value.pristine_binding,
-                reference_value.model_mount, plan,
-                deadline=float(deadline),
-                completion_sink=commit_quality if continuation is not None else None,
-            )
+            if beside:
+                reference_execution = beside_t.result()  # T's own failure surfaces once the audit is durable
+                if continuation is not None:
+                    commit_quality(reference_execution)
+            else:
+                reference_execution = executor.execute_reference(
+                    reference_value.pristine_launch, reference_value.pristine_binding,
+                    reference_value.model_mount, plan,
+                    deadline=float(deadline),
+                    completion_sink=commit_quality if continuation is not None else None,
+                )
             if continuation is not None and (
                 len(quality_completion) != 1 or quality_completion[0][0] is not reference_execution
             ):
