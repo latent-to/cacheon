@@ -63,7 +63,7 @@ request = seal_remote_request(claim.lease, readiness, registration["service_iden
 transport = DurableSpoolAuthenticatedWorkerTransport(
     registration_path=paths.registration, spool_root=WORK / "spool", credential_path=Path(registration["credential_path"]),
     qualification_publication_resolver=make_qualification_publication_resolver(
-        intake_db=DB, policy=POLICY, scope=SCOPE, store_factory=FinalizedIntakeStore))
+        intake_db=DB, policy=POLICY, scope=SCOPE, store_factory=FinalizedIntakeStore, lock_attempts=1000, lock_retry_delay_s=0.1))
 plan = transport.plan_qualification_request(request)
 transport.materialize_planned_qualification(plan, request)
 carrier = transport.publish_planned_qualification(plan).carrier_path
