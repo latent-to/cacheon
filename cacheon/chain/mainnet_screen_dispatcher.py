@@ -20,6 +20,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, NoReturn
@@ -37,7 +38,7 @@ from cacheon.chain.evaluation_coordinator import (
     EvaluationCoordinator,
     WorkerReadiness,
 )
-from cacheon.chain.intake import IntakePolicy, IntakeScope
+from cacheon.chain.intake import IntakeError, IntakePolicy, IntakeScope, is_lock_collision
 from cacheon.chain.publication import reopen_worker_bundle
 from cacheon.chain.recoverable_intake import RecoverableFinalizedIntakeStore
 from cacheon.chain.remote_evaluation_dispatcher import (
@@ -474,6 +475,8 @@ def make_qualification_publication_resolver(
     policy: IntakePolicy,
     scope: IntakeScope,
     store_factory: Callable[..., Any],
+    lock_attempts: int,
+    lock_retry_delay_s: float,
 ) -> Callable[[object], tuple[Any, ...]]:
     """Reopen intake-backed publications for one sealed qualification request.
 
@@ -486,6 +489,18 @@ def make_qualification_publication_resolver(
     if not callable(store_factory):
         raise MainnetScreenDispatcherError("store_factory is not callable")
 
+    def open_store() -> Any:
+        # Another pair, arena, settlement or intake pass may hold the shared store's flock. A bare
+        # open failed a concurrent pair closed (CI, 2026-11-05); wait within the coordinator's bound.
+        for attempt in range(lock_attempts):
+            try:
+                return store_factory(intake_db, policy, scope=scope)
+            except IntakeError as exc:
+                if not is_lock_collision(exc) or attempt + 1 == lock_attempts:
+                    raise
+            time.sleep(lock_retry_delay_s)
+        raise MainnetScreenDispatcherError("lock_attempts is not positive")
+
     def resolve(request: object) -> tuple[Any, ...]:
         if type(request) is not RemoteEvaluationRequest or request.stage != "qualification":
             raise RemoteEvaluationDispatcherError(
@@ -497,7 +512,7 @@ def make_qualification_publication_resolver(
                 "qualification publication resolver candidates are malformed"
             )
         snapshots: list[tuple[object, str, str, dict[str, object]]] = []
-        store = store_factory(intake_db, policy, scope=scope)
+        store = open_store()
         try:
             for candidate in candidates:
                 if type(candidate) is not dict:
@@ -621,6 +636,8 @@ def build_coordinator_and_transport(
         policy=config.policy,
         scope=config.scope,
         store_factory=resolved_store_factory,
+        lock_attempts=config.lock_attempts,
+        lock_retry_delay_s=config.lock_retry_delay_s,
     )
     try:
         transport = DurableSpoolAuthenticatedWorkerTransport(
