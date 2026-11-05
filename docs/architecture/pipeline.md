@@ -138,7 +138,7 @@ At an evaluation boundary, the validator freezes:
 
 Each candidate stack is the frozen incumbent with exactly one registered target delta.
 Production qualification gives one engine at a time the whole commissioned TP lane.
-The stock reference, the candidate boots and any stock bracket run in turn on that
+The stock reference and the candidate boots run in turn on that
 lane; the schedule is part of the sealed speed policy, not a scheduler preference.
 
 Qualification constructs a fresh, candidate-specific authority and retains each speed,
@@ -165,7 +165,7 @@ after a speed non-PASS, pristine T does not, and the verdict stays the speed gra
 
 | Arm | Stack | Timed? | Purpose |
 |---|---|---:|---|
-| B | Exact frozen incumbent on the commissioned lane | Yes | Retained stock reference; after a speed PASS, the stock bracket boot and the selected stock-drift controls |
+| B | Exact frozen incumbent on the commissioned lane | Yes | Retained stock reference, whose stored answers supply the selected stock-drift controls after a speed PASS |
 | C | Incumbent plus one exact target delta on the same lane | Yes | Candidate boots and sealed trajectory |
 | A | Candidate in a separate eager, untimed role | No | Registered sampled slot audit and typed host regrade |
 | T | Pristine candidate-free reference | No | Teacher-forced semantic quality and hidden tasks |
@@ -184,9 +184,8 @@ The sealed stopping rule, not the candidate, decides how many candidate boots
 run, and the regrade checks that the retained boots stopped exactly where the
 rule stops. Every engine conditions and flushes before each window, and every
 window is retained. The last candidate boot yields PASS or FAIL; a sealed futility
-margin may FAIL the stage after the first boot. Invalid stock evidence, including
-a stock bracket that reads faster than its reference, cannot produce a candidate
-verdict.
+margin may FAIL the stage after the first boot. Invalid stock evidence cannot
+produce a candidate verdict.
 
 When the registered plan requires sampled slot audit, a separate eager, untimed candidate
 role emits bounded raw facts. The trusted host grades exact slot × TP-rank/process coverage

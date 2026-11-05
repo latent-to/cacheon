@@ -58,8 +58,7 @@ The **execution unit** is a complete engine. Production version-3 qualification
 materializes the exact incumbent and one-target-transition candidate engines and
 measures them with the retained-reference speed policies: one engine at a time owns the whole
 commissioned TP lane. Fresh candidate boots replay the sealed agent workload and
-are graded against a retained stock reference measured on the same lane; after a
-speed PASS a stock bracket boot rechecks that reference. PD policy 21 measures
+are graded against a retained stock reference measured on the same lane. PD policy 21 measures
 the reference as two stock pairs, each the first two engine lifetimes of its own
 evaluator process, the position every candidate pair holds. Retained policy 16–18
 evidence keeps its original contract. The candidate

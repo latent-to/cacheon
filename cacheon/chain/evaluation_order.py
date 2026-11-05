@@ -88,7 +88,7 @@ def payment_bar(db, stack, reservation_id: str) -> str:
 
     That is 1.5 percent over the best rewarded PASS that arrived before it in the stack's reward
     group, or over stock; a grandfathered runtime pays every PASS. The dispatcher seals it into a
-    new request and a speed PASS below it ends as a FAIL, skipping the stock bracket, audit and T
+    new request and a speed PASS below it ends as a FAIL, skipping the quality controls, audit and T
     (Shiv, 2026-10-30). Should the crown above it later be revoked, that FAIL stands; re-run it.
     """
     if stack.runtime_digest in reward_grandfathered_runtimes(db):

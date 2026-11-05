@@ -424,9 +424,9 @@ def reference_grade(
     divides by the candidate's boot count. Looks fall at candidate boot boundaries under v17's
     alpha-spending table: the first boot can only end the stage on the sealed futility margin.
 
-    A PASS carries one fresh stock lifetime read after it. Stock reading faster than its reference
-    beyond one-sided 1% would inflate every gain measured against that reference, so the PASS becomes
-    an infrastructure NO_DECISION, never a candidate FAIL.
+    PASS evidence retained before 2026-11-05 carries one fresh stock lifetime read after it. Stock reading
+    faster than its reference beyond one-sided 1% made that PASS an infrastructure NO_DECISION, never a
+    candidate FAIL; new evidence carries no sentinel.
 
     ``decode_floor`` (version 20) also holds the pooled per-user decode p50 to the contract's floor at
     every look: a candidate below it fails, since served tokens bought by slowing every user are not

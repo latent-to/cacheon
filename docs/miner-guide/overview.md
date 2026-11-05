@@ -122,11 +122,9 @@ may seal a futility margin (the GLM arena seals 1.5%): a first candidate boot
 that reads more than that much slower fails without running the second. There is
 no separate admission screen.
 
-After a speed PASS a fresh stock bracket boot rechecks the reference and
-generates the quality gate's stock-drift controls; a stock bracket faster than
-its reference makes the result `NO_DECISION`, never a FAIL. Then A supplies the
-registered sampled slot regrade, and T prevents “fast because behavior changed”
-from becoming a win.
+After a speed PASS the quality gate takes its stock-drift controls from the
+retained stock reference. Then A supplies the registered sampled slot regrade,
+and T prevents “fast because behavior changed” from becoming a win.
 
 One complete audited PASS qualifies a proposal for settlement; no reproduction
 run is scheduled. After the complete audited attempt, the durable intake state is

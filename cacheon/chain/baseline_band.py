@@ -117,7 +117,7 @@ def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
             for index, read in enumerate(windows):
                 work = fixed_work_rate(read, expected)
                 elapsed = fixed_work_rate(read, expected, wall_time=True)
-                # Version 19 retains whole boots: reference boots, then the bracket, per arm.
+                # Version 19 retains whole boots: reference boots, then any retained bracket, per arm.
                 boot = {"boot": index // reads.window_limit} if reads.boots else {}
                 arm.append({"role": role, "window": read.window, "load": read.load,
                             "physical_lane": read.lane, **boot,

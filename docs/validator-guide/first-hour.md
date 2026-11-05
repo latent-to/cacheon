@@ -260,8 +260,8 @@ calibration requirements of this commissioning step.
 
 For resident authority, also confirm that every engine boot conditions and flushes
 before each window, the first qualification on a lane measures and publishes the
-four-boot stock reference while later ones reuse it, a speed PASS runs the stock
-bracket boot, and the lane proves quiescence before audit/T.
+four-boot stock reference while later ones reuse it, and the lane proves
+quiescence before audit/T.
 
 ## 9. Commission the signer separately
 

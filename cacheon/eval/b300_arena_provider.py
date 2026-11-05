@@ -122,7 +122,7 @@ class B300DeploymentAuthorities:
     particular, private selection-secret lookup, plan construction, entropy,
     hidden judging, the executor lifecycle, and the absolute deadline remain
     explicit deployment inputs.  One executor owns the whole lane: it runs the
-    stock reference, the candidate, and the stock bracket in turn.
+    stock reference and the candidate in turn.
     """
 
     runtime_identity: ArenaRuntimeIdentity

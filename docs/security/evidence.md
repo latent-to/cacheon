@@ -139,7 +139,7 @@ desired verdict:
 2. Reopen the exact target catalog, stack/tree, launch, model, and native identities.
 3. Authenticate each evidence artifact by domain, schema, size, and digest.
 4. Validate the exact boot and window schedule and stopping point required by
-   the witness version, the reference, candidate and any stock bracket boots on
+   the witness version, the reference, candidate and any pre-2026-11-05 stock bracket boots on
    one physical lane, turn records and host timing, then regrade speed under
    frozen calibration.
 5. Regrade graph observations against the frozen requirement.
@@ -197,7 +197,7 @@ terminal speed exit with one, and audit recovery cannot overturn either speed ex
 
 Start with the settlement candidate and its retained qualification attempt.
 Regrade the exact boot schedule, reference and candidate turn records, stopping
-point, stock bracket and calibration, then verify audit, selection, candidate-free T and the live target
+point, any pre-2026-11-05 stock bracket and calibration, then verify audit, selection, candidate-free T and the live target
 transition.
 New bundles require one complete audited PASS. Historical paired qualifications
 retain their original identities and conservative settlement rule. Dashboard

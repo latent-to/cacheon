@@ -1,10 +1,10 @@
 """Run replay engine lifetimes on one lane and grade them through the service scorer.
 
 Version 19 gives one engine the whole node. A stock reference campaign is measured once per lane
-identity and retained; each candidate reads whole lifetimes against it; a PASS adds one stock bracket
-lifetime that is both the drift sentinel and the incumbent quality control. Paired read sets (versions
-16-18) stay readable for the witnesses that retain them. Version 21 reads stock and candidate only as
-the first two engine lifetimes of their own evaluator process: the reference is two such stock pairs.
+identity and retained; each candidate reads whole lifetimes against it, and a PASS takes its quality controls
+from it (Shiv deleted the post-PASS stock bracket 2026-11-05: 25.5 node-minutes, no PD verdict changed).
+Paired read sets (versions 16-18) stay readable for the witnesses that retain them. Version 21 reads stock and
+candidate only as the first two engine lifetimes of their own evaluator process: the reference is two stock pairs.
 """
 
 from __future__ import annotations
@@ -123,7 +123,7 @@ class GoodputReadSet:
     and up to ``boots`` candidate lifetimes, every lifetime ``window_limit`` windows on one lane.
 
     ``payment_bar`` is the speedup settlement would pay, sealed by the dispatcher in the request. A PASS
-    below it grades FAIL, so it ends before the stock bracket, audit and T (Shiv, 2026-10-30).
+    below it grades FAIL, so it ends before the quality controls, audit and T (Shiv, 2026-10-30).
     """
 
     incumbent: tuple[LoadRead, ...]
@@ -241,8 +241,8 @@ def _tokenizer(plan):
                                          trust_remote_code=True, local_files_only=True)
 
 
-def _boot(executor, arm, lane, model_mount, *, prefix, deadline, tokenizer, after=None):
-    """Run one engine lifetime's sealed windows; ``after`` runs on the still-open engine.
+def _boot(executor, arm, lane, model_mount, *, prefix, deadline, tokenizer):
+    """Run one engine lifetime's sealed windows.
 
     The replay's bodies are tokenized while the engine boots, once per evaluator process. Before the windows, this
     process's live objects move out of the collector's reach (``gc.freeze``): a later lifetime starts with the heap
@@ -273,8 +273,6 @@ def _boot(executor, arm, lane, model_mount, *, prefix, deadline, tokenizer, afte
             return await asyncio.wait_for(task, timeout=read_plan.max_work_seconds or None)
 
         asyncio.run(bounded_replay())
-        if after is not None:
-            held["after"] = after(controller, held["directory"])
         return controller.finish(require_all=False)
 
     try:
@@ -282,7 +280,7 @@ def _boot(executor, arm, lane, model_mount, *, prefix, deadline, tokenizer, afte
                                             deadline=deadline, driver=drive)
     finally:
         primer.shutdown(wait=True)
-    return execution, executor.prove_quiescent(), held["directory"], held.get("after")
+    return execution, executor.prove_quiescent(), held["directory"]
 
 
 def _reference_pointer(plan, evidence_root) -> Path:
@@ -385,7 +383,7 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
         }), domain=REFERENCE_DOMAIN, media_type="application/json", schema=REFERENCE_SCHEMA,
             max_bytes=_REFERENCE_BYTES)
         if paired and target == pointer:
-            # Before the pointer exists, so a reference the sentinel later retires never lends its first pair.
+            # Before the pointer exists, so a reference retired later never lends its first pair.
             first.rename(first.with_name(f"{first.stem}.merged-{time.time_ns()}.json"))
         target.parent.mkdir(mode=0o700, exist_ok=True)
         with target.open("x") as handle:
@@ -413,7 +411,7 @@ def _expected(replay):
 
 def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root, deadline, clock,
                         quality_control, payment_bar=""):
-    """Read whole candidate lifetimes against the reference; a PASS adds the stock bracket lifetime."""
+    """Read whole candidate lifetimes against the reference; a PASS draws its quality controls from it."""
     from cacheon.eval.crossover_runtime import ResidentCrossoverEvidence, _lane_digest
 
     if not callable(quality_control):
@@ -437,23 +435,13 @@ def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root
         grade = reads.grade(plan.policy.goodput)
         if grade.decision is not SpeedStageDecision.NO_DECISION:
             break
-    candidate, candidate_quiet, candidate_directory, _ = boots[-1]
-    bracket, bracket_quiet, quality = None, candidate_quiet, ((), (), None)
+    candidate, candidate_quiet, candidate_directory = boots[-1]
+    pairs, controls, entropy = ((), (), None)
     if grade.decision is SpeedStageDecision.PASS:
-        bracket, bracket_quiet, _, quality = _boot(
-            executor, plan.baseline, lane, model_mount, prefix="incumbent", deadline=deadline, tokenizer=tokenizer,
-            after=lambda controller, directory: quality_control(
-                controller, candidate, directory, candidate_directory, candidate_quiet))
-        reads = replace(reads, incumbent=stock + bracket.session.replay_reads)
-        grade = reads.grade(plan.policy.goodput)
-        if grade.decision is SpeedStageDecision.NO_DECISION:
-            # The sentinel closed this reference; the next qualification measures a new campaign.
-            pointer = _reference_pointer(plan, evidence_root)
-            pointer.rename(pointer.with_name(f"{pointer.stem}.retired-{time.time_ns()}.json"))
-    pairs, controls, entropy = quality
+        pairs, controls, entropy = quality_control(reference, candidate, candidate_directory, candidate_quiet)
     evidence = ResidentCrossoverEvidence(
         plan.digest, plan.selected_delta_digest, plan.policy, marginal_workload_digest(plan.baseline.session_plan),
-        lane, lane, bracket, candidate, bracket_quiet, candidate_quiet, (), grade.verdict, grade.verdict, False,
+        lane, lane, None, candidate, candidate_quiet, candidate_quiet, (), grade.verdict, grade.verdict, False,
         grade.decision, "clear_" + grade.decision.value.lower(), started, float(clock()), goodput=reads,
         prompt_pairs=pairs, reference_inputs=controls, quality_entropy=entropy,
         prior_executions=(*reference, *(row[0] for row in boots[:-1])),
@@ -464,7 +452,7 @@ def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root
 
 
 def regrade_reference_speed(evidence, plan):
-    """Regrade a stage from its retained lifetimes: reference, candidate boots, then any stock bracket."""
+    """Regrade a stage from its retained lifetimes: reference, candidate boots, then any retained stock bracket."""
     from cacheon.eval.crossover_runtime import _expected_lane_digest
 
     replay = plan.candidate.session_plan.replay
@@ -508,19 +496,19 @@ def regrade_reference_speed(evidence, plan):
         decision = prefix.grade(plan.policy.goodput).decision
         if (decision is SpeedStageDecision.NO_DECISION) != (count < len(candidates)):
             raise CrossoverRuntimeError("reference speed did not stop where its sealed rule stops")
-    if (bracket is not None) != (decision is SpeedStageDecision.PASS):
-        raise CrossoverRuntimeError("a stock bracket follows exactly a passing comparison")
+    if bracket is not None and decision is not SpeedStageDecision.PASS:
+        raise CrossoverRuntimeError("a stock bracket follows only a passing comparison")
     grade = rebuilt.grade(plan.policy.goodput)
     if (grade.verdict != evidence.initial_verdict or grade.verdict != evidence.final_verdict
         or grade.decision is not evidence.decision):
         raise CrossoverRuntimeError("reference speed headline does not regrade")
-    if bracket is not None:
+    if decision is SpeedStageDecision.PASS:
         if not evidence.reference_inputs or not evidence.prompt_pairs or evidence.quality_entropy is None:
-            raise CrossoverRuntimeError("stock bracket lacks its selected incumbent quality controls")
+            raise CrossoverRuntimeError("a passing comparison lacks its selected quality controls")
         from cacheon.eval.qualification_trajectories import validate_controls
-        validate_controls(evidence, plan)
+        validate_controls(evidence, plan, plan.baseline if bracket else reference_arm)
     elif evidence.reference_inputs or evidence.prompt_pairs or evidence.quality_entropy is not None:
-        raise CrossoverRuntimeError("quality controls exist only on a stock bracket")
+        raise CrossoverRuntimeError("quality controls exist only on a passing comparison")
     return grade.verdict
 
 

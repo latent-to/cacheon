@@ -177,8 +177,8 @@ def run_continuation_quality_stage(
 
         if quality_state is None:
             teardown_before = executor.prove_quiescent()
-            # Bind quiescence to the last engine lifetime on the lane: the stock
-            # bracket that follows a speed PASS.
+            # Bind quiescence to the last engine lifetime on the lane: the last
+            # candidate boot, or a retained stock bracket.
             last_post = max(owner._lifecycle_causal_completion(lifecycle) if speed_same_clock else 0.0,
                 audit_state.audit_last_completed if stage_clock("audit") == current_clock else 0.0)
             if teardown_before.observed_monotonic_s < last_post:

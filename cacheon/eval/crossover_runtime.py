@@ -281,8 +281,8 @@ class ResidentCrossoverEvidence:
     """One speed stage on one lane.
 
     ``prior_executions`` holds the stock reference lifetimes, then every candidate lifetime before
-    the last. ``baseline_execution`` is the stock bracket that follows a PASS, or None; without it
-    the lane's last quiescence is the candidate's, and both quiescence fields carry it.
+    the last. ``baseline_execution`` is the stock bracket that followed a PASS until 2026-11-05, or None;
+    without it the lane's last quiescence is the candidate's, and both quiescence fields carry it.
     """
 
     plan_digest: str
@@ -469,7 +469,7 @@ class ResidentMarginalLifecycleEvidence:
 
     @property
     def final_baseline(self) -> EngineExecutionEvidence:
-        """The last engine lifetime on the lane: the stock bracket, or else the last candidate boot."""
+        """The last engine lifetime on the lane: a retained stock bracket, or else the last candidate boot."""
 
         return self.crossover.baseline_execution or self.crossover.candidate_execution
 

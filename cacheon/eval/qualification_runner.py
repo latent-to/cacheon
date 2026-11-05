@@ -2213,9 +2213,8 @@ def run_causal_qualification(
                 reference=reference,
                 evidence_root=value.evidence_root,
                 deadline=float(deadline), payment_bar=payment_bar,
-                quality_control=lambda controller, candidate, baseline_dir, candidate_dir, quiescence:
-                    create_controls(value, controller, candidate, baseline_dir, candidate_dir,
-                                    quiescence, entropy_provider),
+                quality_control=lambda stock, candidate, candidate_dir, quiescence:
+                    create_controls(value, stock, candidate, candidate_dir, quiescence, entropy_provider),
             )
             if continuation is not None:
                 continuation.record_resident_speed(crossover)

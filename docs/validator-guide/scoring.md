@@ -16,8 +16,7 @@ B and C run one engine at a time on the whole commissioned lane and replay the
 same sealed agent slice (see
 [Finite agent replay](qualification.md#finite-agent-replay)). B is measured once
 as a retained stock reference of four fresh boots of N windows each; C gets up to
-two fresh boots of N windows on the same lane; after a speed PASS one fresh stock
-bracket boot rechecks the reference. The controller fixes
+two fresh boots of N windows on the same lane. The controller fixes
 the slice, the operating load and the output budgets, releases requests in
 lockstep rounds, and timestamps every request on the host. The durable resident
 witness retains each boot's turn records, physical-lane authority, operational
@@ -42,8 +41,7 @@ independent replications. The reference variance is shared across candidates.
 Looks fall at candidate boot boundaries and spend the sealed 12.5% error budget
 (90% one-sided at the final look). After boot 1 the stage can end only on the
 sealed `futility_margin` (FAIL); a PASS needs both boots and the pooled
-attainment bound. A stock bracket that reads faster than the reference beyond a
-one-sided 1% test turns the PASS into `NO_DECISION` and retires the reference.
+attainment bound.
 
 Policy 20 keeps this arithmetic for a prefill/decode engine pair replaying the
 slice closed-loop at a sealed session count (see
