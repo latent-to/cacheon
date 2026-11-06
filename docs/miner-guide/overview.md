@@ -110,7 +110,8 @@ For a registered target, the validator constructs an exact marginal comparison:
 - **C**: the one-target-transition candidate, replaying the same workload in
   up to two fresh boots on the same lane;
 - **A**: a registered eager, untimed audit role for the candidate delta; and
-- **T**: a candidate-free pristine reference used after candidate teardown.
+- **T**: a candidate-free pristine reference used once the timed candidate boots
+  are torn down, beside A on a prefill/decode lane.
 
 The candidate does not choose the rest of the stack. One engine at a time owns
 the whole commissioned lane, and every boot replays the sealed workload for the
@@ -122,11 +123,9 @@ may seal a futility margin (the GLM arena seals 1.5%): a first candidate boot
 that reads more than that much slower fails without running the second. There is
 no separate admission screen.
 
-After a speed PASS a fresh stock bracket boot rechecks the reference and
-generates the quality gate's stock-drift controls; a stock bracket faster than
-its reference makes the result `NO_DECISION`, never a FAIL. Then A supplies the
-registered sampled slot regrade, and T prevents “fast because behavior changed”
-from becoming a win.
+After a speed PASS the quality gate takes its stock-drift controls from the
+retained stock reference. Then A supplies the registered sampled slot regrade,
+and T prevents “fast because behavior changed” from becoming a win.
 
 One complete audited PASS qualifies a proposal for settlement; no reproduction
 run is scheduled. After the complete audited attempt, the durable intake state is

@@ -551,11 +551,11 @@ def lifecycle_prompt_digests(lifecycle: object) -> tuple[str, ...]:
 def cohort_trajectory_digest(lifecycle: object) -> str:
     """Bind every retained token/top-k frame in complete execution order."""
 
-    from cacheon.eval.qualification_trajectories import trajectory_digest
+    from cacheon.eval.qualification_trajectories import stock_rollouts, trajectory_digest
     from cacheon.eval.scoring import marginal_workload_digest
 
     crossover, candidate = lifecycle.crossover, lifecycle.crossover.candidate_execution
-    stock = crossover.baseline_execution or candidate  # v19 non-PASS: no bracket boot, no prompt pairs
+    stock = stock_rollouts(crossover)[0] if crossover.prompt_pairs else candidate  # unpaired reads no stock row
     return trajectory_digest(marginal_workload_digest(lifecycle.prepared.baseline_session_plan),
                              crossover.prompt_pairs, stock.session.batches, candidate.session.batches)
 

@@ -117,7 +117,12 @@ existing OCI capacity fields: `cpu_millis`, `memory_bytes`, `pids_limit`,
 entry pins that GPU's SGLang scheduler, and the rest join the lane's pool for
 every other engine process. Pins bind the runtime digest; a lane GPU without a
 pin, or an engine whose scheduler ranks do not match the plan, fails the launch.
-Use it on hosts whose vCPUs differ in speed. The engine boots on the NUMA node(s)
+Use it on hosts whose vCPUs differ in speed. `resources.runtime.cpu_roles`, which
+requires `cpu_pins`, gives each engine, keyed by its first GPU, two vCPUs of its
+own: one for its data-parallel controller, which busy-polls, and one for its
+frontend, which parses every request. Neither may be a scheduler vCPU. Roles bind the runtime digest.
+A PD audit or pristine reference uses the first engine's roles; each running engine must have exactly
+one data-parallel controller. The engine boots on the NUMA node(s)
 of the lane's scheduler vCPUs, so host memory each rank allocates during boot
 (DeepSeek-V4.1's Engram tables) is local to its GPUs; the per-process pins apply
 once the engine is up. Every boot shares one native
@@ -238,10 +243,10 @@ idle, then start its pod service, relay and supervisor in that order. A stopped
 supervisor is the reservation control; it is not a host-wide GPU access lock.
 
 Completed jobs release their lane immediately. An authenticated terminal
-infrastructure HOLD also releases its lane while retaining the unresolved
-submission; it is not a candidate FAIL. Later jobs continue, but their final
-ranking and reward eligibility wait for every preceding submission in that arena
-to finish or receive an existing terminal disposition. `settlement_candidates`
+infrastructure HOLD releases its lane and economic priority while retaining the
+submission, failure reason and evidence; it is not a candidate FAIL or an automatic
+retry. Later PASSes can settle and earn. Unfinished submissions in that arena still
+block later ranking and reward eligibility. `settlement_candidates`
 retains `reward_eligible` once the completed prefix reaches a PASS, so reopening
 an older result cannot retract another miner's finalized credit. The dashboard
 and weight producer consume this same eligibility.

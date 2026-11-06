@@ -35,8 +35,8 @@ against the same arena and incumbent stack compete on the credited end-to-end
 score. Different baselines and runtime generations are not compared. Earlier
 PASSes below the reward threshold do not raise the next miner's hurdle.
 An unresolved earlier submission continues to block new reward eligibility.
-A completed remote `NO_DECISION` with a retained result earns nothing and does
-not block later PASSes from rewards or settlement. Its held reservation and
+A completed remote `HOLD` (including legacy `NO_DECISION`) with a retained result
+earns nothing and does not block later PASSes from rewards or settlement. Its reservation and
 evidence remain intact; it is not reclassified as a candidate `FAIL` or rerun.
 
 Before enabling this rule on an existing deployment, record the sorted unique

@@ -4,9 +4,9 @@ Qualification asks a narrow question: does one exact submitted delta improve one
 evaluation stack, in one registered arena, at acceptable quality?
 
 The production answer comes from the version-3 qualification protocol executed
-by a trusted host controller. One engine at a time owns the whole commissioned
-lane: a retained stock reference, fresh candidate boots and, after a speed PASS,
-one stock bracket boot replay the same sealed agent workload on that lane. The answer does not come from a local diagnostic
+by a trusted host controller. Every timed engine lifetime owns the whole commissioned
+lane alone: a retained stock reference and fresh candidate boots replay the same
+sealed agent workload on that lane. The answer does not come from a local diagnostic
 launch, candidate-side self-audit, miner report, or arbitrary evaluator command.
 
 ## Identities before execution
@@ -100,8 +100,9 @@ not change a qualification verdict.
 
 The version-3 protocol binds one physical lane — every GPU the arena's TP width
 names on the node — with one runtime namespace, lane-specific NUMA policy, exact
-workload, and a total qualification budget. One engine at a time owns the lane;
-there is no baseline lane and no second executor. Every boot conditions, flushes
+workload, and a total qualification budget. One engine at a time owns the lane for
+every timed lifetime; on a prefill/decode lane the two untimed roles after a PASS
+share it by halves (step 4). There is no baseline lane and no second executor. Every boot conditions, flushes
 its caches and replays the sealed `windows` N, and publishes native builds to one
 store under the commissioned root that later boots of the same tree reuse.
 
@@ -125,6 +126,13 @@ store under the commissioned root that later boots of the same tree reuse.
    reference cannot satisfy policy 21. The campaign runs before the `max_qualification_seconds` and
    `max_stage_seconds` clocks start, so it counts only against the job's
    four-hour deadline.
+   An explicit reference import may point to a retained publication and carry
+   its original stock arm, workload and speed policy, bound to the exact
+   replacement launch. Reopen and regrade validate the original stock lifetimes
+   under that arm; candidate lifetimes retain their current arm.
+   The importer must verify unchanged measured runtime and timing-client code
+   before publishing this binding. A new worker alone never authorizes reuse;
+   there is no automatic search or substitution of another reference.
 2. **Candidate boots.** Up to two fresh candidate boots run on the same lane.
    Looks fall at boot boundaries: after boot 1 the stage can end only on the
    sealed `futility_margin` (FAIL); a PASS needs both boots. They are the first
@@ -132,15 +140,19 @@ store under the commissioned root that later boots of the same tree reuse.
    A PASS whose point estimate is below the request's `payment_bar` (1.5% over
    the best earlier rewarded PASS on the same arena and stack, or over stock)
    grades `FAIL` (`below_payment_bar`): settlement could not pay it, so the
-   bracket, audit and T do not run.
-3. **Stock bracket.** After a speed PASS, one fresh stock boot replays N windows
-   and then generates the quality controls. If it reads faster than the
-   reference beyond a one-sided 1% test, the result becomes `NO_DECISION`
-   (infrastructure, never a candidate FAIL) and the reference pointer is retired
-   by a non-destructive rename, so the next qualification measures a new reference.
-   Under policy 21 the bracket is the process's third lifetime, so it reads
-   slower than the reference's first-two-lifetime mean (about 1.3% on the PD
-   arena) and the sentinel sees only faster stock beyond that gap.
+   quality controls, audit and T do not run.
+3. **Quality controls.** After a speed PASS no stock engine boots: the quality
+   gate's stock rollout and its independent stock control are the timed answers
+   of the first boot of each stored stock pair. Until 2026-11-05 a fresh stock
+   bracket boot produced both and acted as a one-sided 1% drift sentinel; it
+   cost 25.5 minutes per PASS and changed none of the PD arena's seven passing
+   verdicts, so it was deleted. Retained evidence with a bracket still regrades.
+4. **Audit and pristine T.** The eager audit and pristine T need nothing from each
+   other: T scores trajectories and controls sealed by the speed stage. On a
+   prefill/decode lane they run at once, the audit on the prefill role's GPUs and T
+   on the decode role's GPUs, which are the only ones CUDA shows T. Each role's
+   device receipts drain and attest only its own half, and an audit `FAIL` or
+   `NO_DECISION` discards T's result. Other lanes run the audit, then T.
 
 Every replay record carries the engine-observed prompt token count and the
 controller's host timing, and the regrade rejects a window whose records differ
@@ -166,16 +178,17 @@ sequenceDiagram
     H->>H: grade, a sealed futility margin may FAIL here
     H->>L: candidate boot 2, condition, flush, replay N windows
     H->>H: grade the final look
-    H->>L: on PASS, stock bracket boot, replay N windows
-    H->>H: bind entropy to candidate quiescence, select quality prompts
-    H->>L: generate the selected incumbent controls
-    H->>H: sentinel test, faster stock is NO_DECISION
+    H->>H: on PASS, bind entropy to candidate quiescence, select quality prompts
+    H->>H: take stock rollout and control from two stored stock boots
     H->>H: prove the speed executor quiescent
-    H->>A: run sealed audit-only plan
-    A-->>H: exact slot × rank witness
     H->>H: reveal the selection again; entropy must match
-    H->>T: run candidate-free quality authority
-    T-->>H: pristine quality evidence
+    par prefill/decode lane (other lanes: the audit, then T)
+        H->>A: run sealed audit-only plan on the prefill GPUs
+        A-->>H: exact slot × rank witness
+    and
+        H->>T: run candidate-free quality authority on the decode GPUs
+        T-->>H: pristine quality evidence
+    end
     H->>H: prove final quiescence and regrade
 ```
 
@@ -190,8 +203,7 @@ Candidate qualifications add no GPU work or wait. The reference costs its four
 stock boots across two qualifications that end without a candidate read; on a
 connected pair each such result holds its reservation, so measure the reference
 with the off-chain twin before connecting
-([New arena](new-arena.md#6-prove-then-connect)) and again after a sentinel
-retires it.
+([New arena](new-arena.md#6-prove-then-connect)).
 
 Speed is graded before the expensive audit and pristine-reference stages. An ordinary
 speed non-PASS emits a durable stage-exit and does not run audit or T. A
@@ -263,8 +275,8 @@ normal grader, evidence import and settlement still consume the completed result
 
 ### Interrupted replay controllers
 
-Continuation is stage-level. The speed stage commits once, complete, after any
-stock bracket, selected quality controls and normal engine teardown; a speed stage
+Continuation is stage-level. The speed stage commits once, complete, after the
+selected quality controls and normal engine teardown; a speed stage
 interrupted before that commit reruns whole. There are no per-window replay
 checkpoints. The retained stock reference is not part of the stage: a replacement
 reuses it only when its lane, launch, runtime, workload and boot-count identity
@@ -411,7 +423,7 @@ finalized arrival order.
 
 A typed candidate-worker error is attributable only when rank receipts bind the exact
 registered target arm and identity. It publishes a terminal candidate failure product
-instead of entering the generic retry path. Stock-reference, stock-bracket, shared-controller, audit/T,
+instead of entering the generic retry path. Stock-reference, shared-controller, audit/T,
 multi-candidate, or untyped worker failures are infrastructure authority failures; they
 are never assigned to a convenient candidate.
 
@@ -423,8 +435,7 @@ Qualification reopens and grades several evidence products:
    and on a graphs-on run every claimed slot on every rank completed inside a CUDA-graph
    capture, as recorded by the dispatcher.
 2. **Speed:** C's replay cost beats the retained stock reference's under the
-   sealed eligibility bound, C passes the service-attainment gate, and the stock
-   bracket confirms the reference.
+   sealed eligibility bound and C passes the service-attainment gate.
 3. **Audit:** the sealed audit-only plan has complete exact slot × rank authority.
 4. **Quality:** pristine T validates sealed trajectories and hidden work under the
    registered calibration.
@@ -520,7 +531,7 @@ dispositions; it does not invoke the full causal regrader.
 The final report is derived from the serialized attempt, referenced graph/quality
 artifacts, and calibration manifests. Reopen can regrade graph and raw quality evidence.
 Speed regrading uses the retained `ResidentSpeedWitness`, which retains every
-boot's turn records (reference, candidate and any stock bracket), physical-lane
+boot's turn records (reference, candidate and any retained stock bracket), physical-lane
 authority, operational timings, and budget. A witness below version 16 is batch-cell or MiniMax-M3 history and is
 refused rather than decoded. Regrading recomputes costs and the frozen
 decision from those typed facts; it does not reconstruct them from raw session
@@ -554,7 +565,6 @@ replay, the attempt schema must first be extended to retain and bind those produ
 | Recognized worker, Docker, GPU, driver, plan, runner, or raw-speed authority failure | HOLD with the original evidence; automatic retry requires authenticated proof that resident execution never began |
 | Evidence-store publication failure | Abort the pass; recovery holds an interrupted `qualifying` row as `controller_restart_during_qualifying` rather than manufacturing a typed `NO_DECISION` |
 | Speed gain not established by the last sealed boot | `FAIL`; do not add boots or tune the bar after seeing C |
-| Stock bracket reads faster than its reference | `NO_DECISION`; the reference is retired and the next qualification measures a new one |
 | The speed executor survives past its quiescence proof | Abort authority; never launch audit or T into the contaminated lifetime |
 | Audit role misses a slot/rank, reports a violation, or cannot reopen | `FAIL` only for a complete attributable violation; otherwise `NO_DECISION`; never substitute candidate-side audit output |
 | T identity/session mismatch | `NO_DECISION`; T cannot be replaced with an incumbent read or a candidate-side audit |
@@ -607,7 +617,7 @@ checks the same binding again after execution.
 The commission measures the candidate against the durable incumbent stack the
 capabilities factory declares (`incumbent_entries`, resolved through the same
 closed source resolver); at genesis the declaration is empty and the baseline
-is the stock tree. The stock reference and stock bracket boot the
+is the stock tree. The stock reference boots the
 materialized incumbent tree, and the worker executes the sealed version the
 plan carries, so plan and execution cannot disagree. Pristine T stays anchored
 to the empty stock stack regardless of the declared incumbent, so the untimed
@@ -678,6 +688,14 @@ tool waiting; the bridge releases ready requests in lockstep rounds.
 Turn order and child joins remain intact. The loopback chat adapter passes canonical input IDs and
 sticky DP ranks, fixed at each session's first turn in release order, through the isolated-worker pipes.
 
+Every window sends the same request bodies, so each evaluator process tokenizes the slice once,
+while its first engine boots: AIPerf replays the slice with the window's exact arguments against a
+loopback responder that answers each request at once, and a spawn pool applies the chat template
+to every distinct body. A timed window then looks each body's IDs up by the SHA-256 of its bytes. A
+body the prime did not see fails the read, so templating never runs inside the clock. Before each
+lifetime's warmup the controller collects and freezes its own heap (`gc.freeze`), so every
+lifetime starts from the same heap.
+
 The slice loader verifies the named files in sealed order. A per-load directory
 contains only the first `load` files. Output budgets come from those traces;
 context overflow or an incomplete export fails the read. The client preserves
@@ -690,7 +708,8 @@ Each engine stays loaded across the windows of its boot. Before each load, the c
 requires an acknowledged SGLang cache flush covering device radix state and
 the HiCache host pool. Failure stops the window. Each load's fresh output
 directory retains the AIPerf command, log and raw export,
-`bridge.jsonl` with canonical inputs, actual output IDs and host timing,
+`bridge.jsonl` with each request's input digest (`input_sha256`, the SHA-256 of its
+canonical ID list in compact JSON), actual output IDs and host timing,
 `turns.jsonl` in the service-capacity record format, and `read.json` with fixed
 work rate and attainment. `window.json` retains the workload identity and the
 read. The existing engine-session evidence also carries
@@ -750,8 +769,13 @@ Replay qualification is commissioned with `session.replay`: absolute `manifest_p
 `aiperf_binary` and `tokenizer_path`, the manifest's computed `slice_digest`, a
 single operating `load`, and the number of `windows` N each engine boot replays.
 Optional `max_work_seconds` bounds each boot's replay work; expiry aborts, never
-grades incomplete work. Engine startup retains its separate OCI initialization
-deadline. `resident_speed.goodput` seals the service `contract`
+grades incomplete work. Optional `warm_windows` (1 or 2) replays that many whole
+windows untimed at the start of every lifetime, each after its own cache flush.
+Their directories (`warm1`, ...) are retained, but their reads never reach the
+session evidence or the grader. On an 8x B300 VM four stock lifetimes' third windows agreed to 0.04 percent,
+while their first ran 1.4 to 3.1 percent slow (stock Triton kernels keyed on the decode batch and KV pool size
+compile on the clock, so a seed harvested on another host never matches) and their second up to 1.3 percent, in
+its tail, with nothing compiling. Engine startup retains its separate OCI initialization deadline. `resident_speed.goodput` seals the service `contract`
 (`decode_floor_tps`, `ttft_bound_s`, `attainment`), `required` ratio,
 `null_noise`, fixed `attainment_tolerance`, and its calibrated one-sided
 `attainment_margin`. These values use canonical decimal strings. The
@@ -799,7 +823,7 @@ sealed 12.5% one-sided error budget under v17's alpha-spending shares; the final
 look spends 80% of it, so `z` is the 90% one-sided quantile. After the first boot
 the stage can end only on the futility margin. The last candidate boot yields
 `PASS` or `FAIL`; a PASS below the request's payment bar becomes `FAIL`
-(`below_payment_bar`), and only the stock bracket can turn a PASS into `NO_DECISION`. This
+(`below_payment_bar`). This
 normal-model guarantee depends on the sealed noise bounds and independent boot
 contrasts; it does not establish runtime resolution by itself. A fixed 1% gain
 floor is absent.
@@ -820,7 +844,7 @@ checks the exact stopping point, all engine identities, host timings, and
 controls. Retained v16–v18 witnesses regrade under their own paired arithmetic.
 
 The dashboard lists a V19 replay per engine boot — "Stock reference boot k",
-"Stock bracket after PASS" and "Candidate boot k" — with each boot's mean
+"Candidate boot k" and, on older evidence, "Stock bracket after PASS" — with each boot's mean
 same-work seconds, decode rate, first-token time and service attainment; its
 `score_basis` is `retained_reference_boots`. The detail adds the operating load,
 windows per boot, workload identity, required gain, unsuccessful request count
@@ -842,10 +866,10 @@ traffic. Service attainment is a relative non-inferiority check; the retained
 On a speed PASS, the last candidate boot has already closed and proved
 quiescence. The entropy provider binds selection entropy to that quiescence
 receipt and selects source occurrences from the last candidate boot's and the
-stock bracket boot's trajectories. The stock bracket engine, still loaded after
-its timed windows, generates only those selected controls. Canonical input digests bind
+first stored stock boot's trajectories; the first boot of the second stored stock
+pair supplies each selected control from its own timed answers. Canonical input digests bind
 all three rollouts, and the speed stage retains the controls before the
-separate eager audit and pristine T run. Reopening selection after the audit must
+separate eager audit and pristine T run. Reopening selection before T must
 return the same retained entropy. Source identities use trace/outer/inner indices,
 so parallel child arrival order does not change which turn T evaluates.
 

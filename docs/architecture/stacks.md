@@ -158,8 +158,7 @@ Materialized source is only one part of a running engine. The launch authority a
 
 The controller prepares these inputs before timed execution. Production
 qualification binds one physical TP lane and runs one engine at a time on it:
-the retained stock reference boots, the candidate boots, and any stock bracket
-boot.
+the retained stock reference boots, then the candidate boots.
 
 A separate
 no-GPU/no-network prebuild OCI compiles registered native products and publishes

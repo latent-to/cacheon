@@ -110,7 +110,7 @@ def resource_policy(policy, overrides: object):
     row = _mapping(overrides, "OCI resource capacity")
     if set(row) - {"cpu_millis", "memory_bytes", "pids_limit", "nofile_limit",
                    "cache_bytes", "cache_inodes", "tmpfs_bytes", "shm_bytes",
-                   "stage_bytes", "stage_inodes", "cpu_pins"}:
+                   "stage_bytes", "stage_inodes", "cpu_pins", "cpu_roles"}:
         raise B300DeploymentError("unknown OCI resource capacity field")
     try:
         return replace(policy, **row)

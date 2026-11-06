@@ -35,6 +35,8 @@ PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size", "replay_load",
         "tokens_per_prompt", "tokenizer_asset", "model_in_ram", "owner", "audit_control_delta_digests", "node"}
 NODE_KEYS = {"name", "scheduler_starts", "client_cpus"}
+# engine_cpus: an engine's first GPU -> [DP controller vCPU, frontend vCPU] (oci_cpuset.canonical_cpu_roles).
+OPTIONAL_NODE_KEYS = {"engine_cpus"}
 PACKET = ("cacheon_b300_qualification_adapter.py", "finalize-authority.py", "numeric_answer_judge.py",
           "prompt-authority.current.json", "qualification_capabilities.py")
 # The cpu-operator archive: commission_worker, prepare_worker and runtime_uid_preflight run on the pod;
@@ -82,8 +84,8 @@ def load_operator(path: Path) -> dict:
     operator = json.loads(path.read_bytes())
     if set(operator) != KEYS or operator["schema"] != SCHEMA:
         raise SystemExit(f"{path}: expected keys {sorted(KEYS)} and schema {SCHEMA}")
-    if set(operator["node"]) != NODE_KEYS:
-        raise SystemExit(f"{path}: node needs {sorted(NODE_KEYS)}")
+    if set(operator["node"]) - OPTIONAL_NODE_KEYS != NODE_KEYS:
+        raise SystemExit(f"{path}: node needs {sorted(NODE_KEYS)}, optionally {sorted(OPTIONAL_NODE_KEYS)}")
     if not re.fullmatch(r"[a-z0-9]+", operator["slug"]):
         raise SystemExit(f"{path}: slug must be lowercase letters and digits")
     width = operator["tensor_parallel_size"]
@@ -110,6 +112,7 @@ def values(operator: dict, arena_inputs: str) -> dict[str, str]:
         "OWNER": operator["owner"], "RAM_MODEL_ARGS": " '--ram-model'," if operator["model_in_ram"] else "",
         "SCHEDULER_STARTS": json.dumps(operator["node"]["scheduler_starts"]),
         "NODE_NAME": operator["node"]["name"], "CLIENT_SETS": repr(operator["node"]["client_cpus"]),
+        "ENGINE_CPUS": repr(operator["node"].get("engine_cpus")),
     }
 
 

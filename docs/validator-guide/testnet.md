@@ -178,8 +178,8 @@ complete audited PASS, and settle. That does not move qualification onto chain: 
 arrival and current metagraph authority, while the registered OCI/referee fleet produces
 and retains the evidence. Production version-3 qualification runs candidate
 boots against a retained stock reference on one lane (speed policy 19), then
-audit and pristine T. Verify the stock reference, both candidate boots and the
-stock bracket before daemon mode.
+audit and pristine T. Verify the stock reference and both candidate boots
+before daemon mode.
 
 ## Weight dry run
 

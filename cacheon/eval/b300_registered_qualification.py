@@ -434,8 +434,8 @@ class B300RegisteredQualificationFactory:
             inputs.candidate_device_configuration_digest,
         )
         # One executor owns the lane: `goodput_runtime` boots the incumbent for
-        # the retained reference and the post-PASS bracket, and the candidate
-        # tree for its own boots; the quality gate runs in the bracket.
+        # the retained reference and the candidate tree for its own boots; the
+        # quality gate takes its stock rollouts from that reference.
         resident_plan = ResidentCrossoverPlan(
             candidate.reservation.selected_delta_digest,
             ResidentArmPlan(

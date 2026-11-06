@@ -281,8 +281,8 @@ class ResidentCrossoverEvidence:
     """One speed stage on one lane.
 
     ``prior_executions`` holds the stock reference lifetimes, then every candidate lifetime before
-    the last. ``baseline_execution`` is the stock bracket that follows a PASS, or None; without it
-    the lane's last quiescence is the candidate's, and both quiescence fields carry it.
+    the last. ``baseline_execution`` is the stock bracket that followed a PASS until 2026-11-05, or None;
+    without it the lane's last quiescence is the candidate's, and both quiescence fields carry it.
     """
 
     plan_digest: str
@@ -311,6 +311,7 @@ class ResidentCrossoverEvidence:
     quality_entropy: SelectionEntropyReceipt | None = dataclass_field(default=None, metadata={"wire_optional": True})
     prior_executions: tuple[EngineExecutionEvidence, ...] = dataclass_field(default=(), metadata={"wire_optional": True})
     replay_windows: tuple[str, ...] = dataclass_field(default=(), metadata={"wire_optional": True})
+    reference_origin: str = dataclass_field(default="", metadata={"wire_optional": True})
 
     def __post_init__(self) -> None:
         if (type(self.policy) is not ResidentSpeedPolicy or self.policy.version < 19 or self.replay_windows
@@ -396,6 +397,7 @@ class ResidentCrossoverEvidence:
                 **({"prior_executions": [_execution_digest(row) for row in self.prior_executions]}
                    if self.prior_executions else {}),
                 **({"replay_windows": self.replay_windows} if self.replay_windows else {}),
+                **({"reference_origin": self.reference_origin} if self.reference_origin else {}),
                 **({"prompt_pairs": self.prompt_pairs,
                     "reference_inputs": [{"prompt": row.prompt_digest,
                                           "input": hashlib.sha256(row.input_bytes).hexdigest(),
@@ -467,7 +469,7 @@ class ResidentMarginalLifecycleEvidence:
 
     @property
     def final_baseline(self) -> EngineExecutionEvidence:
-        """The last engine lifetime on the lane: the stock bracket, or else the last candidate boot."""
+        """The last engine lifetime on the lane: a retained stock bracket, or else the last candidate boot."""
 
         return self.crossover.baseline_execution or self.crossover.candidate_execution
 

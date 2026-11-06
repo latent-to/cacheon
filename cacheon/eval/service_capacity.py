@@ -414,7 +414,7 @@ def reference_grade(
     contract: ServiceContract, expected: dict[str, tuple[int, int]], *,
     window_noise: float, boot_noise: float, error_rate: float, boots: int,
     attainment_tolerance: float, attainment_margin: float, futility_margin: float = 0.0,
-    sentinel: Sequence[LoadRead] = (), decode_floor: bool = False,
+    sentinel: Sequence[LoadRead] = (), decode_floor: bool = False, reference_lane: str = "",
 ) -> ServiceVerdict:
     """Grade candidate engine lifetimes against a retained stock reference campaign on the same lane.
 
@@ -424,9 +424,9 @@ def reference_grade(
     divides by the candidate's boot count. Looks fall at candidate boot boundaries under v17's
     alpha-spending table: the first boot can only end the stage on the sealed futility margin.
 
-    A PASS carries one fresh stock lifetime read after it. Stock reading faster than its reference
-    beyond one-sided 1% would inflate every gain measured against that reference, so the PASS becomes
-    an infrastructure NO_DECISION, never a candidate FAIL.
+    PASS evidence retained before 2026-11-05 carries one fresh stock lifetime read after it. Stock reading
+    faster than its reference beyond one-sided 1% made that PASS an infrastructure NO_DECISION, never a
+    candidate FAIL; new evidence carries no sentinel.
 
     ``decode_floor`` (version 20) also holds the pooled per-user decode p50 to the contract's floor at
     every look: a candidate below it fails, since served tokens bought by slowing every user are not
@@ -440,7 +440,9 @@ def reference_grade(
     every = (*reference, *sentinel, *candidate)
     shapes = _work_shapes(reference[0])
     starts = [min(row.request_start_ns for row in read.records) for read in every]
-    if (len({read.lane for read in every}) != 1 or len(set(starts)) != len(starts)
+    if (len({read.lane for read in (*sentinel, *candidate)}) != 1
+            or any(read.lane != (reference_lane or candidate[0].lane) for read in reference)
+            or len(set(starts)) != len(starts)
             or any(_work_shapes(read) != shapes for read in every)):
         raise ServiceEvidenceError("reference and candidate reads differ in lane, work or identity")
     stock = [_boot_term(costs, window_noise, boot_noise) for costs in _boot_costs(reference, "incumbent", expected)]

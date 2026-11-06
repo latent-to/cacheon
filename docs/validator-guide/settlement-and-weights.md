@@ -55,8 +55,9 @@ flowchart LR
 ```
 
 The store chooses the oldest economically unblocked group sharing one qualification
-authority. Earlier unresolved reservations that overlap the candidate's target members
-remain blockers; a later fast result cannot jump them. The default lease is 30 blocks.
+authority. Earlier unfinished reservations in the same arena remain blockers; a later
+fast result cannot jump them. Completed remote HOLDs with retained results have no
+economic priority. The default lease is 30 blocks.
 Expiry returns it to pending with a higher lease generation, preventing a worker holding
 the old lease from committing.
 
@@ -73,8 +74,8 @@ and minimum-age `expire` transitions. Eligible unresolved rows also expire autom
 against the finalized arrival/progress-block SLA; active in-flight work is excluded.
 This row-level expiry is not a generic wall-clock
 TTL or a typed transition that retires an entire arena. Before a valid explicit or
-automatic disposition, held state can block later overlapping work; deleting rows is not
-a recovery mechanism.
+automatic disposition, a hold without a completed remote result can block later work;
+deleting rows is not a recovery mechanism.
 
 ## Deterministic plan
 

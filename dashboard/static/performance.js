@@ -58,7 +58,7 @@ function replayPerformance(speed, title) {
       ${grade.futility_margin ? `A run whose first ${reference ? "boot" : "lane orientation"} reads more than ${metricNumber(grade.futility_margin * 100, 2)}% slower than the baseline stops there.` : ""}</p>
     <div class="metrics-table">${reference ? table(["Engine boot", "Same work (s)", "Decode (tok/s)", "First token (s)", "In service level (%)"], rows)
       : table(["Pass", "Gain", fastest ? "Mean turn (s)" : "Same work (s)", "Decode (tok/s)", "First token (s)", "In service level (%)"], rows)}</div>
-    <p class="metric-note">${reference ? "One engine at a time owns the whole lane. The stock reference is retained across candidates; after a PASS a stock bracket boot reruns, and a stock reading significantly faster than its reference turns the result into no decision and rebuilds the reference."
+    <p class="metric-note">${reference ? "One engine at a time owns the whole lane. The stock reference is retained across candidates, and its stored answers supply the quality check after a PASS."
         : "Every pair reads baseline → candidate. Each pass runs the two at the same moment on two lanes."} Timing starts at the first warm release; the opening cold-prefill round is excluded.
       ${fastest ? "The score divides the baseline’s fastest pass by the candidate’s fastest pass; those two readings are in bold."
         : reference ? "The score compares the mean log same-work time per boot." : "The score pools the time within each lane orientation and combines the two orientations geometrically."}

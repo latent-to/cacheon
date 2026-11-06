@@ -509,14 +509,15 @@ def _process_tree(root: int) -> list[int]:
     return tree
 
 
-def _pin_engine_processes(plan: str | None, *, schedulers: int, pinned: int, companion: int | None = None) -> None:
+def _pin_engine_processes(plan: str | None, *, schedulers: int, pinned: int, companion: int | None = None,
+                          engine: int = 0) -> None:
     """Pin each SGLang scheduler (by TP rank) to its sealed vCPU and every other engine process to the pool.
 
     On the B300 VM, 13 of every 15 vCPUs run single-thread code at half speed, and unpinned schedulers
     landed on different ones each boot: whole-boot copy offsets up to 6.7% (2026-09-30). A plan that
     does not match the running engine fails the launch. The plan names ``pinned`` schedulers, one per lane
     GPU in device order: a prefill/decode pair pins the ``companion`` prefill server's ranks to the first
-    ``schedulers`` and the decode ranks to the rest; one engine of a pair's lane runs on the first.
+    ``schedulers`` and the decode ranks to the rest; a lone engine of a pair's lane runs as plan ``engine``.
     """
     if not plan:
         return
@@ -524,22 +525,39 @@ def _pin_engine_processes(plan: str | None, *, schedulers: int, pinned: int, com
     scheduler_cpus, pool = list(spec["schedulers"]), set(spec["pool"])
     if len(scheduler_cpus) != pinned:
         raise RuntimeError(f"CPU pin plan covers {len(scheduler_cpus)} schedulers; the lane pins {pinned}")
+    # The eager audit runs as the full lane plan's first engine, pristine T as its second (z6 audit failure, 2026-11-02).
+    engines = spec.get("engines")
+    roots = (companion, os.getpid()) if companion else (os.getpid(),)
+    if engines is not None and len(engines) != pinned // schedulers:
+        raise RuntimeError(f"CPU pin plan names {len(engines)} engines; the lane pins {pinned // schedulers}")
     prefill = set(_process_tree(companion)) if companion else set()
+    sides = (0, 1) if companion else (engine,)
     ranks: dict[int, list[int]] = {}
+    controllers = dict.fromkeys(sides, 0)
     for pid in _process_tree(os.getpid()):
         with contextlib.suppress(ProcessLookupError, FileNotFoundError):
             title = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
             rank = re.search(r"^sglang::scheduler\S*_TP(\d+)", title)
-            offset = schedulers if companion and pid not in prefill else 0
+            side = int(pid not in prefill) if companion else engine
+            offset = side * schedulers
             if rank:
                 ranks.setdefault(offset, []).append(int(rank[1]))
-            cpus = {scheduler_cpus[offset + int(rank[1])]} if rank else pool
+                cpus = {scheduler_cpus[offset + int(rank[1])]}
+            elif engines is not None and title.startswith("sglang::data_parallel_controller"):
+                controllers[side] += 1
+                cpus = {engines[side][0]}
+            elif engines is not None and pid in roots:
+                cpus = {engines[side][1]}
+            else:
+                cpus = pool
             for task in os.listdir(f"/proc/{pid}/task"):
                 with contextlib.suppress(ProcessLookupError):
                     os.sched_setaffinity(int(task), cpus)
     if {offset: sorted(found) for offset, found in ranks.items()} != {
-            offset: list(range(schedulers)) for offset in ((0, schedulers) if companion else (0,))}:
+            side * schedulers: list(range(schedulers)) for side in sides}:
         raise RuntimeError(f"CPU pin plan found scheduler ranks {ranks}; each engine runs {schedulers}")
+    if engines is not None and list(controllers.values()) != [1] * len(sides):
+        raise RuntimeError(f"CPU pin plan pins one DP controller per engine; found {controllers}")
 
 
 @contextlib.contextmanager
@@ -599,6 +617,10 @@ def isolated_engine_session(
     kwargs["custom_sigquit_handler"] = _engine_child_failed
     tp = int(kwargs.get("tp_size", 1) or 1)
     pinned = tp * 2 if pd_engine.is_pair(kwargs) else tp
+    # Pristine T scores on a pair lane's decode GPUs, the only ones CUDA shows it, while the eager audit
+    # holds the prefill GPUs (2026-11-05).
+    lone = int(pd_engine.is_pair(kwargs) and not install_seams)
+    placement = {"CUDA_VISIBLE_DEVICES": ",".join(map(str, range(tp, 2 * tp)))} if lone else {}
     prefill = None
     # Only timed lifetimes run the pair; the eager audit and the seamless pristine reference run one engine.
     if pd_engine.is_pair(kwargs) and audit_policy is None and install_seams:
@@ -616,7 +638,7 @@ def isolated_engine_session(
             install_seams=install_seams,
             engine_env=getattr(cfg, "engine_env", None),
         )
-        with _environment(**session_environment):
+        with _environment(**{**session_environment, **placement}):
             import sglang as sgl
 
             if audit_policy is not None:
@@ -645,7 +667,7 @@ def isolated_engine_session(
                 # The prefill server boots on its own GPUs while the decode engine boots here.
                 _bind_engine_boot(plan, slice(0, tp))
                 companion = pd_engine.start_prefill(prefill, prefill_env)
-            _bind_engine_boot(plan, slice(tp, None) if prefill is not None else slice(0, tp))
+            _bind_engine_boot(plan, slice(tp, None) if prefill is not None or lone else slice(0, tp))
             with _environment(**role_env):
                 engine = sgl.Engine(**kwargs)
             active_receipts: list[dict] = []
@@ -661,7 +683,7 @@ def isolated_engine_session(
                         int(prefill.get("dp_size") or 1), int(kwargs.get("dp_size") or 1))
                     eager_members = frozenset(_process_tree(companion.pid))
                 _pin_engine_processes(plan, schedulers=tp, pinned=pinned,
-                                      companion=companion.pid if companion else None)
+                                      companion=companion.pid if companion else None, engine=lone)
                 if active:
                     assert receipts is not None
                     active_receipts = receipts.require(

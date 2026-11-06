@@ -125,7 +125,8 @@ candidate = same stack with exactly the selected target delta, up to two fresh b
 v19 = one engine at a time owns the whole lane; every boot replays the sealed
       agent workload for the same N windows
 A = registered eager, untimed candidate audit
-T = candidate-free pristine quality reference after candidate teardown
+T = candidate-free pristine quality reference once timed candidate boots end;
+    beside A on a prefill/decode lane
 ```
 
 The V19 score is the mean log elapsed cost of the reference boots less that of

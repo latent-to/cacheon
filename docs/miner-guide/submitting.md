@@ -378,7 +378,8 @@ The authoritative path is staged:
    order. Admission runs at its first claim; there is no separate screen.
 5. The claimed candidate receives a complete isolated version-3 qualification
    attempt: fresh candidate boots against the retained stock reference on one
-   lane, registered eager audit A, then pristine T.
+   lane, then registered eager audit A and pristine T (side by side on a
+   prefill/decode lane).
 6. One complete audited PASS moves the proposal to `qualified` and retains its
    speedup and evidence for settlement. No second qualification is scheduled.
 7. Transactional settlement may crown, neutralize, or hold the qualified
@@ -409,7 +410,7 @@ Suppose the revealed content hash is `H` and its target is `forward_pass`:
 3. `published` means an immutable worker tree and selected-delta identity exist and the
    proposal is waiting in the qualification queue. Candidate Python has not run.
 4. `qualifying` means the sealed replay speed stage, registered eager audit A,
-   then pristine T are running. If the candidate fails, changing a local file cannot
+   or pristine T is running. If the candidate fails, changing a local file cannot
    repair `H`; fix the source, package a new hash, and submit it as a new proposal. A
    validator storage fault should instead produce uncertainty for operator retry, not a
    fabricated candidate failure.

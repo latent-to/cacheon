@@ -108,7 +108,7 @@ products that a qualification attempt retains.
 - `FAIL` requires complete evidence of a candidate-attributable violation. A speed
   grade that has not established a gain by the last sealed boot is `FAIL`, as is a sealed
   futility stop after the first candidate boot, or a slower or attainment-missing read
-  once both boots exist; a stock bracket faster than its reference is `NO_DECISION`.
+  once both boots exist.
 - `NO_DECISION` covers infrastructure faults, missing authority, or incomplete evidence
   and is eligible only for bounded retry.
 - `qualified` means one complete audited PASS is retained; settlement reopens that

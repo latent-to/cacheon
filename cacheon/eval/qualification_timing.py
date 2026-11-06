@@ -76,8 +76,10 @@ class QualificationTimingWitness:
                      or self.speed_completed_monotonic_s <= self.audit_started_monotonic_s)
                 and self.audit_started_monotonic_s
                 < self.audit_completed_monotonic_s
+                # A pair lane's T runs beside the audit (2026-11-05); the budget charges the overlap twice.
                 and (bool(domains) and domains[1] != domains[2]
-                     or self.audit_completed_monotonic_s <= self.t_started_monotonic_s)
+                     or self.audit_started_monotonic_s <= self.t_started_monotonic_s
+                     and self.audit_completed_monotonic_s <= self.qualification_completed_monotonic_s)
                 and self.t_started_monotonic_s
                 < self.t_completed_monotonic_s
                 <= self.qualification_completed_monotonic_s

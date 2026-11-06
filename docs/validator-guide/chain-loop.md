@@ -323,7 +323,7 @@ must match that authenticated request pin. A new request also carries
 `payment_bar`: the speedup settlement would pay, 1.5% over the best rewarded PASS
 that arrived before the bundle against the same arena and incumbent stack, or over
 stock. A speed PASS below it is graded `FAIL` (`below_payment_bar`) and ends before the
-stock bracket, audit and T. A crown revoked after dispatch leaves that FAIL standing;
+quality controls, audit and T. A crown revoked after dispatch leaves that FAIL standing;
 re-run the bundle. Retained requests keep their original
 bytes and grammar when reopened; an older unbound request remains readable for
 completed-result recovery but cannot start execution on the new worker.

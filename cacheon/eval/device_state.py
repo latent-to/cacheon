@@ -21,6 +21,7 @@ import json
 import math
 import re
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, fields
 from decimal import Decimal, InvalidOperation
@@ -595,15 +596,15 @@ def parse_gpu_query(
     policy: DeviceStatePolicy | None = None,
     selected_gpu_ids: tuple[int, ...] | None = None,
 ) -> tuple[_ObservedGPU, ...]:
-    """Parse one exact ``--query-gpu`` CSV response and bind it to the policy."""
+    """Parse one exact ``--query-gpu`` CSV response and bind it to the policy, or a subset of its GPUs."""
 
-    if (policy is None) == (selected_gpu_ids is None):
+    if policy is None and selected_gpu_ids is None:
         raise DeviceStatePolicyError(
-            "GPU query parsing requires exactly one policy or selected-ID set"
+            "GPU query parsing requires a policy or a selected-ID set"
         )
     selected_tuple = (
         policy.physical_gpu_ids
-        if policy is not None
+        if selected_gpu_ids is None
         else _normalize_selected_gpu_ids(selected_gpu_ids)
     )
 
@@ -708,7 +709,8 @@ def parse_gpu_query(
         )
     ordered = tuple(observed[physical_id] for physical_id in selected_tuple)
     if policy is not None:
-        for expected, item in zip(policy.expected_gpus, ordered):
+        expected_gpus = [row for row in policy.expected_gpus if row.physical_id in selected]
+        for expected, item in zip(expected_gpus, ordered, strict=True):
             if item.configuration != expected:
                 raise DeviceStateConfigurationError(
                     f"GPU {expected.physical_id} immutable configuration changed: "
@@ -870,20 +872,23 @@ class DeviceStateGuard:
         self._last_clock = -math.inf
         self._last_receipt_completed = -math.inf
         self._sequence = 0
+        # Pristine T drains a pair lane's decode half from its own thread beside the eager audit (2026-11-05).
+        self._state = threading.RLock()
 
     def _now(self) -> float:
-        value = self._clock()
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
-        ):
-            raise DeviceStateClockError("host monotonic clock returned a non-finite value")
-        result = float(value)
-        if result < self._last_clock:
-            raise DeviceStateClockError("host monotonic clock moved backwards")
-        self._last_clock = result
-        return result
+        with self._state:
+            value = self._clock()
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+            ):
+                raise DeviceStateClockError("host monotonic clock returned a non-finite value")
+            result = float(value)
+            if result < self._last_clock:
+                raise DeviceStateClockError("host monotonic clock moved backwards")
+            self._last_clock = result
+            return result
 
     def _remaining(self, deadline: float) -> float:
         remaining = deadline - self._now()
@@ -922,8 +927,10 @@ class DeviceStateGuard:
             )
         return result.stdout
 
-    def _query(self, *, deadline: float) -> tuple[tuple[GPUTelemetry, ...], tuple[GPUProcess, ...]]:
-        ids = ",".join(str(value) for value in self.policy.physical_gpu_ids)
+    def _query(
+        self, *, deadline: float, selected: tuple[int, ...]
+    ) -> tuple[tuple[GPUTelemetry, ...], tuple[GPUProcess, ...]]:
+        ids = ",".join(str(value) for value in selected)
         query_argv = (
             NVIDIA_SMI,
             f"--id={ids}",
@@ -943,12 +950,11 @@ class DeviceStateGuard:
         command_window = _TELEMETRY_COMMAND_TIMEOUT_S
         query_deadline = min(deadline, self._now() + command_window)
         observed = parse_gpu_query(
-            self._command(query_argv, deadline=query_deadline), policy=self.policy
+            self._command(query_argv, deadline=query_deadline), policy=self.policy, selected_gpu_ids=selected
         )
         process_deadline = min(deadline, self._now() + command_window)
         processes = parse_process_monitor(
-            self._command(process_argv, deadline=process_deadline),
-            selected_gpu_ids=self.policy.physical_gpu_ids,
+            self._command(process_argv, deadline=process_deadline), selected_gpu_ids=selected
         )
         return tuple(item.telemetry for item in observed), processes
 
@@ -1074,30 +1080,38 @@ class DeviceStateGuard:
             return False, "; ".join(violations)[:4096]
         return True, "loaded engine is quiescent in the pinned active configuration"
 
+    def _start(
+        self, deadline: float | None, gpu_ids: tuple[int, ...] | None
+    ) -> tuple[float, tuple[int, ...]]:
+        """Open one receipt after the last one completed, over the selected GPUs or one engine's subset."""
+
+        if gpu_ids is not None and (type(gpu_ids) is not tuple or not gpu_ids
+                                    or not set(gpu_ids) <= set(self.policy.physical_gpu_ids)):
+            raise DeviceStatePolicyError("engine GPUs must be a nonempty subset of the selected GPUs")
+        if deadline is not None and (isinstance(deadline, bool) or not isinstance(deadline, (int, float))
+                                     or not math.isfinite(float(deadline))):
+            raise DeviceStatePolicyError("deadline must be an absolute finite monotonic value")
+        with self._state:
+            started = self._now()
+            if started < self._last_receipt_completed:
+                raise DeviceStateClockError("device receipt order is not monotonic")
+        return started, gpu_ids or self.policy.physical_gpu_ids
+
     def _drain(
         self,
         *,
         launch_id: str,
         phase: str,
         deadline: float | None,
+        gpu_ids: tuple[int, ...] | None = None,
     ) -> DeviceStateReceipt:
         if not isinstance(launch_id, str) or _LABEL.fullmatch(launch_id) is None:
             raise DeviceStatePolicyError("launch_id must be a simple 1..128 character identifier")
         if phase not in {"pre", "post"}:
             raise DeviceStatePolicyError("device receipt phase must be 'pre' or 'post'")
-        verdict = self._idle_verdict
-        started = self._now()
-        if started < self._last_receipt_completed:
-            raise DeviceStateClockError("device receipt order is not monotonic")
-        local_deadline = started + float(self.policy.drain_timeout_s)
-        if deadline is not None:
-            if (
-                isinstance(deadline, bool)
-                or not isinstance(deadline, (int, float))
-                or not math.isfinite(float(deadline))
-            ):
-                raise DeviceStatePolicyError("deadline must be an absolute finite monotonic value")
-            local_deadline = min(local_deadline, float(deadline))
+        started, selected = self._start(deadline, gpu_ids)
+        local_deadline = min(started + float(self.policy.drain_timeout_s),
+                             math.inf if deadline is None else float(deadline))
         if local_deadline <= started:
             raise DeviceStateTimeoutError("device drain started after its absolute deadline")
 
@@ -1106,7 +1120,7 @@ class DeviceStateGuard:
         last_reason = "no telemetry sample completed"
         for _ in range(self.policy.maximum_samples):
             try:
-                telemetry, processes = self._query(deadline=local_deadline)
+                telemetry, processes = self._query(deadline=local_deadline, selected=selected)
             except DeviceStateTimeoutError as exc:
                 # A live nvidia-smi query has its own short command window so a
                 # wedged driver cannot consume an entire multi-hour bracket.  A
@@ -1124,31 +1138,32 @@ class DeviceStateGuard:
             sampled_at = self._now()
             if sampled_at > local_deadline:
                 raise DeviceStateTimeoutError("device sample completed after its deadline")
-            idle, reason = verdict(telemetry, processes)
+            idle, reason = self._idle_verdict(telemetry, processes)
             samples.append(
                 DeviceStateSample(sampled_at, telemetry, processes, idle, reason)
             )
             last_reason = reason
             consecutive = consecutive + 1 if idle else 0
             if consecutive >= self.policy.required_consecutive_idle_samples:
-                completed = self._now()
-                if completed > local_deadline:
-                    raise DeviceStateTimeoutError("device receipt completed after its deadline")
-                self._sequence += 1
-                receipt = DeviceStateReceipt(
-                    schema="cacheon.device-state-receipt.v1",
-                    sequence=self._sequence,
-                    launch_id=launch_id,
-                    phase=phase,
-                    selected_physical_gpu_ids=self.policy.physical_gpu_ids,
-                    configuration_sha256=self.policy.configuration_sha256,
-                    policy_sha256=self.policy.policy_sha256,
-                    started_monotonic_s=started,
-                    completed_monotonic_s=completed,
-                    consecutive_idle_samples=consecutive,
-                    samples=tuple(samples),
-                )
-                self._last_receipt_completed = completed
+                with self._state:
+                    completed = self._now()
+                    if completed > local_deadline:
+                        raise DeviceStateTimeoutError("device receipt completed after its deadline")
+                    self._sequence += 1
+                    receipt = DeviceStateReceipt(
+                        schema="cacheon.device-state-receipt.v1",
+                        sequence=self._sequence,
+                        launch_id=launch_id,
+                        phase=phase,
+                        selected_physical_gpu_ids=selected,
+                        configuration_sha256=self.policy.configuration_sha256,
+                        policy_sha256=self.policy.policy_sha256,
+                        started_monotonic_s=started,
+                        completed_monotonic_s=completed,
+                        consecutive_idle_samples=consecutive,
+                        samples=tuple(samples),
+                    )
+                    self._last_receipt_completed = completed
                 return receipt
             remaining = local_deadline - self._now()
             if remaining <= 0:
@@ -1160,18 +1175,18 @@ class DeviceStateGuard:
         )
 
     def before_launch(
-        self, launch_id: str, *, deadline: float | None = None
+        self, launch_id: str, *, deadline: float | None = None, gpu_ids: tuple[int, ...] | None = None
     ) -> DeviceStateReceipt:
-        """Drain and attest the exact selected GPUs before one launch."""
+        """Drain and attest the exact selected GPUs, or one engine's ``gpu_ids``, before one launch."""
 
-        return self._drain(launch_id=launch_id, phase="pre", deadline=deadline)
+        return self._drain(launch_id=launch_id, phase="pre", deadline=deadline, gpu_ids=gpu_ids)
 
     def after_launch(
-        self, launch_id: str, *, deadline: float | None = None
+        self, launch_id: str, *, deadline: float | None = None, gpu_ids: tuple[int, ...] | None = None
     ) -> DeviceStateReceipt:
-        """Drain and attest the exact selected GPUs after one launch."""
+        """Drain and attest the exact selected GPUs, or one engine's ``gpu_ids``, after one launch."""
 
-        return self._drain(launch_id=launch_id, phase="post", deadline=deadline)
+        return self._drain(launch_id=launch_id, phase="post", deadline=deadline, gpu_ids=gpu_ids)
 
     def condition_active(
         self,
@@ -1201,18 +1216,13 @@ class DeviceStateGuard:
         sleep between the final warmup and the first timed request.
 
         ``engine_gpu_ids`` names the selected GPUs a lifetime's engine occupies when
-        it runs on fewer than all of them; the active envelope covers only those.
+        it runs on fewer than all of them; telemetry and the receipt cover only those.
         """
 
         if not isinstance(launch_id, str) or _LABEL.fullmatch(launch_id) is None:
             raise DeviceStatePolicyError("launch_id must be a simple 1..128 character identifier")
         if not isinstance(event, str) or _LABEL.fullmatch(event) is None:
             raise DeviceStatePolicyError("event must be a simple 1..128 character identifier")
-        if engine_gpu_ids is not None and (
-            type(engine_gpu_ids) is not tuple or not engine_gpu_ids
-            or not set(engine_gpu_ids) <= set(self.policy.physical_gpu_ids)
-        ):
-            raise DeviceStatePolicyError("engine GPUs must be a nonempty subset of the selected GPUs")
         if release is not None and not callable(release):
             raise DeviceStatePolicyError("release must be callable or null")
         if wait_for_release is not None and (
@@ -1223,18 +1233,7 @@ class DeviceStateGuard:
             )
         if cancel is not None and not callable(cancel):
             raise DeviceStatePolicyError("cancel must be callable or null")
-        started = self._now()
-        if started < self._last_receipt_completed:
-            raise DeviceStateClockError("device receipt order is not monotonic")
-        if deadline is not None:
-            if (
-                isinstance(deadline, bool)
-                or not isinstance(deadline, (int, float))
-                or not math.isfinite(float(deadline))
-            ):
-                raise DeviceStatePolicyError(
-                    "deadline must be an absolute finite monotonic value"
-                )
+        started, selected = self._start(deadline, engine_gpu_ids)
         # `drain_timeout_s` bounds waiting for GPUs to fall idle, which is a
         # fast operation. It is the wrong bound for a wait the caller gates on
         # an external boundary: a final warmup batch legitimately runs for
@@ -1274,33 +1273,34 @@ class DeviceStateGuard:
 
         def released_receipt(*, post_release_ready_samples: int) -> DeviceStateActiveReceipt:
             nonlocal release_sample_index
-            completed = self._now()
-            if completed > local_deadline:
-                raise DeviceStateTimeoutError(
-                    "active device receipt completed after its deadline"
+            with self._state:
+                completed = self._now()
+                if completed > local_deadline:
+                    raise DeviceStateTimeoutError(
+                        "active device receipt completed after its deadline"
+                    )
+                self._sequence += 1
+                receipt = DeviceStateActiveReceipt(
+                    schema="cacheon.device-state-active-receipt.v2",
+                    sequence=self._sequence,
+                    launch_id=launch_id,
+                    event=event,
+                    selected_physical_gpu_ids=selected,
+                    configuration_sha256=self.policy.configuration_sha256,
+                    policy_sha256=self.policy.policy_sha256,
+                    started_monotonic_s=started,
+                    completed_monotonic_s=completed,
+                    # Claim exactly the policy run instead of an unbounded warmup-long
+                    # count; retained verification independently checks those samples.
+                    consecutive_active_samples=required,
+                    release_sample_index=(
+                        int(release_sample_index)
+                        if release_sample_index is not None else 0
+                    ),
+                    post_release_ready_samples=post_release_ready_samples,
+                    samples=tuple(samples),
                 )
-            self._sequence += 1
-            receipt = DeviceStateActiveReceipt(
-                schema="cacheon.device-state-active-receipt.v2",
-                sequence=self._sequence,
-                launch_id=launch_id,
-                event=event,
-                selected_physical_gpu_ids=self.policy.physical_gpu_ids,
-                configuration_sha256=self.policy.configuration_sha256,
-                policy_sha256=self.policy.policy_sha256,
-                started_monotonic_s=started,
-                completed_monotonic_s=completed,
-                # Claim exactly the policy run instead of an unbounded warmup-long
-                # count; retained verification independently checks those samples.
-                consecutive_active_samples=required,
-                release_sample_index=(
-                    int(release_sample_index)
-                    if release_sample_index is not None else 0
-                ),
-                post_release_ready_samples=post_release_ready_samples,
-                samples=tuple(samples),
-            )
-            self._last_receipt_completed = completed
+                self._last_receipt_completed = completed
             return receipt
 
         def wait_before_next_sample(post_release: bool) -> bool:
@@ -1376,7 +1376,7 @@ class DeviceStateGuard:
                             "pre-release active samples were observed"
                         )
             try:
-                telemetry, processes = self._query(deadline=local_deadline)
+                telemetry, processes = self._query(deadline=local_deadline, selected=selected)
             except DeviceStateTimeoutError as exc:
                 # Same standing as the drain loop: a live query holds a short
                 # command window so a wedged driver cannot eat the bracket, and

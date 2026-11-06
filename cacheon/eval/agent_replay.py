@@ -50,6 +50,9 @@ class AgentReplayPlan:
     elapsed_cost: bool = field(default=False, metadata={"wire_optional": True})
     max_work_seconds: int = field(default=0, metadata={"wire_optional": True})
     closed_loop: bool = field(default=False, metadata={"wire_optional": True})
+    # Untimed windows before the sealed ones. Verda z3 lifetimes' third windows agreed to 0.04%; their first ran 1.4-3.1%
+    # slow (stock Triton kernels keyed on batch and KV pool size compile on the clock), their second up to 1.3% (11-02).
+    warm_windows: int = field(default=0, metadata={"wire_optional": True})
     slice: SliceManifest = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -64,6 +67,8 @@ class AgentReplayPlan:
             raise ValueError("agent replay read identity is invalid")
         if type(self.windows) is not int or self.windows < 1:
             raise ValueError("agent replay needs at least one sealed window")
+        if type(self.warm_windows) is not int or not 0 <= self.warm_windows <= 2:
+            raise ValueError("agent replay warm windows are outside their bound")
         if type(self.elapsed_cost) is not bool or type(self.closed_loop) is not bool:
             raise ValueError("replay cost accounting and arrival must be boolean")
         if type(self.max_work_seconds) is not int or not 0 <= self.max_work_seconds <= 7200:
@@ -89,6 +94,7 @@ class AgentReplayPlan:
             "expected_work": {str(load): self.slice.expected_work(self.sessions) for load in self.loads},
             "loads": list(self.loads),
             "windows": self.windows,
+            **({"warm_windows": self.warm_windows} if self.warm_windows else {}),
             "arrival": "closed-loop-after-cold-round" if self.closed_loop else "lockstep-rounds",
             "contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
             "client": "aiperf-0.13.0", "scenario": None, "ignore_trace_delays": True,
@@ -167,13 +173,37 @@ def _load_pool_tokenizer(path: str) -> None:
     _pool_tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True, local_files_only=True)
 
 
-def _pool_chat_input_ids(body: dict) -> list[int]:
-    return _chat_input_ids(_pool_tokenizer, body)
+def _pool_chat_input_ids(body: dict) -> tuple[list[int], str]:
+    ids = _chat_input_ids(_pool_tokenizer, body)
+    return ids, hashlib.sha256(json.dumps(ids, separators=(",", ":")).encode()).hexdigest()
 
 
-def _pool_started() -> None:
-    # Busy for a second, so each concurrent call starts its own worker (and loads its tokenizer) before any read.
-    time.sleep(1)
+# Every window replays the same sealed bodies: aiperf_client fixes the benchmark identity, so the markers repeat, and
+# per-turn prompt counts matched across stock and candidate lifetimes (482,559,756 tokens a window, 2026-11-02). Yet
+# each timed window re-templated every turn, holding 4.8-6.1 client vCPUs busy on Verda, and the bridge loop unpickled
+# each turn's IDs and dumped them to bridge.jsonl: ~6 ms a request and ~480M int allocations a window on the one loop
+# every first token passes through. Each distinct body is now tokenized once per evaluator process, by prime_replay
+# before the first engine lifetime, into one tuple of shared ints that every later request reuses. A timed body the
+# prime did not see fails the read: it would put the tokenizer back inside the clock.
+_PROMPTS: dict[bytes, tuple[tuple[int, ...], str]] = {}
+_PRIMED: set[str] = set()
+_TOKEN_INTS: tuple[int, ...] = ()
+
+
+def _shared(ids: list[int]) -> tuple[int, ...]:
+    global _TOKEN_INTS
+    top = max(ids, default=0)
+    if top >= len(_TOKEN_INTS):
+        _TOKEN_INTS = tuple(range(max(top + 1, 1 << 18)))
+    return tuple(map(_TOKEN_INTS.__getitem__, ids))
+
+
+def _prompt_ids(raw: bytes) -> tuple[tuple[int, ...], str]:
+    """The primed canonical IDs and their digest for one exact request body."""
+    cached = _PROMPTS.get(hashlib.sha256(raw).digest())
+    if cached is None:
+        raise RuntimeError("AIPerf sent a replay body the prime did not tokenize")
+    return cached
 
 
 _ROUND_SETTLE_S = 0.5
@@ -270,9 +300,8 @@ class _Rounds:
 class ReplayBridge:
     """Adapt trusted chat requests to canonical IDs and retain their actual token evidence."""
 
-    def __init__(self, session, exchange, tokenizer, output: Path, load: int, closed_loop: bool,
-                 pool: ProcessPoolExecutor):
-        self.session, self.exchange, self.tokenizer, self.pool = session, exchange, tokenizer, pool
+    def __init__(self, session, exchange, tokenizer, output: Path, load: int, closed_loop: bool):
+        self.session, self.exchange, self.tokenizer = session, exchange, tokenizer
         self.first_batch_index = session.next_batch_index
         self.rows, self.failure = {}, None
         self.stamps: dict[str, int] = {}
@@ -294,14 +323,15 @@ class ReplayBridge:
 
         rank = external_id = None
         try:
-            body = await http_request.json()
+            raw = await http_request.read()
+            body = json.loads(raw)
             external_id = http_request.headers["X-Request-ID"]
             request_id = UUID(external_id).hex
             if external_id in self.rows:
                 raise ValueError("AIPerf repeated an X-Request-ID")
             if body.get("stream") is not True:
                 raise ValueError("agent replay requires streaming requests")
-            ids = await asyncio.get_running_loop().run_in_executor(self.pool, _pool_chat_input_ids, body)
+            ids, digest = _prompt_ids(raw)
             count = body.get("max_tokens", body.get("max_completion_tokens"))
             self.rows[external_id] = None
             stamp, ordinal = await self.rounds.hold(external_id, _session_key(body["messages"]))
@@ -311,7 +341,7 @@ class ReplayBridge:
             request = BatchRequest(
                 self.session.session_id, self.session.plan.launch_digest,
                 request_id, secrets.token_hex(16), index, (), count, 0,
-                self.session.plan.temperature, len(ids), True, (tuple(ids),), rank,
+                self.session.plan.temperature, len(ids), True, (ids,), rank,
             )
             if index == self.session.plan.warmup_count and self.session.boundary_callback:
                 self.session.boundary_callback("before_first_timed", index, self.session.deadline)
@@ -363,7 +393,7 @@ class ReplayBridge:
             self.rows[external_id] = row
             self.raw.write(json.dumps({
                 "x_request_id": external_id, "batch_index": index,
-                "input_ids": ids, "output_ids": list(prompt.output_ids),
+                "input_sha256": digest, "output_ids": list(prompt.output_ids),
                 "request_start_ns": self._ns(row.request_started_at),
                 "first_token_ns": self._ns(row.request_started_at + row.prompt_latencies[0][0]),
                 "request_end_ns": self._ns(row.response_completed_at),
@@ -434,22 +464,127 @@ def collect_read(plan: AgentReplayPlan, bridge: ReplayBridge) -> LoadRead:
     return read
 
 
-async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer, tokenize_pool: ProcessPoolExecutor) -> LoadRead:
-    """Drain one sealed load on the opened engine and retain the scorer's input."""
-    from aiohttp import web
-
+def _current_slice(plan: AgentReplayPlan) -> SliceManifest:
     current = load_slice_manifest(plan.manifest_path)
     if current != plan.slice:
         raise ValueError("replay manifest changed after planning")
-    output = plan.output_directory
-    output.mkdir(parents=True, exist_ok=False)
+    return current
+
+
+def _slice_pool(current: SliceManifest, output: Path, sessions: int) -> Path:
     pool = output / "slice"
     pool.mkdir()
-    (load,) = plan.loads
-    for source in sorted(current.directory.glob("*.json"))[:plan.sessions]:
+    for source in sorted(current.directory.glob("*.json"))[:sessions]:
         (pool / source.name).symlink_to(source.resolve())
+    return pool
+
+
+def _aiperf_argv(plan: AgentReplayPlan, current: SliceManifest, output: Path, pool: Path, port: int, ipc: Path,
+                 context: int | None) -> list[str]:
+    (load,) = plan.loads
+    argv = [str(plan.aiperf_binary.with_name("python")),
+            str(Path(aiperf_client.__file__)), current.digest, str(output),
+            "--model", str(plan.tokenizer_path),
+            "--tokenizer", str(plan.tokenizer_path), "--tokenizer-trust-remote-code",
+            "--url", f"http://127.0.0.1:{port}", "--endpoint-type", "chat", "--streaming",
+            "--no-fixed-schedule", "--input-file", str(pool),
+            "--custom-dataset-type", "weka_trace", "--num-conversations", str(plan.sessions),
+            "--concurrency", str(load), "--dataset-sampling-strategy", "sequential",
+            "--cache-bust", "first_turn_prefix", "--ignore-trace-delays", "--use-server-token-count",
+            "--random-seed", str(current.rules["seed"]), "--ui", "none",
+            "--zmq-ipc-path", str(ipc), "--output-artifact-dir", str(output / "aiperf")]
+    if context is not None:
+        argv.extend(("--max-context-length", str(context)))
+    return argv
+
+
+_PRIME_CLIENT_S = 1800
+
+
+def prime_replay(plan: AgentReplayPlan, *, context_length: int | None) -> None:
+    """Tokenize every body of the sealed slice once in this evaluator process, before its first engine lifetime.
+
+    AIPerf replays the slice exactly as a window does, against a responder that answers each request at once with no
+    engine and no clock, so timed windows only look IDs up.
+    """
+    identity = json.dumps([plan.slice.digest, str(plan.tokenizer_path), plan.sessions, list(plan.loads), context_length])
+    if identity not in _PRIMED:
+        asyncio.run(_prime(plan, context_length))
+        _PRIMED.add(identity)
+
+
+async def _prime(plan: AgentReplayPlan, context_length: int | None) -> None:
+    from aiohttp import web
+
+    current = _current_slice(plan)
+    loop = asyncio.get_running_loop()
+    pending: dict[bytes, asyncio.Future] = {}
+    # Short paths: AIPerf's Unix sockets live under both (see _run_load_read).
+    work = Path(tempfile.mkdtemp(prefix="cacheon-prime-", dir="/tmp"))
+    ipc = Path(tempfile.mkdtemp(prefix="cacheon-aiperf-", dir="/tmp"))
+    with ProcessPoolExecutor(_TOKENIZE_WORKERS, mp_context=multiprocessing.get_context("spawn"),
+                             initializer=_load_pool_tokenizer, initargs=(str(plan.tokenizer_path),)) as pool:
+
+        async def chat(http_request):
+            raw = await http_request.read()
+            body = json.loads(raw)
+            key = hashlib.sha256(raw).digest()
+            if key not in _PROMPTS and key not in pending:
+                pending[key] = loop.run_in_executor(pool, _pool_chat_input_ids, body)
+            count = body.get("max_tokens", body.get("max_completion_tokens")) or 1
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(http_request)
+            await response.write(("data: " + json.dumps({
+                "id": http_request.headers["X-Request-ID"], "object": "chat.completion.chunk", "created": 0,
+                "model": body["model"], "choices": [{"index": 0, "delta": {"content": " "}, "finish_reason": "length"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": count, "total_tokens": count + 1},
+            }) + "\n\n").encode())
+            await response.write(b"data: [DONE]\n\n")
+            await response.write_eof()
+            return response
+
+        app = web.Application(client_max_size=MAX_BATCH_REQUEST_BYTES)
+        app.router.add_post("/v1/chat/completions", chat)
+        runner = web.AppRunner(app, access_log=None, shutdown_timeout=1)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        client = None
+        try:
+            await site.start()
+            argv = _aiperf_argv(plan, current, work, _slice_pool(current, work, plan.sessions),
+                                site._server.sockets[0].getsockname()[1], ipc, context_length)
+            with (work / "aiperf.log").open("w") as log:
+                client = await asyncio.create_subprocess_exec(
+                    *argv, stdout=log, stderr=log, start_new_session=True, env={**os.environ, "TMPDIR": str(ipc)},
+                )
+                code = await asyncio.wait_for(client.wait(), _PRIME_CLIENT_S)
+            if code:
+                raise RuntimeError(f"AIPerf exited {code} priming the replay; see {work / 'aiperf.log'}")
+            if not pending:
+                raise RuntimeError(f"AIPerf sent no request priming the replay; see {work / 'aiperf.log'}")
+            for key, future in pending.items():
+                ids, digest = await future
+                _PROMPTS[key] = (_shared(ids), digest)
+        finally:
+            if client is not None and client.returncode is None:
+                os.killpg(client.pid, signal.SIGKILL)
+                await client.wait()
+            await runner.cleanup()
+            shutil.rmtree(ipc, ignore_errors=True)
+    shutil.rmtree(work)
+
+
+async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRead:
+    """Drain one sealed load on the opened engine and retain the scorer's input."""
+    from aiohttp import web
+
+    current = _current_slice(plan)
+    output = plan.output_directory
+    output.mkdir(parents=True, exist_ok=False)
+    pool = _slice_pool(current, output, plan.sessions)
+    (load,) = plan.loads
     async with session.exchange() as exchange:
-        bridge = ReplayBridge(session, exchange, tokenizer, output, load, plan.closed_loop, tokenize_pool)
+        bridge = ReplayBridge(session, exchange, tokenizer, output, load, plan.closed_loop)
         app = web.Application(client_max_size=MAX_BATCH_REQUEST_BYTES)
         app.router.add_post("/v1/chat/completions", bridge.chat)
         runner = web.AppRunner(app, access_log=None, shutdown_timeout=1)
@@ -465,20 +600,8 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer, tokenize_
         try:
             await site.start()
             port = site._server.sockets[0].getsockname()[1]
-            argv = [str(plan.aiperf_binary.with_name("python")),
-                    str(Path(aiperf_client.__file__)), current.digest, str(output),
-                    "--model", str(plan.tokenizer_path),
-                    "--tokenizer", str(plan.tokenizer_path), "--tokenizer-trust-remote-code",
-                    "--url", f"http://127.0.0.1:{port}", "--endpoint-type", "chat", "--streaming",
-                    "--no-fixed-schedule", "--input-file", str(pool),
-                    "--custom-dataset-type", "weka_trace", "--num-conversations", str(plan.sessions),
-                    "--concurrency", str(load), "--dataset-sampling-strategy", "sequential",
-                    "--cache-bust", "first_turn_prefix", "--ignore-trace-delays", "--use-server-token-count",
-                    "--random-seed", str(current.rules["seed"]), "--ui", "none",
-                    "--zmq-ipc-path", str(ipc), "--output-artifact-dir", str(output / "aiperf")]
-            context = session.plan.engine_config.engine_kwargs.get("context_length")
-            if context is not None:
-                argv.extend(("--max-context-length", str(context)))
+            argv = _aiperf_argv(plan, current, output, pool, port, ipc,
+                                session.plan.engine_config.engine_kwargs.get("context_length"))
             (output / "command.json").write_text(json.dumps(argv, indent=2) + "\n")
             with (output / "aiperf.log").open("w") as log:
                 client = await asyncio.create_subprocess_exec(
@@ -521,6 +644,9 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer, tokenize_
 async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None, before_read=None) -> tuple[LoadRead, ...]:
     """Execute the sealed windows of one load, flushing cache before each window's read.
 
+    The plan's warm windows replay first, each into its own retained directory; their reads never reach the
+    session's evidence or the grader.
+
     ``before_read`` synchronizes paired lanes after their cache flushes and
     before releasing either client's first request of that window, and returns
     whether the sealed sequential rule still wants that window. Single-lane
@@ -534,18 +660,18 @@ async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None, before_r
         tokenizer = AutoTokenizer.from_pretrained(plan.tokenizer_path, trust_remote_code=True, local_files_only=True)
     reads = []
     (load,) = plan.loads
-    with ProcessPoolExecutor(_TOKENIZE_WORKERS, mp_context=multiprocessing.get_context("spawn"),
-                             initializer=_load_pool_tokenizer, initargs=(str(plan.tokenizer_path),)) as pool:
-        loop = asyncio.get_running_loop()
-        await asyncio.gather(*(loop.run_in_executor(pool, _pool_started) for _ in range(_TOKENIZE_WORKERS)))
-        for window in range(1, plan.windows + 1):
-            await flush_cache(session)
-            if before_read is not None and not await before_read(load, window):
-                break
-            read_plan = replace(plan, window=window, output_directory=plan.output_directory / f"window{window}")
-            read = await _run_load_read(session, read_plan, tokenizer=tokenizer, tokenize_pool=pool)
-            session.replay_reads.append(read)
-            reads.append(read)
+    for warm in range(1, plan.warm_windows + 1):
+        await flush_cache(session)
+        await _run_load_read(session, replace(plan, window=warm, output_directory=plan.output_directory / f"warm{warm}"),
+                             tokenizer=tokenizer)
+    for window in range(1, plan.windows + 1):
+        await flush_cache(session)
+        if before_read is not None and not await before_read(load, window):
+            break
+        read_plan = replace(plan, window=window, output_directory=plan.output_directory / f"window{window}")
+        read = await _run_load_read(session, read_plan, tokenizer=tokenizer)
+        session.replay_reads.append(read)
+        reads.append(read)
     result = {"workload": plan.workload_identity(), "reads": [asdict(read) for read in reads]}
     (plan.output_directory / "window.json").write_text(json.dumps(result, indent=2) + "\n")
     return tuple(reads)

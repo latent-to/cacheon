@@ -29,7 +29,7 @@ sequenceDiagram
     H->>L: Reuse or measure the stock reference boots (B)
     H->>L: Fresh candidate boots replay C
     L-->>H: Candidate turn records + sealed trajectory
-    H->>L: On PASS, stock bracket boot generates selected stock-drift controls
+    H->>H: On PASS, take the selected stock-drift controls from the stored reference
     H->>H: Prove the speed lane quiescent
     H->>A: Run registered eager, untimed audit
     A-->>H: Sampled slot × rank evidence
@@ -113,15 +113,18 @@ Mount roots are required to be pairwise disjoint and cannot expose the controlle
 working directory, referee source, wallet, or other ambient host data.
 
 Production speed qualification uses one physical TP lane under one frozen
-authority. One engine at a time owns the lane: the stock reference boots, the
-candidate boots and any stock bracket boot. Qualification launches a separate
+authority. One engine at a time owns the lane: the stock reference boots, then
+the candidate boots. Qualification launches a separate
 engine process for every boot.
 A request-local launch does not relax containment: mount, protocol, device,
 deadline, and evidence identities remain exact.
 
 When a qualification plan requires sampled slot audit, the candidate also runs in a
 separate eager, untimed role. Its bounded facts are host-regraded and cannot be mixed into
-the charged speed evidence.
+the charged speed evidence. On a prefill/decode lane it holds the prefill role's GPUs while
+candidate-free pristine T scores on the decode role's GPUs in its own container, each
+attested only on its half. The audit container still has device nodes for every lane GPU:
+a hostile audit can slow or crash T, which denies the PASS, but cannot reach T's memory.
 
 ### 5. Pristine reference
 

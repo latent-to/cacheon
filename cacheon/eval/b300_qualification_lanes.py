@@ -1,8 +1,8 @@
 """Physical qualification lane authority for a commissioned arena.
 
 Version-19 qualification runs one engine at a time on the whole commissioned
-allocation: the retained stock reference, the candidate boots, and the stock
-bracket all execute on this one lane. Version 20 runs a prefill/decode pair
+allocation: the retained stock reference and the candidate boots all execute
+on this one lane. Version 20 runs a prefill/decode pair
 there instead, each engine on half of it.  ``b300_arena_provider`` composes and
 re-exports these names, so import paths are unchanged.
 """

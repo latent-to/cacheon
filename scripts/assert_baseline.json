@@ -20,7 +20,7 @@
 "tests/test_settlement.py": 83,
 "tests/test_subnet_owner_burn.py": 20,
 "tests/test_validator_arena_allocation.py": 31,
-"tests/test_validator_arenas.py": 28,
+"tests/test_validator_arenas.py": 26,
 "tests/test_validator_dashboard.py": 53,
 "tests/test_validator_end_to_end.py": 42,
 "tests/test_validator_hostile_intake.py": 26,

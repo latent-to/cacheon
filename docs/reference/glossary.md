@@ -6,8 +6,7 @@
 
 **B**
 : The complete-engine replay of the frozen incumbent evaluation stack: the
-  retained stock reference and, after a speed PASS, the stock bracket boot,
-  which also generates the selected stock-drift controls for the quality gate.
+  retained stock reference, whose stored answers supply the quality gate's controls.
 
 **C**
 : A complete isolated candidate engine equal to the incumbent stack except for
@@ -47,7 +46,8 @@
 **Qualification**
 : The complete registered evidence procedure: a sealed current speed
   schedule (candidate boots against a retained stock reference, speed policy 19);
-  registered eager audit A; candidate teardown; pristine T quality grading;
+  registered eager audit A and pristine T quality grading (at once on a
+  prefill/decode lane, else in turn);
   exact-schema decision; and retained evidence.
 
 **Reproduction pending**
@@ -67,8 +67,7 @@
 **Stock reference**
 : Four fresh stock boots of N windows on the commissioned lane, retained in the
   evidence store and reused by every candidate with the same lane, launch,
-  runtime and workload identity. A stock bracket boot after a speed PASS that
-  reads faster than it makes the result `NO_DECISION` and retires it.
+  runtime and workload identity.
 
 **Target**
 : Smallest registered semantic reward identity. A normal proposal resolves to

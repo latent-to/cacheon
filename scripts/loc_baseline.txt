@@ -148,13 +148,27 @@
 # it grades FAIL before the bracket, audit and T. Runtime +100/-27, tests +10, docs +25/-8, +2 notes (2026-10-30).
 # The PD results page records the first live below_payment_bar stop and its timing: +13 docs, +1 note (2026-10-31).
 # The miner guide states that bundle modules run under a generated package name: +11 docs, +1 note (2026-10-31).
-(root) 1157
+# PD replay on a host that hides SMT and clock tiers (Verda 8x B300, 2026-11-02): each evaluator process tokenizes
+# the sealed slice once before its first lifetime and bridge.jsonl keeps each input's digest, every lifetime starts
+# from a frozen heap, DP controllers and frontends get their own vCPUs (cpu_roles), and the commission times the pin
+# table. Runtime +320/-64 (oci_backend.py ceiling raised), scripts +19/-10, docs +26/-3, +4 notes.
+# Owner order 2026-11-02 (a measured noise floor that holds on any host): sealed warm windows replay untimed first in
+# every lifetime, and a stock reference wider than twice the sealed boot noise is refused: runtime +40/-2, docs +12/-1, +2 notes.
+# AGENTS.md scopes the code-volume rules to tracked files: +9 root, +1 note (2026-11-02).
+# Warm windows grow a PD lifetime to 164 MB (stock reference and checkpoint bounds raised), and the stock bracket's
+# controls take their IDs from the primed cache, not bridge.jsonl: runtime +11/-5, PD results +36/-1, +2 notes.
+# Shiv deleted the stock reference spread refusal after it refused Verda z6's reference (0.70% against 0.60%,
+# 2026-11-02): runtime -23, docs -6, +2 notes.
+# PD audit/pristine CPU roles use the first group of the full lane plan: runtime/docs net 0, +51 regression lines.
+# Explicit stock imports retain original arms across this audit repair: runtime +62, docs +7, tests +53; replaces repeat campaigns.
+# The qualification publication resolver waits out the shared intake lock within the coordinator's bound: runtime +17, +1 note.
+(root) 1166
 .github 338
 bundles 2398
-cacheon 92236
+cacheon 92611
 cacheon_kernels 936
 dashboard 4393
-docs 13461
+docs 13532
 examples 745
-scripts 4411
-tests 13995
+scripts 4434
+tests 14088
