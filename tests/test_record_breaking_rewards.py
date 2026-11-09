@@ -140,20 +140,43 @@ def test_another_baseline_does_not_compete_and_missing_margin_is_an_error(tmp_pa
             store.passed_reward_claims()
 
 
-def test_a_declared_recommission_continues_the_reward_record(tmp_path):
+@pytest.mark.parametrize(("retimed", "middle", "earns", "bar"), [
+    (None, "1.065", False, "1.07590"),  # continued: 1.065 must beat the carried 1.06 by 1%
+    ("1.07", "1.08", False, "1.08605"),  # re-timed up: 1.08 beat 1.06 by 1% but not 1.07
+    ("1.05", "1.065", True, "1.06575"),  # re-timed down: 1.065 missed 1.06 but beats 1.05
+])
+def test_a_declared_recommission_continues_the_reward_record(tmp_path, retimed, middle, earns, bar):
+    from decimal import Decimal
+    from cacheon.chain.evaluation_order import payment_bar, reward_comparisons
+
     with _store(tmp_path) as store:
         first = _qualified_settlement_candidate(store, speedups=("1.06", "1.06"))
-        lower = _qualified_settlement_candidate(store, index=1, marker="lower", arena_marker="re",
-                                                speedups=("1.05", "1.05"))
-        higher = _qualified_settlement_candidate(store, index=2, marker="higher", arena_marker="re",
-                                                 speedups=("1.1", "1.1"))
-        assert lower.hotkey in {c.hotkey for c in store.passed_reward_claims()}
+        later = [_qualified_settlement_candidate(store, index=index, marker=marker, arena_marker="re",
+                                                 speedups=(speedup, speedup))
+                 for index, (marker, speedup) in enumerate(
+                     (("middle", middle), ("higher", "1.1"), ("last", "1.11")), 1)]
+        assert later[0].hotkey in {c.hotkey for c in store.passed_reward_claims()}
         groups = [f"{p['arena_digest']}:{p['incumbent_stack_digest']}" for p in (
             json.loads(r[0])["primary"] for r in store._db.execute(
                 "SELECT candidate_json FROM settlement_candidates ORDER BY rowid"))]
+        record = {"reservation_id": first.reservation_digest, "speedup": retimed}
         store._db.execute("INSERT INTO metadata(key,value) VALUES('reward_group_continuations',?)",
                           (json.dumps({groups[1]: groups[0]}),))
-        assert {c.hotkey for c in store.passed_reward_claims()} == {first.hotkey, higher.hotkey}
+        if retimed:
+            store._db.execute("INSERT INTO metadata(key,value) VALUES('reward_group_remeasurements',?)",
+                              (json.dumps({groups[1]: record}),))
+        paid = {c.hotkey for c in store.passed_reward_claims()}
+        assert paid == {first.hotkey, later[1].hotkey} | ({later[0].hotkey} if earns else set())
+        comparisons = reward_comparisons(store._db)
+        assert comparisons[later[0].reservation_digest]["previous_best_speedup"] == Decimal(retimed or "1.06")
+        assert comparisons[later[2].reservation_digest]["previous_best_speedup"] == Decimal("1.1")
+        stack = later[0].incumbent_manifest
+        assert [payment_bar(store._db, stack, c.reservation_digest) for c in (later[0], later[2])] == [
+            bar, "1.1165"]
+        store._db.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('reward_group_remeasurements',?)",
+                          (json.dumps({groups[0]: record}),))
+        with pytest.raises(ValueError, match="continued"):
+            reward_comparisons(store._db)
 
 
 def test_grandfathering_does_not_exempt_a_new_runtime(tmp_path, monkeypatch):
