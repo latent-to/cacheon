@@ -162,13 +162,14 @@
 # PD audit/pristine CPU roles use the first group of the full lane plan: runtime/docs net 0, +51 regression lines.
 # Explicit stock imports retain original arms across this audit repair: runtime +62, docs +7, tests +53; replaces repeat campaigns.
 # The qualification publication resolver waits out the shared intake lock within the coordinator's bound: runtime +17, +1 note.
+# A continued reward record re-timed on a new commission's stock reference (Shiv, 2026-11-09): runtime +36, docs +4, tests +23 net of the folded continuation test, +1 note.
 (root) 1166
 .github 338
 bundles 2398
-cacheon 92611
+cacheon 92647
 cacheon_kernels 936
 dashboard 4393
-docs 13532
+docs 13536
 examples 745
-scripts 4434
-tests 14088
+scripts 4435
+tests 14111

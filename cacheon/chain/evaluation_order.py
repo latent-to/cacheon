@@ -87,17 +87,20 @@ def payment_bar(db, stack, reservation_id: str) -> str:
     """The speedup at which settlement would pay a PASS of this reservation on ``stack``; "" for any PASS.
 
     That is 1.5 percent over the best rewarded PASS that arrived before it in the stack's reward
-    group, or over stock; a grandfathered runtime pays every PASS. The dispatcher seals it into a
-    new request and a speed PASS below it ends as a FAIL, skipping the quality controls, audit and T
-    (Shiv, 2026-10-30). Should the crown above it later be revoked, that FAIL stands; re-run it.
+    group (or its re-time on this commission, when recorded and higher), or over stock; a
+    grandfathered runtime pays every PASS. The dispatcher seals it into a new request and a speed
+    PASS below it ends as a FAIL, skipping the quality controls, audit and T (Shiv, 2026-10-30).
+    Should the crown above it later be revoked, that FAIL stands; re-run it.
     """
     if stack.runtime_digest in reward_grandfathered_runtimes(db):
         return ""
     arrival = db.execute("SELECT block,event_index,event_subindex,hotkey,content_hash FROM reservations "
                          "WHERE reservation_id=?", (reservation_id,)).fetchone()
     best = _reward_walk(db, tuple(arrival))[1]
-    group = _continued_group(reward_group_continuations(db), f"{stack.arena_digest}:{stack.digest}")
-    return str(best.get(group, (Decimal(1), None))[0] * (1 + V17_REWARD_MARGIN))
+    continuations = reward_group_continuations(db)
+    previous, _ = _previous_best(best, continuations, _reward_group_remeasurements(db, continuations),
+                                 f"{stack.arena_digest}:{stack.digest}")
+    return str(previous * (1 + V17_REWARD_MARGIN))
 
 
 def _reward_walk(db, before: tuple | None = None) -> tuple[dict[str, dict], dict[str, tuple]]:
@@ -109,6 +112,7 @@ def _reward_walk(db, before: tuple | None = None) -> tuple[dict[str, dict], dict
     comparisons = {}
     grandfathered = set(reward_grandfathered_runtimes(db))
     continuations = reward_group_continuations(db)
+    remeasured = _reward_group_remeasurements(db, continuations)
     rows = db.execute(
         "SELECT sc.* FROM settlement_candidates sc JOIN reservations r USING(reservation_id) "
         "WHERE r.status='qualified' AND r.decision='PASS' "
@@ -129,7 +133,8 @@ def _reward_walk(db, before: tuple | None = None) -> tuple[dict[str, dict], dict
         # Scores describe the complete workload, including different target slots.
         # A newly commissioned baseline has a different denominator; a declared
         # recommission of the same baseline continues the earlier record.
-        group = _continued_group(continuations, f"{primary['arena_digest']}:{primary['incumbent_stack_digest']}")
+        pair = f"{primary['arena_digest']}:{primary['incumbent_stack_digest']}"
+        group = _continued_group(continuations, pair)
         identity = (group.split(":")[0], primary["target_id"],
                     json.dumps(contribution, sort_keys=True, separators=(",", ":")))
         if identity in seen and not exempt:
@@ -137,7 +142,7 @@ def _reward_walk(db, before: tuple | None = None) -> tuple[dict[str, dict], dict
         seen.add(identity)
         qualifications = tuple(payload[key] for key in ("primary", "reproduction") if key in payload)
         score = min(Decimal(q["speedup"]) for q in qualifications)
-        previous, previous_id = best.get(group, (Decimal(1), None))
+        previous, previous_id = _previous_best(best, continuations, remeasured, pair)
         relative = score / previous
         margin = Decimal(0)
         # The first PASS clears the margin over stock too: Shiv, 2026-10-30, after a +1.42% first PASS was paid.
@@ -209,6 +214,37 @@ def _continued_group(continuations: dict[str, str], key: str) -> str:
             return key
         key = continuations[key]
     raise ValueError("reward group continuations form a cycle")
+
+
+def _reward_group_remeasurements(db, continuations: dict[str, str]) -> dict[str, tuple[str, Decimal]]:
+    """Read the operator's re-timed records: a continued record's best PASS measured on the later commission.
+
+    A continued record's speedups were measured against the earlier commission's stock reference.
+    On a new host the higher of the carried and re-timed speedups is the previous best until a later
+    PASS replaces it (Shiv, 2026-11-09: keep the arena strict; n9 re-timed the 1.1088 crown at 1.1059).
+    """
+    import json
+    from cacheon.stack_identity import require_sha256_hex
+
+    row = db.execute("SELECT value FROM metadata WHERE key='reward_group_remeasurements'").fetchone()
+    result = {}
+    for key, value in ({} if row is None else json.loads(row[0])).items():
+        if key not in continuations or set(value) != {"reservation_id", "speedup"}:
+            raise ValueError("reward group remeasurement must re-time a continued arena:stack record")
+        require_sha256_hex(value["reservation_id"], field="reward group remeasurement")
+        speedup = Decimal(str(value["speedup"]))
+        if not speedup.is_finite() or speedup <= 0:
+            raise ValueError("reward group remeasurement speedup must be positive")
+        result[key] = (value["reservation_id"], speedup)
+    return result
+
+
+def _previous_best(best, continuations, remeasured, key):
+    """The record a PASS on ``key`` must beat: the carried record, or its re-time there when higher."""
+    previous, previous_id = best.get(_continued_group(continuations, key), (Decimal(1), None))
+    if key in remeasured and remeasured[key][0] == previous_id:
+        previous = max(previous, remeasured[key][1])
+    return previous, previous_id
 
 
 # Owner ruling 2026-09-30: a later V17 PASS pays when it beats the previous best by 1.5%. The
