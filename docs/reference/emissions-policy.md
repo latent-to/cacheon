@@ -60,7 +60,7 @@ not a continuation and starts a new record. When a continued commission measures
 different stock reference (a new host), record the continued record's best PASS
 re-timed there in `reward_group_remeasurements`, mapping the later pair to
 `{"reservation_id": ..., "speedup": "<decimal>"}`; until a later PASS replaces it,
-comparison, score ratios, and the payment bar there use that speedup, up or down.
+comparison, score ratios, and the payment bar use the higher of it and the carried one.
 
 The rule applies to existing and future non-grandfathered PASSes; it does not
 rewrite qualification, settlement, or already published weights. A crown is

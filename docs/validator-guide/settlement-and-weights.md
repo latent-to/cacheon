@@ -213,8 +213,8 @@ promotion, integration, or release cannot renew the same bounty.
 
 The reward builder reopens retained PASS evidence and pays only records that beat
 the preceding rewarded v17, v18 or v19 record against the same baseline by at least 1.5%
-(`V17_REWARD_MARGIN`); a declared recommission continues that record, re-timed on a
-new stock reference when recorded (see the emissions policy). Credit remains the
+(`V17_REWARD_MARGIN`); a declared recommission continues that record, raised to its
+re-time on a new stock reference when higher (see the emissions policy). Credit remains the
 unshrunken marginal logarithmic reward. An
 unpaid estimate does not advance the reward record. Historical policies retain
 their configured minimum margin against the preceding rewarded record.

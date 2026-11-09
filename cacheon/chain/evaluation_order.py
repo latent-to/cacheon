@@ -87,7 +87,7 @@ def payment_bar(db, stack, reservation_id: str) -> str:
     """The speedup at which settlement would pay a PASS of this reservation on ``stack``; "" for any PASS.
 
     That is 1.5 percent over the best rewarded PASS that arrived before it in the stack's reward
-    group, as re-timed on this commission when the operator recorded one, or over stock; a
+    group (or its re-time on this commission, when recorded and higher), or over stock; a
     grandfathered runtime pays every PASS. The dispatcher seals it into a new request and a speed
     PASS below it ends as a FAIL, skipping the quality controls, audit and T (Shiv, 2026-10-30).
     Should the crown above it later be revoked, that FAIL stands; re-run it.
@@ -220,8 +220,8 @@ def _reward_group_remeasurements(db, continuations: dict[str, str]) -> dict[str,
     """Read the operator's re-timed records: a continued record's best PASS measured on the later commission.
 
     A continued record's speedups were measured against the earlier commission's stock reference.
-    When the later commission's reference differs (a new host), the PASS re-timed there is the
-    previous best until a later PASS replaces it (Shiv, 2026-11-09: n9 stock ran 1.01% slower).
+    On a new host the higher of the carried and re-timed speedups is the previous best until a later
+    PASS replaces it (Shiv, 2026-11-09: keep the arena strict; n9 re-timed the 1.1088 crown at 1.1059).
     """
     import json
     from cacheon.stack_identity import require_sha256_hex
@@ -240,10 +240,10 @@ def _reward_group_remeasurements(db, continuations: dict[str, str]) -> dict[str,
 
 
 def _previous_best(best, continuations, remeasured, key):
-    """The record a PASS on ``key`` must beat, re-timed on that commission when one is recorded."""
+    """The record a PASS on ``key`` must beat: the carried record, or its re-time there when higher."""
     previous, previous_id = best.get(_continued_group(continuations, key), (Decimal(1), None))
     if key in remeasured and remeasured[key][0] == previous_id:
-        previous = remeasured[key][1]
+        previous = max(previous, remeasured[key][1])
     return previous, previous_id
 
 
