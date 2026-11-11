@@ -221,8 +221,8 @@ its measured speedup falls below the mirrored bound 1 − u; that failure is
 `candidate_slower`. A miss inside the band is `speed_threshold_not_met`: the bar was
 not cleared, and the candidate was not measurably slower either. A candidate that
 clears the bar but fails the service-attainment gate is `service_contract_not_met`.
-Under policy 20 a candidate whose pooled per-user decode p50 falls below the sealed
-floor fails with `service_floor_not_met`, at any speedup.
+Under policies 20 and 21 a candidate whose pooled per-user decode p50 falls below the
+sealed floor at any sealed load fails with `service_floor_not_met`, at any speedup.
 Reports settled before this split carry the retained coarse code `speed_regression`,
 which remains valid for them and is never recorded on a new verdict.
 
@@ -766,13 +766,16 @@ Omit `--warmup-request-count` for no client warmup; version 0.13.0 rejects an
 explicit zero. The engine still receives its ordinary conditioning requests.
 
 Replay qualification is commissioned with `session.replay`: absolute `manifest_path`,
-`aiperf_binary` and `tokenizer_path`, the manifest's computed `slice_digest`, a
-single operating `load`, and the number of `windows` N each engine boot replays.
+`aiperf_binary` and `tokenizer_path`, the manifest's computed `slice_digest`, the
+operating `load` (one session count, or a list of distinct counts that a
+closed-loop replay runs in order), and the number of `windows` N each engine boot
+replays at each load.
 Optional `max_work_seconds` bounds each boot's replay work; expiry aborts, never
 grades incomplete work. Optional `warm_windows` (1 or 2) replays that many whole
-windows untimed at the start of every lifetime, each after its own cache flush.
+windows untimed before each load's sealed windows, each after its own cache flush.
 Their directories (`warm1`, ...) are retained, but their reads never reach the
-session evidence or the grader. On an 8x B300 VM four stock lifetimes' third windows agreed to 0.04 percent,
+session evidence or the grader. The first load's directories keep the one-load
+layout; a later load's sit under `load<sessions>/`. On an 8x B300 VM four stock lifetimes' third windows agreed to 0.04 percent,
 while their first ran 1.4 to 3.1 percent slow (stock Triton kernels keyed on the decode batch and KV pool size
 compile on the clock, so a seed harvested on another host never matches) and their second up to 1.3 percent, in
 its tail, with nothing compiling. Engine startup retains its separate OCI initialization deadline. `resident_speed.goodput` seals the service `contract`

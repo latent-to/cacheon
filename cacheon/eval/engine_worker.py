@@ -510,7 +510,7 @@ def _process_tree(root: int) -> list[int]:
 
 
 def _pin_engine_processes(plan: str | None, *, schedulers: int, pinned: int, companion: int | None = None,
-                          engine: int = 0) -> None:
+                          engine: int = 0, dp_sizes: tuple[int, ...]) -> None:
     """Pin each SGLang scheduler (by TP rank) to its sealed vCPU and every other engine process to the pool.
 
     On the B300 VM, 13 of every 15 vCPUs run single-thread code at half speed, and unpinned schedulers
@@ -556,8 +556,9 @@ def _pin_engine_processes(plan: str | None, *, schedulers: int, pinned: int, com
     if {offset: sorted(found) for offset, found in ranks.items()} != {
             side * schedulers: list(range(schedulers)) for side in sides}:
         raise RuntimeError(f"CPU pin plan found scheduler ranks {ranks}; each engine runs {schedulers}")
-    if engines is not None and list(controllers.values()) != [1] * len(sides):
-        raise RuntimeError(f"CPU pin plan pins one DP controller per engine; found {controllers}")
+    # SGLang starts a DP controller only for an engine with dp_size > 1 (a GLM-5.3-Flash decode role runs dp 1).
+    if engines is not None and list(controllers.values()) != [int(size > 1) for size in dp_sizes]:
+        raise RuntimeError(f"CPU pin plan pins one DP controller per DP engine; found {controllers}")
 
 
 @contextlib.contextmanager
@@ -676,14 +677,15 @@ def isolated_engine_session(
             eager_members: frozenset[int] = frozenset()
             try:
                 _report_running_engine_failures(engine)
+                dp_sizes = tuple(int(role.get("dp_size") or 1) for role in (prefill, kwargs) if role is not None)
                 if prefill is not None:
                     url = pd_engine.wait_ready(companion, prefill, time.monotonic() + 1800)
                     engine = pd_engine.PrefillDecodePair(
-                        engine, url, prefill["disaggregation_bootstrap_port"], companion,
-                        int(prefill.get("dp_size") or 1), int(kwargs.get("dp_size") or 1))
+                        engine, url, prefill["disaggregation_bootstrap_port"], companion, *dp_sizes)
                     eager_members = frozenset(_process_tree(companion.pid))
                 _pin_engine_processes(plan, schedulers=tp, pinned=pinned,
-                                      companion=companion.pid if companion else None, engine=lone)
+                                      companion=companion.pid if companion else None, engine=lone,
+                                      dp_sizes=dp_sizes)
                 if active:
                     assert receipts is not None
                     active_receipts = receipts.require(

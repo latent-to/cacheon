@@ -24,13 +24,14 @@ ENGINE_KWARG_KINDS: Mapping[str, str] = {
         hicache_mem_layout hicache_io_backend dsv4_attn_backend mm_feature_transport
         reasoning_parser tool_call_parser speculative_draft_attention_backend
         speculative_draft_model_path moe_a2a_backend disaggregation_transfer_backend
+        dsa_prefill_backend dsa_decode_backend
     """.split(), "token"),
     **dict.fromkeys("""
         disable_radix_cache enable_dp_attention enable_flashinfer_allreduce_fusion
         trust_remote_code enable_hierarchical_cache enable_decoder_swa_bounded_replay
         weight_loader_prefetch_checkpoints enable_layernorm_sp enable_megamoe_for_layernorm_sp
         speculative_use_block_verification enable_dp_lm_head enable_dp_attention_local_control_broadcast
-        disaggregation_decode_enable_radix_cache
+        disaggregation_decode_enable_radix_cache enable_linear_replayssm_spec
     """.split(), "bool"),
     # Speed policy 20's prefill/decode pair: each role's kwargs and environment over the shared ones
     # (cacheon.eval.pd_engine). GPU placement and the bootstrap port are derived, never sealed.

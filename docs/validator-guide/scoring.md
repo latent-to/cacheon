@@ -55,6 +55,23 @@ below it is a mis-sealed load and yields `NO_DECISION`. A sealed goodput policy
 with `decode_floor` 1 selects policy 20; its digest names the pair topology, the
 closed-loop arrival and the gate.
 
+Policy 21 may seal several loads (for example low, mid and high session counts) so
+that no single batch size carries the verdict. Every lifetime replays each load in
+the sealed order, and a boot's cost becomes the mean over loads of each load's
+log mean window cost:
+
+```text
+cost(boot)  = mean over loads l of log(mean elapsed serving seconds over the boot's N windows at l)
+speedup     = geometric mean over loads of the per-load throughput ratios
+```
+
+The window variances average over loads (divided by the square of the load
+count); `boot_noise²` is shared by every load of a lifetime and is added once.
+One load is exactly the single-load arithmetic above. The goodput policy's
+`decode_floors` maps each load to its own per-user decode floor, checked on
+that load's candidate turns at every look (`service_floor_not_met` names the
+load); without it every load is held to the contract's `decode_floor_tps`.
+
 The exact thresholds come from a frozen `CalibrationManifest` bound to the
 measured reference, arena, runtime, model, hardware, workload, and verifier.
 Provenance still records the exact controller, but measurement reuse is not

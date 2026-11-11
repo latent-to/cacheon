@@ -267,6 +267,9 @@ def _cache_rows(pool, batch, layer: int | None) -> list[tuple]:
     paged = dsv4_state_rows(pool, batch, layer)
     if paged is not None:
         return paged
+    dsa = dsa_state_rows(pool, batch.out_cache_loc, layer)
+    if dsa is not None:
+        return dsa
     pool = getattr(pool, "full_kv_pool", pool)
     buffers = [
         buffer
@@ -276,9 +279,6 @@ def _cache_rows(pool, batch, layer: int | None) -> list[tuple]:
     ]
     if not buffers:
         raise RuntimeError(f"no cache buffer recognized on {type(pool).__name__}")
-    dsa = dsa_state_rows(pool, batch.out_cache_loc, layer)
-    if dsa is not None:
-        return dsa
     held = getattr(pool, "dtype", None)
     fp8 = held is not None and held.is_floating_point and held.itemsize == 1
     return [
@@ -323,6 +323,10 @@ def _dsa_choice_position(module, count: int) -> int | None:
     if (isinstance(module, getattr(model, "DeepseekV2DecoderLayer", ()))
             and module.self_attn.use_dsa and count == 3):
         return 2
+    # GLM-5.3-Flash returns (hidden_states, topk_indices); a linear-attention layer's indices are None.
+    hybrid = sys.modules.get("sglang.srt.models.glm5_next")
+    if isinstance(module, getattr(hybrid, "Glm5NextDecoderLayer", ())) and count == 2:
+        return 1
     return None
 
 

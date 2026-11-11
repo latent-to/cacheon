@@ -45,7 +45,7 @@ function replayPerformance(speed, title) {
     return lanes.reduce((n, lane) => n + lane[field], 0) / lanes.length; };
   return `<section class="performance">${title}
     <h4>Agent replay: measured against the baseline</h4>
-    <p>Both sides replayed the same ${metricNumber(speed.lanes[0].warm_turns, 0)} coding-agent turns at ${metricNumber(speed.load, 0)} concurrent sessions per lane,
+    <p>Both sides replayed the same ${metricNumber(speed.lanes[0].warm_turns, 0)} coding-agent turns at ${speed.loads.map((load) => metricNumber(load, 0)).join(" / ")} concurrent sessions per lane,
       ${reference ? `${metricNumber(speed.window_limit, 0)} times per fresh engine boot; the candidate ran ${metricNumber(speed.windows / speed.window_limit, 0)} boots against ${metricNumber(speed.reference_boots, 0)} retained stock boots`
         : `${metricNumber(speed.windows, 0)} time${speed.windows === 1 ? "" : "s"}${early ? ` of a possible ${metricNumber(speed.window_limit, 0)}` : ""}`}.</p>
     <div class="cards">${card(metricGain(speed.speedup), "Measured gain", grade.decision === "PASS" ? "ok" : "bad")}

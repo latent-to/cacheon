@@ -230,8 +230,9 @@ Speed problems:
 - C clears the speed bound below the payment bar (1.5% over the best paid PASS on
   its baseline, or over stock): candidate FAIL (`below_payment_bar`) without
   the quality controls, A or T;
-- under policy 20, C's pooled per-user decode p50 falls below the sealed floor: candidate
-  FAIL (`service_floor_not_met`);
+- under policies 20 and 21, C's pooled per-user decode p50 falls below the sealed floor at
+  any sealed load: candidate FAIL (`service_floor_not_met`, naming the load when the arena
+  seals several);
 - arm identities/resources differ: authority mismatch, never a valid speedup;
 - candidate falls back for material calls: no positive marginal effect.
 

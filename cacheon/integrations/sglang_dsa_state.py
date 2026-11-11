@@ -47,8 +47,12 @@ def dsa_state_rows(pool, locations: torch.Tensor, layer: int | None = None) -> l
 
     ``layer`` keeps only that decoder layer's two caches. Grading every layer's rows on
     every layer call cost 156 buffers a call and 78 calls a forward: the GLM audit took
-    65 minutes against 14 before it (B300, 2026-09-23).
+    65 minutes against 14 before it (B300, 2026-09-23). A hybrid linear-attention pool
+    (GLM-5.3-Flash) holds the DSA cache of its full-attention layers only, numbered
+    compactly; a linear-attention layer writes none of it.
     """
+    mapping = getattr(pool, "full_attention_layer_id_mapping", None)
+    pool = getattr(pool, "full_kv_pool", pool)
     index_buffers = getattr(pool, "index_k_with_scale_buffer", None)
     if index_buffers is None:
         return None
@@ -56,7 +60,9 @@ def dsa_state_rows(pool, locations: torch.Tensor, layer: int | None = None) -> l
         raise RuntimeError("DSA audit requires the commissioned CUDA cache layout")
     kv_buffers = pool.kv_buffer
     if layer is not None:
-        local = layer - pool.start_layer
+        if mapping is not None and layer not in mapping:
+            return []
+        local = layer - pool.start_layer if mapping is None else mapping[layer]
         if not (0 <= local < len(kv_buffers) and local < len(index_buffers)):
             raise RuntimeError(f"layer {layer} has no DSA cache in this pool")
         kv_buffers, index_buffers = [kv_buffers[local]], [index_buffers[local]]

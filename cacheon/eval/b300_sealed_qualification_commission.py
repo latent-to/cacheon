@@ -360,7 +360,9 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
     }:
         raise B300RegisteredQualificationError("sealed replay fields differ")
     _digest(replay["slice_digest"], "replay slice")
-    _commission_int(replay["load"], "replay load", minimum=1)
+    # One load is an integer; several (low, mid, high sessions) a list replayed in order.
+    for load in replay["load"] if type(replay["load"]) is list and replay["load"] else [replay["load"]]:
+        _commission_int(load, "replay load", minimum=1)
     _commission_int(replay["windows"], "replay windows", minimum=1)
     if "max_work_seconds" in replay:
         _commission_int(replay["max_work_seconds"], "replay work seconds", minimum=1)

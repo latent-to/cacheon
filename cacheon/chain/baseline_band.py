@@ -118,7 +118,7 @@ def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
                 work = fixed_work_rate(read, expected)
                 elapsed = fixed_work_rate(read, expected, wall_time=True)
                 # Version 19 retains whole boots: reference boots, then any retained bracket, per arm.
-                boot = {"boot": index // reads.window_limit} if reads.boots else {}
+                boot = {"boot": index // (reads.window_limit * len(reads.loads))} if reads.boots else {}
                 arm.append({"role": role, "window": read.window, "load": read.load,
                             "physical_lane": read.lane, **boot,
                             "warm_turns": work.turns, "request_time_s": work.elapsed_s,
@@ -139,8 +139,8 @@ def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
                 retained.resident_policy.version, "pooled_elapsed_orientation"),
             "speed_stage_seconds": retained.completed_monotonic_s - retained.started_monotonic_s,
             "workload_digest": retained.workload_digest,
-            "load": reads.incumbent[0].load,
-            "windows": len(reads.candidate if reads.boots else reads.incumbent),
+            "loads": list(reads.loads),
+            "windows": len(reads.candidate if reads.boots else reads.incumbent) // len(reads.loads),
             "window_limit": reads.window_limit, "reference_boots": reads.reference_boots,
             "contract": asdict(policy.contract),
             "grading": {"decision": grade.decision.value, "detail": grade.verdict.detail,

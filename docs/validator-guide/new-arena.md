@@ -79,11 +79,15 @@ python3 scripts/arena/harvest_runtime_seed.py --arena-inputs examples/arena_inpu
 The tool boots the stock engine once in the exact image with the sealed flags
 and the production cache environment, stops it, seals the cache's regular files
 as the seed with the receipt the commissioner recomputes, and with `--verify`
-boots once more from the seed and records both boot times.
+boots once more from the seed and records both boot times. For a prefill/decode
+pair it boots each role in turn, in its one-engine form (the shared options under
+the role's own), into the same cache, since one seed serves both engines of a
+lease; `--gpus` names one role's width.
 
 **Deployment-owned packet.** The remaining packet files are sealed outside this
 repository and copied by digest, never fabricated: the fixed qualification
-capabilities (its replay load is rewritten to the arena's value), the numeric
+capabilities (its replay load, per-load decode floors and audit controls are
+rewritten to the arena's values), the numeric
 judge, the finalize step, the closed adapter, the model provision receipt and
 the pod transport. One directory holds them:
 
@@ -107,7 +111,8 @@ the pod transport. One directory holds them:
 | `slug` | the short name in unit names, credential ids, digest domains and rendered file names |
 | `model_profile_key` | the model profile key the deployment profile seals |
 | `tensor_parallel_size` | the lane width; one engine at a time owns every GPU of the lane |
-| `replay_load` | the sealed replay sessions per window |
+| `replay_load` | the sealed replay sessions per window: one count, or an ascending list (low, mid, high) a PD pair replays in every lifetime and scores as a geometric mean |
+| `decode_floors` | required with several loads, else optional: each load's per-user decode floor in tokens/s, keyed by the load as a string, as canonical decimals; written into the packet's goodput policy |
 | `tokens_per_prompt` | the largest recorded output budget of one turn in the sessions the replay serves; the commission refuses any other value |
 | `tokenizer_asset` | the tokenizer directory name inside the replay inputs archive |
 | `model_in_ram` | whether the checkpoint is served from a RAM mount or from its storage path |
@@ -116,7 +121,7 @@ the pod transport. One directory holds them:
 | `node.name` | the host class whose measured scheduler positions follow |
 | `node.scheduler_starts` | one measured-fast vCPU start per GPU of the host, in GPU order |
 | `node.client_cpus` | the validator client core set per lane, keyed by the lane's device list |
-| `node.engine_cpus` | optional: per engine, keyed by its first GPU, the data-parallel controller's vCPU and the frontend's vCPU |
+| `node.engine_cpus` | optional: per engine, keyed by its first GPU, the data-parallel controller's vCPU and the frontend's vCPU; an engine with DP 1 (a GLM-5.3-Flash decode role) runs no controller |
 
 The node section is a measured fact of the host, not a tuning knob: scheduler
 pins, engine roles and the client set bind the sealed runtime digest. The

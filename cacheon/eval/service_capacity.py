@@ -384,29 +384,41 @@ def statistical_grade(
     return ServiceVerdict(decision, ratio, required, detail, se, lower)
 
 
-def _boot_costs(reads: Sequence[LoadRead], arm: str, expected: dict[str, tuple[int, int]]) -> list[list[float]]:
-    """Split one arm's reads into engine lifetimes; each lifetime numbers its windows from 1."""
-    boots: list[list[float]] = []
+def _boot_costs(reads: Sequence[LoadRead], arm: str, expected: dict[str, tuple[int, int]]) -> list[dict[int, list[float]]]:
+    """Split one arm's reads into engine lifetimes; a lifetime replays each load once, numbering its windows from 1."""
+    boots: list[dict[int, list[float]]] = []
     for read in reads:
-        if read.arm != arm or (read.window != 1 and (not boots or read.window != len(boots[-1]) + 1)):
+        lifetime = boots[-1] if boots else {}
+        if read.arm != arm or (read.window != 1 and (
+                not lifetime or read.load != next(reversed(lifetime)) or read.window != len(lifetime[read.load]) + 1)):
             raise ServiceEvidenceError("reference reads do not form whole engine lifetimes")
         if read.window == 1:
-            boots.append([])
-        boots[-1].append(fixed_work_rate(read, expected, wall_time=True).elapsed_s)
+            if not boots or read.load in lifetime:
+                boots.append({})
+            boots[-1][read.load] = []
+        boots[-1][read.load].append(fixed_work_rate(read, expected, wall_time=True).elapsed_s)
     return boots
 
 
-def _boot_term(costs: list[float], window_noise: float, boot_noise: float) -> tuple[float, float]:
-    """Log mean cost of one lifetime and its variance; sealed noise bounds the stock/candidate log ratio.
+def _boot_term(lifetime: dict[int, list[float]], window_noise: float, boot_noise: float) -> tuple[float, float]:
+    """Mean over the lifetime's loads of each load's log mean cost, and its variance.
 
-    Each arm carries half: a whole bound per arm put the sealed bar above v18's (simulated 2026-10-25)."""
-    n, total = len(costs), math.fsum(costs)
-    variance = window_noise ** 2 / (2 * n)
-    if n > 1:
-        deleted = [math.log((total - cost) / (n - 1)) for cost in costs]
-        center = math.fsum(deleted) / n
-        variance = max(variance, (n - 1) / n * math.fsum((v - center) ** 2 for v in deleted))
-    return math.log(total / n), variance + boot_noise ** 2 / 2
+    A stock/candidate difference of these terms is the log of the geometric mean of the per-load throughput ratios
+    (one load: that load's ratio). Sealed noise bounds the log ratio; each arm carries half: a whole bound per arm
+    put the sealed bar above v18's (simulated 2026-10-25). The boot offset is shared by every load of a lifetime,
+    so its share is never divided by the load count."""
+    terms = []
+    for costs in lifetime.values():
+        n, total = len(costs), math.fsum(costs)
+        variance = window_noise ** 2 / (2 * n)
+        if n > 1:
+            deleted = [math.log((total - cost) / (n - 1)) for cost in costs]
+            center = math.fsum(deleted) / n
+            variance = max(variance, (n - 1) / n * math.fsum((v - center) ** 2 for v in deleted))
+        terms.append((math.log(total / n), variance))
+    count = len(terms)
+    return (math.fsum(row[0] for row in terms) / count,
+            math.fsum(row[1] for row in terms) / count ** 2 + boot_noise ** 2 / 2)
 
 
 def reference_grade(
@@ -414,7 +426,7 @@ def reference_grade(
     contract: ServiceContract, expected: dict[str, tuple[int, int]], *,
     window_noise: float, boot_noise: float, error_rate: float, boots: int,
     attainment_tolerance: float, attainment_margin: float, futility_margin: float = 0.0,
-    sentinel: Sequence[LoadRead] = (), decode_floor: bool = False, reference_lane: str = "",
+    sentinel: Sequence[LoadRead] = (), decode_floors: dict[int, float] | None = None, reference_lane: str = "",
 ) -> ServiceVerdict:
     """Grade candidate engine lifetimes against a retained stock reference campaign on the same lane.
 
@@ -422,13 +434,15 @@ def reference_grade(
     against those reads; window correlation between concurrent lanes cancelled only 4-8% of window
     variance (149 retained evaluations, 2026-10-24). The reference variance is shared and never
     divides by the candidate's boot count. Looks fall at candidate boot boundaries under v17's
-    alpha-spending table: the first boot can only end the stage on the sealed futility margin.
+    alpha-spending table: the first boot can only end the stage on the sealed futility margin. A lifetime
+    that replays several sealed loads scores the geometric mean of their throughput ratios (``_boot_term``),
+    so no single batch size carries the verdict.
 
     PASS evidence retained before 2026-11-05 carries one fresh stock lifetime read after it. Stock reading
     faster than its reference beyond one-sided 1% made that PASS an infrastructure NO_DECISION, never a
     candidate FAIL; new evidence carries no sentinel.
 
-    ``decode_floor`` (version 20) also holds the pooled per-user decode p50 to the contract's floor at
+    ``decode_floors`` (version 20 on) also holds each load's pooled per-user decode p50 to its sealed floor at
     every look: a candidate below it fails, since served tokens bought by slowing every user are not
     revenue at the sealed price. A stock reference below it is a mis-sealed load that ``open_reference``
     refuses before any candidate boot, never a candidate FAIL.
@@ -438,16 +452,19 @@ def reference_grade(
         or window_noise == boot_noise == 0):
         raise ServiceEvidenceError("reference comparison has invalid reads or uncertainty")
     every = (*reference, *sentinel, *candidate)
-    shapes = _work_shapes(reference[0])
+    # Every load replays the same sealed sessions; its cold round, and so its warm membership, is its own.
+    shapes: dict[int, object] = {}
     starts = [min(row.request_start_ns for row in read.records) for read in every]
     if (len({read.lane for read in (*sentinel, *candidate)}) != 1
             or any(read.lane != (reference_lane or candidate[0].lane) for read in reference)
             or len(set(starts)) != len(starts)
-            or any(_work_shapes(read) != shapes for read in every)):
+            or any(shapes.setdefault(read.load, shape) != shape for read in every for shape in (_work_shapes(read),))):
         raise ServiceEvidenceError("reference and candidate reads differ in lane, work or identity")
-    stock = [_boot_term(costs, window_noise, boot_noise) for costs in _boot_costs(reference, "incumbent", expected)]
-    terms = [_boot_term(costs, window_noise, boot_noise) for costs in _boot_costs(candidate, "candidate", expected)]
-    bracket = [_boot_term(costs, window_noise, boot_noise) for costs in _boot_costs(sentinel, "incumbent", expected)]
+    lifetimes = [_boot_costs(arm, role, expected)
+                 for arm, role in ((reference, "incumbent"), (candidate, "candidate"), (sentinel, "incumbent"))]
+    if any(list(lifetime) != list(lifetimes[0][0]) for rows in lifetimes for lifetime in rows):
+        raise ServiceEvidenceError("reference and candidate lifetimes replay different loads")
+    stock, terms, bracket = ([_boot_term(costs, window_noise, boot_noise) for costs in rows] for rows in lifetimes)
     look = len(terms)
     if len(stock) < 2 or look > boots or len(bracket) > 1:
         raise ServiceEvidenceError("reference comparison exceeds its sealed boots")
@@ -460,11 +477,15 @@ def reference_grade(
     ratio, required, lower = math.exp(estimate), math.exp(z * se), math.exp(estimate - z * se)
     a_cand, a_ref = (sum(r.meets(contract) for read in arm for r in read.records)
                      / sum(len(read.records) for read in arm) for arm in (candidate, reference))
-    floor = contract.decode_floor_tps
-    if decode_floor and decode_p50(candidate) < floor:
+    floors = decode_floors or {}
+    below = [(load, rate, floor) for load, floor in sorted(floors.items())
+             if (rate := decode_p50([read for read in candidate if read.load == load])) < floor]
+    if below:
+        load, rate, floor = below[0]
+        # One load keeps the detail its historical verdicts were sealed with.
         decision, detail = SpeedStageDecision.FAIL, (
-            f"service_floor_not_met: candidate decode p50 {decode_p50(candidate):.1f} tok/s is below the sealed "
-            f"floor {floor:.4g}")
+            f"service_floor_not_met: candidate decode p50 {rate:.1f} tok/s"
+            f"{f' at {load} sessions' if len(floors) > 1 else ''} is below the sealed floor {floor:.4g}")
     elif look >= 2 and a_cand - a_ref - attainment_margin < -attainment_tolerance:
         decision, detail = SpeedStageDecision.FAIL, (
             f"service_contract_not_met: pooled attainment {a_cand:.4f} against the reference's {a_ref:.4f} "

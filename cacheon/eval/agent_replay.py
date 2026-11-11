@@ -57,8 +57,10 @@ class AgentReplayPlan:
 
     def __post_init__(self):
         manifest = load_slice_manifest(self.manifest_path)
-        if type(self.loads) is not tuple or len(self.loads) != 1:
-            raise ValueError("replay window needs exactly one sealed load")
+        # Several loads replay the whole slice at each concurrency, so only closed-loop arrival can carry them.
+        if (type(self.loads) is not tuple or not self.loads or len(set(self.loads)) != len(self.loads)
+                or (len(self.loads) > 1 and not self.closed_loop)):
+            raise ValueError("replay needs distinct sealed loads, several only in a closed loop")
         for load in self.loads:
             manifest.expected_work(load)
         if manifest.loader != "weka_trace":
@@ -80,8 +82,7 @@ class AgentReplayPlan:
         """Sessions one window replays. Closed loop keeps the sealed load in flight over the whole slice, each
         finished session handing its slot to the next: replaying only ``load`` sessions drained the window to its
         longest one (output per session spans 4.5x on the Weka slice, so mean concurrency fell to ~N/4.5)."""
-        (load,) = self.loads
-        return self.slice.max_load if self.closed_loop else load
+        return self.slice.max_load if self.closed_loop else self.loads[0]
 
     def workload_identity(self) -> dict:
         """Bind the consumed bytes, root accounting and replay policy, not local paths."""
@@ -507,10 +508,11 @@ def prime_replay(plan: AgentReplayPlan, *, context_length: int | None) -> None:
     AIPerf replays the slice exactly as a window does, against a responder that answers each request at once with no
     engine and no clock, so timed windows only look IDs up.
     """
-    identity = json.dumps([plan.slice.digest, str(plan.tokenizer_path), plan.sessions, list(plan.loads), context_length])
-    if identity not in _PRIMED:
-        asyncio.run(_prime(plan, context_length))
-        _PRIMED.add(identity)
+    for load in plan.loads:
+        identity = json.dumps([plan.slice.digest, str(plan.tokenizer_path), plan.sessions, [load], context_length])
+        if identity not in _PRIMED:
+            asyncio.run(_prime(replace(plan, loads=(load,)), context_length))
+            _PRIMED.add(identity)
 
 
 async def _prime(plan: AgentReplayPlan, context_length: int | None) -> None:
@@ -641,37 +643,30 @@ async def _run_load_read(session, plan: AgentReplayPlan, *, tokenizer) -> LoadRe
             shutil.rmtree(ipc, ignore_errors=True)
 
 
-async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None, before_read=None) -> tuple[LoadRead, ...]:
-    """Execute the sealed windows of one load, flushing cache before each window's read.
+async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None) -> tuple[LoadRead, ...]:
+    """Execute the sealed windows of each load in order, flushing cache before each window's read.
 
-    The plan's warm windows replay first, each into its own retained directory; their reads never reach the
-    session's evidence or the grader.
-
-    ``before_read`` synchronizes paired lanes after their cache flushes and
-    before releasing either client's first request of that window, and returns
-    whether the sealed sequential rule still wants that window. Single-lane
-    execution uses the identical read and retained evidence path without a
-    peer barrier. Every window is a fresh read of the same fixed work; the
-    scorer averages the paired ratios, so the sealed window count is the
-    budget that buys margin.
+    Each load's warm windows replay first, each into its own retained directory; their reads never reach the
+    session's evidence or the grader. Every window is a fresh read of the same fixed work, so the sealed
+    window count is the budget that buys margin. The first load keeps the directory layout of a one-load plan.
     """
     if tokenizer is None:
         from transformers import AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(plan.tokenizer_path, trust_remote_code=True, local_files_only=True)
     reads = []
-    (load,) = plan.loads
-    for warm in range(1, plan.warm_windows + 1):
-        await flush_cache(session)
-        await _run_load_read(session, replace(plan, window=warm, output_directory=plan.output_directory / f"warm{warm}"),
-                             tokenizer=tokenizer)
-    for window in range(1, plan.windows + 1):
-        await flush_cache(session)
-        if before_read is not None and not await before_read(load, window):
-            break
-        read_plan = replace(plan, window=window, output_directory=plan.output_directory / f"window{window}")
-        read = await _run_load_read(session, read_plan, tokenizer=tokenizer)
-        session.replay_reads.append(read)
-        reads.append(read)
+    for load in plan.loads:
+        at = replace(plan, loads=(load,),
+                     output_directory=plan.output_directory / ("" if load == plan.loads[0] else f"load{load}"))
+        for warm in range(1, plan.warm_windows + 1):
+            await flush_cache(session)
+            await _run_load_read(session, replace(at, window=warm, output_directory=at.output_directory / f"warm{warm}"),
+                                 tokenizer=tokenizer)
+        for window in range(1, plan.windows + 1):
+            await flush_cache(session)
+            read_plan = replace(at, window=window, output_directory=at.output_directory / f"window{window}")
+            read = await _run_load_read(session, read_plan, tokenizer=tokenizer)
+            session.replay_reads.append(read)
+            reads.append(read)
     result = {"workload": plan.workload_identity(), "reads": [asdict(read) for read in reads]}
     (plan.output_directory / "window.json").write_text(json.dumps(result, indent=2) + "\n")
     return tuple(reads)

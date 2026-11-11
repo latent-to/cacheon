@@ -162,13 +162,15 @@
 # PD audit/pristine CPU roles use the first group of the full lane plan: runtime/docs net 0, +51 regression lines.
 # Explicit stock imports retain original arms across this audit repair: runtime +62, docs +7, tests +53; replaces repeat campaigns.
 # The qualification publication resolver waits out the shared intake lock within the coordinator's bound: runtime +17, +1 note.
+# GLM-5.3-Flash PD arena: low/mid/high replay loads (geometric mean, per-load floors) generalize the one-load path; hybrid DSA
+# layer map, dp-1 decode pins, pair seed harvest: runtime +65, docs +26, examples +137, scripts +28, tests +3, +2 notes.
 (root) 1166
 .github 338
 bundles 2398
-cacheon 92611
+cacheon 92676
 cacheon_kernels 936
 dashboard 4393
-docs 13532
-examples 745
-scripts 4434
-tests 14088
+docs 13558
+examples 882
+scripts 4464
+tests 14091

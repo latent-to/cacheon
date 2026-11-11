@@ -1,0 +1,23 @@
+{
+  "schema": "cacheon-arena-operator-v1",
+  "arena_id": "glm53flashpd-b300-node-v1",
+  "slug": "glm53flashpd",
+  "model_profile_key": "GLM-5.3-Flash-NVFP4",
+  "tensor_parallel_size": 8,
+  "replay_load": [16, 64, 128],
+  "decode_floors": {"16": "240", "64": "165", "128": "80"},
+  "tokens_per_prompt": 16000,
+  "tokenizer_asset": "tokenizer-official",
+  "model_in_ram": true,
+  "owner": "glm53flashpd-node",
+  "audit_control_delta_digests": [
+    "4c253998e53d898caaebbff3bc7aeca2ab687f3d3eec507cc9257defc474d184"
+  ],
+  "node": {
+    "name": "8-GPU B300 node",
+    "scheduler_starts": [42, 74, 38, 70, 134, 184, 130, 176],
+    "client_cpus": {
+      "0,1,2,3,4,5,6,7": [46, 56, 182, 148, 50, 64, 90, 82]
+    }
+  }
+}

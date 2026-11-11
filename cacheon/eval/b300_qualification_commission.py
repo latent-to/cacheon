@@ -396,7 +396,8 @@ def _compose_locked(
             "V16 latency scoring is retained only for historical evidence"
         )
     replay = AgentReplayPlan(
-        Path(settings["manifest_path"]), (settings["load"],),
+        Path(settings["manifest_path"]),
+        tuple(settings["load"]) if type(settings["load"]) is list else (settings["load"],),
         Path(settings["aiperf_binary"]), Path(settings["tokenizer_path"]),
         inputs.root / "qualification-replays" / screen_lane,
         goodput.contract, "incumbent", 1, screen_lane, windows=settings["windows"],

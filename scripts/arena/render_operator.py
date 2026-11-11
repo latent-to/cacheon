@@ -13,8 +13,9 @@ digests every template, retained input and output.
 The deployment-owned sealed inputs are not templates and are never fabricated here: the packet
 (the fixed qualification capabilities, the numeric judge, the finalize step, the adapter and the
 sealed prompt authority), the model provision receipt and the pod transport are read from the
-``--retained-inputs`` directory and copied by digest; only the packet's replay load is rewritten to
-the arena's value, as the operator always did by hand.
+``--retained-inputs`` directory and copied by digest; only the packet's replay load (one session
+count, or a list of them for a multi-load arena), its per-load decode floors and its audit controls
+are rewritten to the arena's values, as the operator always did by hand.
 """
 
 import argparse
@@ -34,6 +35,8 @@ SCHEMA = "cacheon-arena-operator-v1"
 PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size", "replay_load",
         "tokens_per_prompt", "tokenizer_asset", "model_in_ram", "owner", "audit_control_delta_digests", "node"}
+# decode_floors: per-user decode floor per load (tok/s keyed by session count), required with several loads.
+OPTIONAL_KEYS = {"decode_floors"}
 NODE_KEYS = {"name", "scheduler_starts", "client_cpus"}
 # engine_cpus: an engine's first GPU -> [DP controller vCPU, frontend vCPU] (oci_cpuset.canonical_cpu_roles).
 OPTIONAL_NODE_KEYS = {"engine_cpus"}
@@ -82,16 +85,22 @@ def sha256(path: Path) -> str:
 def load_operator(path: Path) -> dict:
     """Read and shape-check one arena's operator.json; policy stays with the owner."""
     operator = json.loads(path.read_bytes())
-    if set(operator) != KEYS or operator["schema"] != SCHEMA:
-        raise SystemExit(f"{path}: expected keys {sorted(KEYS)} and schema {SCHEMA}")
+    if set(operator) - OPTIONAL_KEYS != KEYS or operator["schema"] != SCHEMA:
+        raise SystemExit(f"{path}: expected keys {sorted(KEYS)}, optionally {sorted(OPTIONAL_KEYS)}, and schema {SCHEMA}")
     if set(operator["node"]) - OPTIONAL_NODE_KEYS != NODE_KEYS:
         raise SystemExit(f"{path}: node needs {sorted(NODE_KEYS)}, optionally {sorted(OPTIONAL_NODE_KEYS)}")
     if not re.fullmatch(r"[a-z0-9]+", operator["slug"]):
         raise SystemExit(f"{path}: slug must be lowercase letters and digits")
-    width = operator["tensor_parallel_size"]
-    if not all(isinstance(operator[key], int) and operator[key] > 0
-               for key in ("tensor_parallel_size", "replay_load", "tokens_per_prompt")):
-        raise SystemExit(f"{path}: tensor_parallel_size, replay_load and tokens_per_prompt are positive integers")
+    width, loads = operator["tensor_parallel_size"], operator["replay_load"]
+    loads = loads if isinstance(loads, list) else [loads]
+    if not all(type(value) is int and value > 0
+               for value in (width, operator["tokens_per_prompt"], *loads)) or loads != sorted(set(loads)):
+        raise SystemExit(f"{path}: tensor_parallel_size, tokens_per_prompt and the ascending replay_load "
+                         "(one session count or a list) are positive integers")
+    floors = operator.get("decode_floors", {})
+    if (sorted(floors) != (sorted(map(str, loads)) if floors or len(loads) > 1 else [])
+            or not all(re.fullmatch(r"[1-9][0-9]*(\.[0-9]*[1-9])?", value) for value in floors.values())):
+        raise SystemExit(f"{path}: decode_floors maps every replay load to a canonical decimal tok/s floor")
     for lane, cpus in operator["node"]["client_cpus"].items():
         devices = [int(value) for value in lane.split(",")]
         if len(devices) != width or devices != sorted(devices) or not cpus:
@@ -107,7 +116,7 @@ def values(operator: dict, arena_inputs: str) -> dict[str, str]:
     return {
         "ARENA_ID": operator["arena_id"], "ARENA_INPUTS": arena_inputs, "SLUG": operator["slug"],
         "MODEL_PROFILE_KEY": operator["model_profile_key"], "TP": str(width),
-        "REPLAY_LOAD": str(operator["replay_load"]), "TOKENS_PER_PROMPT": str(operator["tokens_per_prompt"]),
+        "TOKENS_PER_PROMPT": str(operator["tokens_per_prompt"]),
         "TOKENIZER_ASSET": operator["tokenizer_asset"],
         "OWNER": operator["owner"], "RAM_MODEL_ARGS": " '--ram-model'," if operator["model_in_ram"] else "",
         "SCHEDULER_STARTS": json.dumps(operator["node"]["scheduler_starts"]),
@@ -184,19 +193,20 @@ def main() -> None:
         copy(retained / "packet" / name, inputs / target, MODES.get(target, 0o644))
     capabilities = inputs / "commission-inputs/packet/qualification_capabilities.py"
     text = capabilities.read_text()
-    loads = re.findall(r'"load": \d+', text)
-    if len(loads) != 1:
-        raise SystemExit(f"{capabilities.name}: expected one replay load, found {loads}")
-    text = text.replace(loads[0], f'"load": {operator["replay_load"]}')
     # The registered audit controls are the arena's own bundles (a wrong control for this model's node address):
     # their digests replace the previous arena's in the sealed policy, as the replay load does.
-    pattern = re.compile(r'(?P<indent>[ \t]*)"audit_control_delta_digests": \[(?:\s*"[0-9a-f]{64}",)*\s*\]')
-    matches = list(pattern.finditer(text))
-    if len(matches) != 1:
-        raise SystemExit(f"{capabilities.name}: expected one audit control list, found {len(matches)}")
-    indent = matches[0].group("indent")
-    rows = "".join(f'{indent}    "{digest}",\n' for digest in operator["audit_control_delta_digests"])
-    text = text[:matches[0].start()] + f'{indent}"audit_control_delta_digests": [\n{rows}{indent}]' + text[matches[0].end():]
+    controls = lambda match: "".join((f'{match["indent"]}"audit_control_delta_digests": [\n',
+                                      *(f'{match["indent"]}    "{digest}",\n'
+                                        for digest in operator["audit_control_delta_digests"]), f'{match["indent"]}]'))
+    rewrites = [(r'"load": (?:\d+|\[[\d, ]*\])', lambda _: f'"load": {json.dumps(operator["replay_load"])}'),
+                (r'(?P<indent>[ \t]*)"audit_control_delta_digests": \[(?:\s*"[0-9a-f]{64}",)*\s*\]', controls)]
+    if "decode_floors" in operator:
+        rewrites.append((r'"decode_floor": "1"(?:, "decode_floors": \{[^{}]*\})?',
+                         lambda _: f'"decode_floor": "1", "decode_floors": {json.dumps(operator["decode_floors"])}'))
+    for pattern, value in rewrites:
+        text, count = re.subn(pattern, value, text)
+        if count != 1:
+            raise SystemExit(f"{capabilities.name}: expected one match of {pattern}, found {count}")
     check(capabilities.name, text)
     capabilities.chmod(0o600)
     capabilities.write_text(text)

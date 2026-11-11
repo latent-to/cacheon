@@ -282,7 +282,7 @@ def _speed_lines(stage_exit: dict, *, baseline: str = _STOCK) -> list[str]:
     grade = speed["grading"]
     versus = "SGLang" if baseline == _STOCK else "the " + baseline
     lines = [f"  {'speed':<26s} paired agent replay, {speed['windows']} of "
-             f"{speed['window_limit']} passes at {speed['load']} sessions per lane"]
+             f"{speed['window_limit']} passes at {'/'.join(map(str, speed['loads']))} sessions per lane"]
     for role, label in (("B", baseline), ("C", "with your kernel")):
         lanes = [lane for lane in speed["lanes"] if lane["role"] == role]
         decode = _mean([lane["decode_tps"] for lane in lanes])

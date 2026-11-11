@@ -172,6 +172,5 @@ for p in [source, *source.rglob('*')]:
     p.chmod(p.stat().st_mode & ~0o222)
 print(json.dumps({'stage': str(stage), 'source': str(source), 'cpu_pins': pins, 'cpu_check': cpu_check,
                   'lane_devices': lane,
-                  'replay_load': @REPLAY_LOAD@, 'replay_windows': 4,
                   'speed_wall_seconds': prior['speed_policy']['max_stage_seconds'],
                   'qualification_wall_seconds': prior['speed_policy']['max_qualification_seconds']}))

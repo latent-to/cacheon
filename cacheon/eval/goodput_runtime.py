@@ -67,11 +67,15 @@ class GoodputPolicy:
     attainment_pooled: float = field(default=0.0, metadata={"wire_optional": True})
     # 1 holds the pooled per-user decode p50 to the contract's decode floor (version 20); sealed only when set.
     decode_floor: float = field(default=0.0, metadata={"wire_optional": True})
+    # Several sealed loads: each load's own per-user decode floor, keyed by its session count (Shiv 2026-11-11: a
+    # miner must not win one batch size by slowing users at another). Empty holds every load to the contract's floor.
+    decode_floors: tuple[tuple[int, float], ...] = field(default=(), metadata={"wire_optional": True})
 
     def __post_init__(self):
         values = (self.required, self.null_noise, self.attainment_tolerance, self.attainment_margin,
                   self.error_rate, self.boot_noise, self.futility_margin, self.attainment_pooled,
                   self.decode_floor)
+        floors = self.decode_floors
         if (type(self.contract) is not ServiceContract
             or any(type(v) not in (int, float) or not math.isfinite(v) for v in values)
             or not (self.required == 1.0 if self.error_rate else 1 < self.required < 2)
@@ -80,21 +84,37 @@ class GoodputPolicy:
             or (self.error_rate > 0 and self.null_noise == self.boot_noise == 0)
             or (self.error_rate == 0 and (self.boot_noise or self.futility_margin)) or not 0 <= self.futility_margin < 1
             or not 0 <= self.attainment_tolerance <= 1 or not 0 <= self.attainment_margin < 1
-            or self.attainment_pooled not in (0, 1) or self.decode_floor not in (0, 1)):
+            or self.attainment_pooled not in (0, 1) or self.decode_floor not in (0, 1)
+            or type(floors) is not tuple or (floors and not self.decode_floor)
+            or any(type(row) is not tuple or len(row) != 2 or type(row[0]) is not int or row[0] < 1
+                   or type(row[1]) not in (int, float) or not 0 < row[1] < math.inf for row in floors)
+            or [row[0] for row in floors] != sorted({row[0] for row in floors})):
             raise ValueError("goodput calibration inputs are invalid")
         object.__setattr__(self, "contract", ServiceContract(**{
             name: float(value) for name, value in asdict(self.contract).items()
         }))
+        object.__setattr__(self, "decode_floors", tuple((load, float(floor)) for load, floor in floors))
         for name in self.__dataclass_fields__:
-            if name != "contract":
+            if name not in ("contract", "decode_floors"):
                 object.__setattr__(self, name, float(getattr(self, name)))
+
+    def floors(self, loads) -> dict[int, float]:
+        """Each replayed load's per-user decode floor; empty when the policy holds none."""
+        if not self.decode_floor:
+            return {}
+        floors = dict(self.decode_floors) or dict.fromkeys(loads, self.contract.decode_floor_tps)
+        if set(floors) != set(loads):
+            raise ValueError("sealed decode floors name other loads than the replay")
+        return floors
 
     def to_dict(self):
         """Seal contract and calibration values as canonical decimal strings."""
         return {"contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
                 **{key: format(getattr(self, key), ".17g") for key in self.__dataclass_fields__
-                   if key != "contract" and (self.error_rate or key not in ("error_rate", "boot_noise"))
-                   and (key not in ("futility_margin", "attainment_pooled", "decode_floor") or getattr(self, key))}}
+                   if key not in ("contract", "decode_floors") and (self.error_rate or key not in ("error_rate", "boot_noise"))
+                   and (key not in ("futility_margin", "attainment_pooled", "decode_floor") or getattr(self, key))},
+                **({"decode_floors": {str(load): format(floor, ".17g") for load, floor in self.decode_floors}}
+                   if self.decode_floors else {})}
 
     @classmethod
     def from_dict(cls, value):
@@ -102,13 +122,16 @@ class GoodputPolicy:
         fields = set(cls.__dataclass_fields__)
         if type(value) is dict and "error_rate" not in value:
             fields -= {"error_rate", "boot_noise"}
-        for optional in ("futility_margin", "attainment_pooled", "decode_floor"):
+        for optional in ("futility_margin", "attainment_pooled", "decode_floor", "decode_floors"):
             if type(value) is dict and optional not in value:
                 fields -= {optional}
-        if type(value) is not dict or set(value) != fields or type(value["contract"]) is not dict:
+        if (type(value) is not dict or set(value) != fields or type(value["contract"]) is not dict
+                or type(value.get("decode_floors", {})) is not dict):
             raise ValueError("goodput policy fields differ")
         result = cls(ServiceContract(**{key: float(v) for key, v in value["contract"].items()}),
-                     **{key: float(v) for key, v in value.items() if key != "contract"})
+                     **{key: float(v) for key, v in value.items() if key not in ("contract", "decode_floors")},
+                     decode_floors=tuple(sorted((int(load), float(floor))
+                                                for load, floor in value.get("decode_floors", {}).items())))
         if result.to_dict() != value:
             raise ValueError("goodput policy is not canonical")
         return result
@@ -120,7 +143,8 @@ class GoodputReadSet:
 
     Paired policies hold one incumbent read per candidate read. Version 19 holds the stock reference
     campaign (``reference_boots`` lifetimes, then at most one stock sentinel lifetime) as the incumbent
-    and up to ``boots`` candidate lifetimes, every lifetime ``window_limit`` windows on one lane.
+    and up to ``boots`` candidate lifetimes on one lane, every lifetime ``window_limit`` windows at each
+    sealed load in the reference's load order.
 
     ``payment_bar`` is the speedup settlement would pay, sealed by the dispatcher in the request. A PASS
     below it grades FAIL, so it ends before the quality controls, audit and T (Shiv, 2026-10-30).
@@ -143,17 +167,18 @@ class GoodputReadSet:
             raise ValueError("goodput reads or fixed-work authority are incomplete")
         work = {root: (main, inner) for root, main, inner in self.expected}
         if self.boots or self.reference_boots:
-            size = self.window_limit
+            if type(self.window_limit) is not int or not 1 <= self.window_limit <= 5:
+                raise ValueError("reference read set is not whole lifetimes on one lane")
+            order = [(load, window) for load in self.loads for window in range(1, self.window_limit + 1)]
+            size = len(order)
             if (type(self.boots) is not int or type(self.reference_boots) is not int or self.orientations
                 or not 2 <= self.boots <= CANDIDATE_BOOTS or self.reference_boots != REFERENCE_BOOTS
-                or type(size) is not int or not 1 <= size <= 5
                 or len(self.incumbent) not in (self.reference_boots * size, (self.reference_boots + 1) * size)
                 or len(self.candidate) % size or len(self.candidate) > self.boots * size
-                or any(read.window != index % size + 1 for reads in (self.incumbent, self.candidate)
+                or any((read.load, read.window) != order[index % size] for reads in (self.incumbent, self.candidate)
                        for index, read in enumerate(reads))
                 or any(read.arm != "incumbent" for read in self.incumbent)
                 or any(read.arm != "candidate" for read in self.candidate)
-                or len({read.load for read in (*self.incumbent, *self.candidate)}) != 1
                 or len({read.lane for read in self.candidate}) != 1
                 or any(read.lane != (self.reference_lane or self.candidate[0].lane)
                        for read in self.incumbent[:self.reference_boots * size])
@@ -179,6 +204,11 @@ class GoodputReadSet:
             fixed_work_rate(baseline, work)
             fixed_work_rate(candidate, work)
 
+    @property
+    def loads(self) -> tuple[int, ...]:
+        """The sealed loads in the order every lifetime replays them."""
+        return tuple(dict.fromkeys(read.load for read in self.incumbent))
+
     def grade(self, policy: GoodputPolicy, *, max_windows: int | None = None):
         """Call the data/scoring owner's single grade entrypoint; retain no second estimator."""
         from cacheon.eval import service_capacity
@@ -186,12 +216,12 @@ class GoodputReadSet:
         work = {root: (main, inner) for root, main, inner in self.expected}
         service = dict(attainment_tolerance=policy.attainment_tolerance, attainment_margin=policy.attainment_margin)
         if self.boots:
-            split = self.reference_boots * self.window_limit
+            split = self.reference_boots * self.window_limit * len(self.loads)
             result = service_capacity.reference_grade(
                 self.candidate, self.incumbent[:split], policy.contract, work, window_noise=policy.null_noise,
                 boot_noise=policy.boot_noise, error_rate=policy.error_rate, boots=self.boots,
                 futility_margin=policy.futility_margin, sentinel=self.incumbent[split:],
-                decode_floor=bool(policy.decode_floor), **service,
+                decode_floors=policy.floors(self.loads), **service,
                 reference_lane=self.reference_lane,
             )
         elif policy.error_rate:
@@ -392,16 +422,15 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
             os.fsync(handle.fileno())
         if paired:
             raise CrossoverRuntimeError("stock reference pair retained; candidates are read in a fresh evaluator process")
-    goodput = plan.policy.goodput
-    if goodput.decode_floor:
-        from cacheon.eval.service_capacity import decode_p50
+    from cacheon.eval.service_capacity import decode_p50
 
-        stock = decode_p50(tuple(read for row in executions for read in row.session.replay_reads))
-        if stock < goodput.contract.decode_floor_tps:
+    for load, floor in plan.policy.goodput.floors(plan.baseline.session_plan.replay.loads).items():
+        stock = decode_p50(tuple(read for row in executions for read in row.session.replay_reads if read.load == load))
+        if stock < floor:
             # Stock under the floor means the arena sealed too many sessions; no candidate can be graded against it,
             # so the stage ends before spending candidate boots, and every later reopen fails the same way.
-            raise CrossoverRuntimeError(f"stock reference decode p50 {stock:.1f} tok/s is below the sealed floor "
-                                        f"{goodput.contract.decode_floor_tps:.4g}: the arena's session count is mis-sealed")
+            raise CrossoverRuntimeError(f"stock reference decode p50 {stock:.1f} tok/s at {load} sessions is below "
+                                        f"the sealed floor {floor:.4g}: the arena's session count is mis-sealed")
     return executions
 
 
@@ -492,7 +521,7 @@ def regrade_reference_speed(evidence, plan):
     if rebuilt != evidence.goodput:
         raise CrossoverRuntimeError("reference speed reads differ from their engine sessions")
     for count in range(1, len(candidates) + 1):
-        prefix = replace(rebuilt, incumbent=stock, candidate=rebuilt.candidate[:count * replay.windows])
+        prefix = replace(rebuilt, incumbent=stock, candidate=rebuilt.candidate[:count * replay.windows * len(replay.loads)])
         decision = prefix.grade(plan.policy.goodput).decision
         if (decision is SpeedStageDecision.NO_DECISION) != (count < len(candidates)):
             raise CrossoverRuntimeError("reference speed did not stop where its sealed rule stops")
@@ -516,24 +545,26 @@ def _validate_replay_sessions(sessions, replay):
     """Bind every retained read to the host requests of the engine session that produced it."""
     from cacheon.eval.crossover_runtime import _validate_execution_binding, _expected_lane_digest
 
-    (load,) = replay.loads
+    count = replay.slice.turns(replay.sessions)
     for reads, execution, arm, controls in sessions:
         _validate_execution_binding(execution, arm)
         session = execution.session
-        if reads != session.replay_reads or len(reads) != arm.session_plan.replay.windows:
+        windows, warm = arm.session_plan.replay.windows, arm.session_plan.replay.warm_windows
+        if reads != session.replay_reads or len(reads) != windows * len(replay.loads):
             raise CrossoverRuntimeError("goodput reads differ from their completed engine session")
-        count = replay.slice.turns(replay.sessions)
-        warmup = arm.session_plan.warmup_count + arm.session_plan.replay.warm_windows * count
-        measured = count * len(reads)
+        # Each load replays its warm windows, then its sealed ones, after the session's warmup requests.
+        warmup, per_load = arm.session_plan.warmup_count, (warm + windows) * count
+        measured = per_load * len(replay.loads)
         if (len(session.batches) != warmup + measured + len(controls)
             or tuple(row.batch_index for row in session.batches) != tuple(range(len(session.batches)))
             or len({row.request_id for row in session.batches}) != len(session.batches)
             or len({row.nonce for row in session.batches}) != len(session.batches)):
             raise CrossoverRuntimeError("goodput host requests are incomplete or repeated")
-        for window, read in enumerate(reads, start=1):
-            if (read.window, read.load, read.lane) != (window, load, _expected_lane_digest(arm)):
+        for index, read in enumerate(reads):
+            load, window = divmod(index, windows)
+            if (read.window, read.load, read.lane) != (window + 1, replay.loads[load], _expected_lane_digest(arm)):
                 raise CrossoverRuntimeError("goodput read differs from its commissioned load, window or lane")
-            first = warmup + (window - 1) * count
+            first = warmup + load * per_load + (warm + window) * count
             rows = sorted(session.batches[first:first + count], key=lambda row: row.request_started_at)
             records = sorted(read.records, key=lambda row: row.request_start_ns)
             offset = records[0].request_start_ns - round(rows[0].request_started_at * 1e9)
