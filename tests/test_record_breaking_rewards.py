@@ -306,3 +306,25 @@ def test_statistical_records_pay_one_and_a_half_percent_over_the_previous_best(t
             grade = replace(reads, payment_bar=bar).grade(policy)
             assert grade.decision.value == decision
         assert fail_reason(grade.verdict) == "below_payment_bar"
+
+
+def test_dashboard_policy_cache_reads_each_attempt_once_and_settlement_every_walk(tmp_path, monkeypatch):
+    from cacheon.chain.evaluation_order import reward_comparisons
+    from cacheon.eval import evidence_store
+
+    with _store(tmp_path) as store:
+        _qualified_settlement_candidate(store)
+        payload = json.dumps({"speed_witness": {"resident_policy": {"min_margin": "0.01"}}}).encode()
+        _qualified_settlement_candidate(store, index=1, marker="later", speedups=("1.0605", "1.0605"),
+                                        attempt_payloads=(payload, payload))
+        store.passed_reward_claims()
+        reopened, reopen = [], evidence_store.reopen_evidence
+        monkeypatch.setattr(evidence_store, "reopen_evidence",
+                            lambda *args, **kwargs: reopened.append(args) or reopen(*args, **kwargs))
+        settled = reward_comparisons(store._db)
+        walk = len(reopened)
+        assert walk and reward_comparisons(store._db) == settled and len(reopened) == 2 * walk
+        cache = {}
+        assert reward_comparisons(store._db, cache) == settled and cache
+        warm = len(reopened)
+        assert reward_comparisons(store._db, cache) == settled and len(reopened) == warm

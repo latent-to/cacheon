@@ -58,6 +58,11 @@ separate from finalized `items` / `pass_total`. Waiting rows have
 - Completed qualification reports and worker-log explanations are cached as compact
   summaries. Concurrent reads share the first parse; changed result descriptors
   invalidate the summary, and unfinished results are checked again.
+- The reward walk behind Winners, Submissions and submission detail keeps each
+  retained attempt's sealed speed policy for the life of the process, keyed by the
+  artifact digest and selected delta that determine it, so a replay artifact is
+  reopened once rather than on every request. A remembered policy is not checked
+  against the store again; settlement passes no cache and reopens every attempt.
 - Arena health checks share one process-table read per HTTP request. The next
   request reads current process state again.
 - Tab content refreshes independently of arena metadata. Revisiting a tab shows
@@ -71,6 +76,8 @@ separate from finalized `items` / `pass_total`. Waiting rows have
   `dashboard/state/enrichment.sqlite3`. If the chain is unreachable the API
   still serves everything from the DB; times fall back to block-number
   estimates (dotted underline in the UI).
+  Each source's cache is read and written through one SQLite connection held for
+  the process and serialized by its enricher's lock, not one connection per lookup.
   A failed enrichment connection is closed before reconnecting so its client
   caches and websocket resources can be released.
   Before loading the chain client, enrichment defaults its runtime metadata cache

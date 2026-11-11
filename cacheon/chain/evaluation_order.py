@@ -73,14 +73,17 @@ def reward_visibility_sql(db) -> str:
     return "sc.reward_eligible=1" if "reward_eligible" in columns else "1"
 
 
-def reward_comparisons(db) -> dict[str, dict]:
+def reward_comparisons(db, policy_cache: dict | None = None) -> dict[str, dict]:
     """Compare each PASS with the best preceding rewarded PASS on its measured baseline, or stock.
 
     Prefix eligibility only says earlier work finished. It does not establish a
     performance record. Recompute this filter for historical and new PASSes so
     an old eligibility bit cannot preserve a non-winning reward claim.
+
+    A read-only presentation process may keep one ``policy_cache`` for its lifetime so each retained
+    attempt's sealed policy is read once; settlement passes none and reopens every attempt on every walk.
     """
-    return _reward_walk(db)[0]
+    return _reward_walk(db, policy_cache=policy_cache)[0]
 
 
 def payment_bar(db, stack, reservation_id: str) -> str:
@@ -100,7 +103,7 @@ def payment_bar(db, stack, reservation_id: str) -> str:
     return str(best.get(group, (Decimal(1), None))[0] * (1 + V17_REWARD_MARGIN))
 
 
-def _reward_walk(db, before: tuple | None = None) -> tuple[dict[str, dict], dict[str, tuple]]:
+def _reward_walk(db, before: tuple | None = None, policy_cache=None) -> tuple[dict[str, dict], dict[str, tuple]]:
     """Walk the rewarded PASSes in arrival order, or only those arriving before ``before``."""
     import json
 
@@ -142,7 +145,7 @@ def _reward_walk(db, before: tuple | None = None) -> tuple[dict[str, dict], dict
         margin = Decimal(0)
         # The first PASS clears the margin over stock too: Shiv, 2026-10-30, after a +1.42% first PASS was paid.
         if not exempt and score > previous:
-            margin = _reward_min_margin(db, qualifications)
+            margin = _reward_min_margin(db, qualifications, policy_cache)
         eligible = exempt or (score > previous and score >= previous * (1 + margin))
         comparisons[row["reservation_id"]] = {
             "previous_best_reservation_id": previous_id,
@@ -217,11 +220,11 @@ def _continued_group(continuations: dict[str, str], key: str) -> str:
 V17_REWARD_MARGIN = Decimal("0.015")
 
 
-def _reward_min_margin(db, qualifications):
+def _reward_min_margin(db, qualifications, policy_cache=None):
     """Use the ruled V17 margin for statistical policies; preserve historical sealed margins."""
     from cacheon.chain.intake import IntakeError
 
-    policies = [report["speed_witness"]["resident_policy"] for report in _reward_reports(db, qualifications)]
+    policies = _reward_policies(db, qualifications, policy_cache)
     # Versions 18 (paired windows), 19 and 20 (retained reference) are statistical too; read as a
     # sealed margin, v18's 0 broke weights 2026-10-15.
     statistical = [policy.get("version") in (17, 18, 19, 20, 21) for policy in policies]
@@ -235,8 +238,8 @@ def _reward_min_margin(db, qualifications):
     return max(margins)
 
 
-def _reward_reports(db, qualifications):
-    """Reopen the existing attempt authority without introducing another reward record."""
+def _reward_policies(db, qualifications, policy_cache=None):
+    """Reopen each attempt's sealed speed policy, or take it from ``policy_cache`` under the digest naming it."""
     import json
     from pathlib import Path
 
@@ -255,6 +258,10 @@ def _reward_reports(db, qualifications):
         reference = EvidenceArtifactRef.from_dict(json.loads(row["attempt_ref_json"]))
         if reference.sha256 != qualification["qualification_attempt_digest"]:
             raise IntakeError("reward comparison attempt differs from qualification")
+        key = (reference.sha256, qualification.get("selected_delta_digest"))
+        if policy_cache is not None and key in policy_cache:
+            result.append(policy_cache[key])
+            continue
         try:
             payload = json.loads(reopen_evidence(Path(row["evidence_root"]), reference))
             reports = payload.get("reports", [payload])
@@ -266,7 +273,9 @@ def _reward_reports(db, qualifications):
             policy = reports[0]["speed_witness"]["resident_policy"]
             if policy.get("version") not in (17, 18, 19, 20):
                 policy["min_margin"]
-            result.append(reports[0])
         except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
             raise IntakeError(f"reward comparison cannot read retained margin: {exc}") from None
+        if policy_cache is not None:
+            policy_cache[key] = policy
+        result.append(policy)
     return result
