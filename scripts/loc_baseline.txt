@@ -171,14 +171,15 @@
 # bundle, lockstep replay, and policies 16-19's graders and branches go: cacheon +140/-464, docs +112/-377,
 # examples +1/-513, bundles -2398, tests +28/-36, root +4/-7, +3 notes.
 # GLM-5.3-Flash PD baseline r7b: a 350 GB HiCache host tier per prefill rank, the decode radix cache, and a sealed
-# per-arena lifetime memory cap (1.4 TB pinned overran the 1 TiB default): examples +2 (the DSV README drops its
-# duplicate of the results page), scripts +6, docs +1, +2 notes; cacheon -3 (the reward walk's unused report list).
+# per-arena lifetime memory cap (1.4 TB pinned overran the 1 TiB default), and CuTe DSL indexer logits (1.13-1.52x
+# DeepGEMM at next_n 6): examples +3 (the DSV README drops its duplicate of the results page), scripts +6, docs +1,
+# +3 notes; cacheon -3 (the reward walk's unused report list).
 (root) 1163
 .github 338
 cacheon 92282
 cacheon_kernels 936
 dashboard 4393
 docs 13303
-examples 382
-scripts 4483
+examples 383
+scripts 4484
 tests 14092

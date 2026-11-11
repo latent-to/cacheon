@@ -23,7 +23,7 @@ ENGINE_KWARG_KINDS: Mapping[str, str] = {
         cuda_graph_backend_prefill kv_cache_dtype quantization speculative_algorithm
         hicache_mem_layout hicache_io_backend hicache_write_policy dsv4_attn_backend speculative_draft_attention_backend
         speculative_draft_model_path moe_a2a_backend disaggregation_transfer_backend
-        dsa_prefill_backend dsa_decode_backend
+        dsa_prefill_backend dsa_decode_backend dsa_paged_mqa_logits_backend
     """.split(), "token"),
     **dict.fromkeys("""
         disable_radix_cache enable_dp_attention enable_flashinfer_allreduce_fusion

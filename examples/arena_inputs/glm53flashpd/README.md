@@ -10,8 +10,8 @@ The engine image is SGLang's `dev-cu13` nightly at main `314bce7c`
 The arena serves the whole node as two TP2 prefill servers (GPUs 0-1 and 2-3,
 `pd_prefill.servers`) feeding one TP4 decode engine (GPUs 4-7), with KV moving
 between them over Mooncake's intra-node NVLink transport; no role runs DP attention.
-Every role runs NVFP4 weights, an FP8 KV cache with TRT-LLM DSA kernels, FlashInfer
-TRT-LLM MoE and native MTP (EAGLE, five steps, top-k one, six draft tokens). The roles
+Every role runs NVFP4 weights, an FP8 KV cache with TRT-LLM DSA kernels and CuTe DSL indexer
+logits, FlashInfer TRT-LLM MoE and native MTP (EAGLE, five steps, top-k one, six draft tokens). The roles
 differ only where `engine-config.json` says so under `pd_prefill` and `pd_decode`: TP2,
 16K prefill chunks and a 350 GB write-through HiCache host tier per rank (page-first
 layout) on prefill; 128 running requests, 128-row decode graphs, a decode-side radix cache

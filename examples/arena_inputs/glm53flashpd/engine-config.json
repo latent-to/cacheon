@@ -12,6 +12,7 @@
   "kv_cache_dtype": "fp8_e4m3",
   "dsa_prefill_backend": "trtllm",
   "dsa_decode_backend": "trtllm",
+  "dsa_paged_mqa_logits_backend": "cutedsl",
   "trust_remote_code": true,
   "speculative_algorithm": "EAGLE",
   "speculative_num_steps": 5,
