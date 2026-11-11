@@ -28,6 +28,7 @@ from cacheon.eval import aiperf_client, pd_engine
 from cacheon.eval.agent_slice import SliceManifest, load_slice_manifest
 from cacheon.eval.oci_session_protocol import BatchRequest, MAX_BATCH_REQUEST_BYTES
 from cacheon.eval.oci_request_exchange import flush_cache
+from cacheon.eval.phase_latency import _cache_report
 from cacheon.eval.service_capacity import (
     LoadRead, ServiceContract, ServiceEvidenceError, TurnRecord, attainment, fixed_work_rate,
 )
@@ -334,6 +335,7 @@ class ReplayBridge:
         self.first_batch_index = session.next_batch_index
         self.rows, self.failure = {}, None
         self.stamps: dict[str, int] = {}
+        self.cached: dict[str, int | None] = {}
         # ``live`` sessions open at once under pause order; without it the client's concurrency is the limit.
         self.rounds = _Arrival(live or load, session.clock, load if live else None)
         self.placement = _Placement(pd_engine.routes(dict(session.plan.engine_config.engine_kwargs)))
@@ -393,7 +395,7 @@ class ReplayBridge:
                     chunk["usage"] = usage
                 await response.write(("data: " + json.dumps(chunk) + "\n\n").encode())
 
-            prefix = ""
+            prefix, cache = "", {}
             event_task = asyncio.create_task(progress.get())
             try:
                 done, _ = await asyncio.wait((task, event_task), return_when=asyncio.FIRST_COMPLETED)
@@ -408,6 +410,8 @@ class ReplayBridge:
                     if prefix:
                         await emit(prefix)
                 row = await task
+                while not progress.empty():  # the last boundary carries the engine's cached-token report
+                    cache.update(_cache_report(progress.get_nowait()))
             finally:
                 event_task.cancel()
                 if not task.done():
@@ -420,14 +424,14 @@ class ReplayBridge:
                 raise ValueError("tokenizer's final output changed its delivered prefix")
             usage = {"prompt_tokens": prompt.prompt_tokens, "completion_tokens": len(prompt.output_ids),
                      "total_tokens": prompt.prompt_tokens + len(prompt.output_ids)}
-            self.rows[external_id] = row
+            self.rows[external_id], self.cached[external_id] = row, cache.get("cached_tokens")
             self.raw.write(json.dumps({
                 "x_request_id": external_id, "batch_index": index,
                 "input_sha256": digest, "output_ids": list(prompt.output_ids),
                 "request_start_ns": self._ns(row.request_started_at),
                 "first_token_ns": self._ns(row.request_started_at + row.prompt_latencies[0][0]),
                 "request_end_ns": self._ns(row.response_completed_at),
-                **usage,
+                **usage, **cache,
             }) + "\n")
             self.raw.flush()
             await emit(text[len(prefix):], usage=usage)
@@ -473,6 +477,7 @@ def collect_read(plan: AgentReplayPlan, bridge: ReplayBridge, load: int) -> Load
             root, kind, ordinals[key], bridge.stamps[external_id], bridge._ns(row.request_started_at),
             bridge._ns(row.request_started_at + row.prompt_latencies[0][0]),
             bridge._ns(row.response_completed_at), prompt.prompt_tokens, len(prompt.output_ids), "ok",
+            bridge.cached[external_id],
         ))
         ordinals[key] += 1
     if seen != set(bridge.rows):

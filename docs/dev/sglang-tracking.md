@@ -4,11 +4,10 @@ Cacheon competes against and integrates with an exact SGLang runtime. The pin is
 part of evaluation identity, not a loose minimum version. The
 default compatibility pin is `0.5.20` in
 [`cacheon/compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py). Different arenas may commission different exact runtimes:
-the GLM arena runs `0.5.20` and the DeepSeek-V4.1-Flash arena `0.5.21`, whose
-prefix cache hands a finished request through `insert_req` and `on_release`
-instead of `cache_finished_req`. The DSV4 nightly uses `checkpoint`,
-`device_prefix_len`, and lazy `prefix_device_indices`; the seam checks its
-resolved slots and request handoffs as well as the release interfaces.
+the commissioned arenas run SGLang nightlies whose prefix cache hands a request
+over through `checkpoint` and `on_release`, with `device_prefix_len` and lazy
+`prefix_device_indices`; the cache seam checks those handoffs and refuses a
+cache candidate on an engine that still has the 0.5.20/0.5.21 handoff methods.
 Run `python -m cacheon.cli compat --sglang-version <pin>` inside the image
 commissioned for that version. The runtime preflight independently compares the
 installed version with its sealed `expected_sglang_version`. This does not

@@ -372,10 +372,6 @@ def _compose_locked(
     from cacheon.eval.goodput_runtime import GoodputPolicy
     settings = session_block["replay"]
     goodput = GoodputPolicy.from_dict(speed_block["goodput"])
-    if not goodput.error_rate or not goodput.decode_floor:
-        raise B300QualificationCommissionError(
-            "new replay commissions are prefill/decode pairs with elapsed-work eligibility and a decode floor"
-        )
     replay = AgentReplayPlan(
         Path(settings["manifest_path"]),
         tuple(sorted(settings["load"], reverse=True)) if type(settings["load"]) is list else (settings["load"],),

@@ -61,11 +61,10 @@ _LAYERS = 4  # layers hashed per KV buffer kind, drawn once per engine
 _SAMPLE = 64  # served pages checked per handoff
 _CHUNK = 64  # pages hashed per pass, which bounds the temporaries
 _CELLS = 1 << 24  # one-byte cells of the pair table, two per pair
-# The methods the scheduler hands requests through; the check runs inside them. A
-# finished request arrives through ``cache_finished_req`` on 0.5.20 and through
-# ``insert_req`` then ``on_release`` on 0.5.21; the DSV4 nightly uses ``checkpoint``.
-_HANDOFFS = frozenset({"match_prefix", "cache_unfinished_req", "cache_finished_req", "insert_req",
-                       "checkpoint", "prefix_device_indices", "on_release", "reset", "ready_to_load_host_cache"})
+# The methods the scheduler hands requests through; the check runs inside them. Every commissioned engine hands a
+# request over through ``checkpoint`` and ``on_release``; a cache with the handoffs of SGLang 0.5.20/0.5.21 is refused.
+_HANDOFFS = frozenset({"match_prefix", "checkpoint", "prefix_device_indices", "on_release", "reset",
+                       "ready_to_load_host_cache"})
 # Verdict bits: the device raises them, a later handoff reads them.
 _FAKE, _MOVED, _ROW, _STATE = 1, 2, 4, 8
 _VERDICTS = {
@@ -371,7 +370,7 @@ class _Guard:
         self.publish()
         return row
 
-    def settle(self, req, row, cache=None) -> None:
+    def settle(self, req, row, cache) -> None:
         """Hold the cache to the prefix it left on an unfinished request, which the next pass reads.
 
         It may point the part it now protects at slots of its own; the rest must be
@@ -386,12 +385,11 @@ class _Guard:
         if not 0 <= protected <= n or protected % self.page:
             self.refuse(f"it protected {protected} of a request's {n} tokens, not whole pages of them")
         after = self.requests.req_to_token[req.kv.req_pool_idx, :n].to(torch.int64)
-        prefix = req.prefix_indices if cache is None else cache.path_device_indices(req.last_node)
-        checked = n if cache is None else protected
+        prefix = cache.path_device_indices(req.last_node)
         if (not isinstance(prefix, torch.Tensor) or prefix.device != self.device
-                or len(prefix) != checked):
-            self.refuse(f"it left a prefix that is not {checked} slots on the device on a request with {n} tokens")
-        self._flag(_ROW, after[:checked] != prefix)
+                or len(prefix) != protected):
+            self.refuse(f"it left a prefix that is not {protected} slots on the device on a request with {n} tokens")
+        self._flag(_ROW, after[:protected] != prefix)
         self._flag(_MOVED, after[protected:] != row[protected:])
         held.own = max(held.own, protected)
         held.until, held.kept = n, after[held.own:].clone()
@@ -480,25 +478,6 @@ def _guarded(cls: type, base: type, guard: _Guard) -> type:
             return result
 
         @pinned
-        def cache_unfinished_req(self, req, *args, **kwargs):
-            row = guard.handoff(self, req, req.get_fill_ids())
-            guard.invoke(super().cache_unfinished_req, req, *args, **kwargs)
-            guard.settle(req, row)
-
-        @pinned
-        def cache_finished_req(self, req, *args, **kwargs):
-            tokens = req.origin_input_ids + req.output_ids
-            guard.handoff(self, req, tokens[: kwargs["kv_len_to_handle"]], finished=True)
-            guard.invoke(super().cache_finished_req, req, *args, **kwargs)
-            guard.finished(req)
-
-        @pinned
-        def insert_req(self, req, *, up_to, **kwargs):
-            tokens = req.origin_input_ids + req.output_ids
-            guard.handoff(self, req, tokens[:up_to], finished=True)
-            return guard.invoke(super().insert_req, req, up_to=up_to, **kwargs)
-
-        @pinned
         def checkpoint(self, req, *, up_to, **kwargs):
             finished = req.finished()
             row = guard.handoff(self, req, req.full_untruncated_fill_ids[:up_to], finished=finished)
@@ -556,6 +535,8 @@ def _bind(impl, ctx, stock):
     if not isinstance(cache, base):
         _refuse(f"this engine builds {type(cache).__name__}, not a BasePrefixCache",
                 phase="prepare")
+    if hasattr(cache, "cache_finished_req") or hasattr(cache, "insert_req"):
+        _refuse("this engine's cache hands requests over through methods that are not checked", phase="prepare")
     guard = _Guard(ctx)
     cls = _receipts.invoke(ADDRESS, impl.entry, cache, phase="prepare")
     if not inspect.isclass(cls) or not issubclass(cls, type(cache)):

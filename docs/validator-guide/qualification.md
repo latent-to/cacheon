@@ -710,8 +710,9 @@ requires an acknowledged SGLang cache flush covering device radix state and
 the HiCache host pool. Failure stops the window. Each load's fresh output
 directory retains the AIPerf command, log and raw export,
 `bridge.jsonl` with each request's input digest (`input_sha256`, the SHA-256 of its
-canonical ID list in compact JSON), actual output IDs and host timing,
-`turns.jsonl` in the service-capacity record format, and `read.json` with fixed
+canonical ID list in compact JSON), actual output IDs, host timing and the engine's
+own `cached_tokens` report when it sends one (observability from inside the engine's
+process: no verdict reads it), `turns.jsonl` in the service-capacity record format, and `read.json` with fixed
 work rate and attainment. `window.json` retains the workload identity and the
 read. The existing engine-session evidence also carries
 the typed `LoadRead` records, so continuation retains them with the token evidence.
