@@ -21,10 +21,12 @@
   "disaggregation_transfer_backend": "mooncake",
   "pd_prefill": {
     "servers": 2,
-    "engine_kwargs": {"tp_size": 2, "chunked_prefill_size": 16384}
+    "engine_kwargs": {"tp_size": 2, "chunked_prefill_size": 16384, "enable_hierarchical_cache": true, "hicache_size": 350,
+                      "hicache_write_policy": "write_through", "hicache_mem_layout": "page_first"}
   },
   "pd_decode": {
-    "engine_kwargs": {"enable_linear_replayssm_spec": true, "max_running_requests": 128, "cuda_graph_max_bs_decode": 128}
+    "engine_kwargs": {"enable_linear_replayssm_spec": true, "disaggregation_decode_enable_radix_cache": true,
+                      "max_running_requests": 128, "cuda_graph_max_bs_decode": 128}
   },
   "engine_env": {
     "NCCL_NVLS_ENABLE": "0",

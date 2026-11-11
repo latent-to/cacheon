@@ -21,7 +21,7 @@ ENGINE_KWARG_KINDS: Mapping[str, str] = {
     """.split(), "positive_int"),
     **dict.fromkeys("""
         cuda_graph_backend_prefill kv_cache_dtype quantization speculative_algorithm
-        hicache_mem_layout hicache_io_backend dsv4_attn_backend speculative_draft_attention_backend
+        hicache_mem_layout hicache_io_backend hicache_write_policy dsv4_attn_backend speculative_draft_attention_backend
         speculative_draft_model_path moe_a2a_backend disaggregation_transfer_backend
         dsa_prefill_backend dsa_decode_backend
     """.split(), "token"),

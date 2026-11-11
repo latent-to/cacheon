@@ -123,6 +123,7 @@ the pod transport. One directory holds them:
 | `node.scheduler_starts` | one measured-fast vCPU start per GPU of the host, in GPU order |
 | `node.client_cpus` | the validator client core set per lane, keyed by the lane's device list |
 | `node.engine_cpus` | optional: per engine (each prefill server and the decode engine of a pair), keyed by its first GPU, the data-parallel controller's vCPU and the frontend's vCPU; an engine with DP 1 runs no controller |
+| `node.lifetime_memory_gib` | optional: the host memory cap of one engine lifetime's container in GiB (default 1024), sealed into the runtime resource policy; a host KV tier (`hicache_size`, per rank) is pinned inside it |
 
 The node section is a measured fact of the host, not a tuning knob: scheduler
 pins, engine roles and the client set bind the sealed runtime digest. The

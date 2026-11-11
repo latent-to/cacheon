@@ -17,6 +17,7 @@
   "node": {
     "name": "8-GPU B300 node",
     "scheduler_starts": [42, 74, 38, 70, 134, 184, 130, 176],
+    "lifetime_memory_gib": 1792,
     "client_cpus": {
       "0,1,2,3,4,5,6,7": [46, 56, 182, 148, 50, 64, 90, 82]
     }

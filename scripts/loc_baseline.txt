@@ -170,12 +170,15 @@
 # Only the DeepSeek-V4.1-Flash PD arena is live (owner 2026-11-11): the retired arenas' inputs, the GLM-5.3 champion
 # bundle, lockstep replay, and policies 16-19's graders and branches go: cacheon +140/-464, docs +112/-377,
 # examples +1/-513, bundles -2398, tests +28/-36, root +4/-7, +3 notes.
+# GLM-5.3-Flash PD baseline r7b: a 350 GB HiCache host tier per prefill rank, the decode radix cache, and a sealed
+# per-arena lifetime memory cap (1.4 TB pinned overran the 1 TiB default): examples +2 (the DSV README drops its
+# duplicate of the results page), scripts +6, docs +1, +2 notes; cacheon -3 (the reward walk's unused report list).
 (root) 1163
 .github 338
-cacheon 92285
+cacheon 92282
 cacheon_kernels 936
 dashboard 4393
-docs 13302
-examples 380
-scripts 4473
+docs 13303
+examples 382
+scripts 4483
 tests 14092

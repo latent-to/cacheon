@@ -40,7 +40,7 @@ KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size
 OPTIONAL_KEYS = {"decode_floors", "replay_windows"}
 NODE_KEYS = {"name", "scheduler_starts", "client_cpus"}
 # engine_cpus: an engine's first GPU -> [DP controller vCPU, frontend vCPU] (oci_cpuset.canonical_cpu_roles).
-OPTIONAL_NODE_KEYS = {"engine_cpus"}
+OPTIONAL_NODE_KEYS = {"engine_cpus", "lifetime_memory_gib"}
 PACKET = ("cacheon_b300_qualification_adapter.py", "finalize-authority.py", "numeric_answer_judge.py",
           "prompt-authority.current.json", "qualification_capabilities.py")
 # The cpu-operator archive: commission_worker, prepare_worker and runtime_uid_preflight run on the pod;
@@ -95,10 +95,11 @@ def load_operator(path: Path) -> dict:
     width, loads = operator["tensor_parallel_size"], operator["replay_load"]
     loads = loads if isinstance(loads, list) else [loads]
     if not all(type(value) is int and value > 0
-               for value in (width, operator["tokens_per_prompt"], operator.get("replay_windows", 1), *loads)
+               for value in (width, operator["tokens_per_prompt"], operator.get("replay_windows", 1),
+                             operator["node"].get("lifetime_memory_gib", 1), *loads)
                ) or loads != sorted(set(loads)):
-        raise SystemExit(f"{path}: tensor_parallel_size, tokens_per_prompt, replay_windows and the ascending "
-                         "replay_load (one session count or a list) are positive integers")
+        raise SystemExit(f"{path}: tensor_parallel_size, tokens_per_prompt, replay_windows, node.lifetime_memory_gib "
+                         "and the ascending replay_load (one session count or a list) are positive integers")
     floors = operator.get("decode_floors", {})
     if (sorted(floors) != (sorted(map(str, loads)) if floors or len(loads) > 1 else [])
             or not all(re.fullmatch(r"[1-9][0-9]*(\.[0-9]*[1-9])?", value) for value in floors.values())):
@@ -124,6 +125,8 @@ def values(operator: dict, arena_inputs: str) -> dict[str, str]:
         "SCHEDULER_STARTS": json.dumps(operator["node"]["scheduler_starts"]),
         "NODE_NAME": operator["node"]["name"], "CLIENT_SETS": repr(operator["node"]["client_cpus"]),
         "ENGINE_CPUS": repr(operator["node"].get("engine_cpus")),
+        "LIFETIME_MEMORY": repr(operator["node"]["lifetime_memory_gib"] << 30
+                                if "lifetime_memory_gib" in operator["node"] else None),
     }
 
 

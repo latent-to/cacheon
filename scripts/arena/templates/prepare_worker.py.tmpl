@@ -122,6 +122,10 @@ prior['resources']['runtime']['cpu_pins'] = pins
 ENGINE_CPUS = @ENGINE_CPUS@
 if ENGINE_CPUS is not None:
     prior['resources']['runtime']['cpu_roles'] = ENGINE_CPUS
+# A host KV tier is pinned host RAM inside the lifetime's cgroup (GLM-5.3-Flash: 4 prefill ranks x 350 GB, 2026-11-11).
+LIFETIME_MEMORY = @LIFETIME_MEMORY@
+if LIFETIME_MEMORY is not None:
+    prior['resources']['runtime']['memory_bytes'] = LIFETIME_MEMORY
 # Timed, not read from lscpu/sysfs: a guest can hide SMT and clock tiers (oci_cpuset.verify_cpu_plan).
 sys.dont_write_bytecode = True  # the source tree is sealed below; leave no __pycache__ in it
 sys.path.insert(0, str(source))

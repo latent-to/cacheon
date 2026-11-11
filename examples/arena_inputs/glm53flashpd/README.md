@@ -12,16 +12,20 @@ The arena serves the whole node as two TP2 prefill servers (GPUs 0-1 and 2-3,
 between them over Mooncake's intra-node NVLink transport; no role runs DP attention.
 Every role runs NVFP4 weights, an FP8 KV cache with TRT-LLM DSA kernels, FlashInfer
 TRT-LLM MoE and native MTP (EAGLE, five steps, top-k one, six draft tokens). The roles
-differ only where `engine-config.json` says so under `pd_prefill` and `pd_decode`: TP2
-and 16K prefill chunks on prefill; 128 running requests, 128-row decode graphs and
-ReplaySSM speculative state (`enable_linear_replayssm_spec`) on decode. SGLang refuses
+differ only where `engine-config.json` says so under `pd_prefill` and `pd_decode`: TP2,
+16K prefill chunks and a 350 GB write-through HiCache host tier per rank (page-first
+layout) on prefill; 128 running requests, 128-row decode graphs, a decode-side radix cache
+and ReplaySSM speculative state (`enable_linear_replayssm_spec`) on decode. The host tier
+held the prefix hit rate at 0.81-0.94 over 300-466 sessions against 0.3-0.7 without it
+(2026-11-11); its 1.4 TB is pinned inside the pair's lifetime, whose memory cap
+`operator.json` seals at 1,792 GiB. SGLang refuses
 ReplaySSM on a prefill server, and the eager audit and pristine reference run the
 prefill role's one-engine form (TP2, on GPUs 0-1 and 4-5), where the recurrent-state
 audit grades the KDA state tensors without it. The replay routes each session to one
 prefill server for all its turns, so its context stays in that server's radix cache.
 
-The configuration is TEE-shaped: NVLS, symmetric-memory multicast, the HiCache host
-tier and RDMA are off. The KV transfer uses legacy CUDA IPC handles; it has not been
+The configuration is TEE-shaped: NVLS, symmetric-memory multicast and RDMA are off,
+and the host tier is ordinary pinned host memory. The KV transfer uses legacy CUDA IPC handles; it has not been
 measured under confidential computing.
 
 ## Speed policy

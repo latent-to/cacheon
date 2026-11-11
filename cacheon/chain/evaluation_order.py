@@ -232,7 +232,6 @@ def _reward_reports(db, qualifications):
     from cacheon.chain.intake import IntakeError
     from cacheon.eval.evidence_store import EvidenceArtifactRef, reopen_evidence
 
-    result = []
     rows = db.execute(
         "SELECT attempt_ref_json,evidence_root FROM settlement_qualifications "
         "WHERE reservation_id=? ORDER BY reproduction_index",
@@ -252,7 +251,5 @@ def _reward_reports(db, qualifications):
                            if report["selected_delta_digest"] == qualification["selected_delta_digest"]]
             if len(reports) != 1 or type(reports[0]["speed_witness"]["resident_policy"]) is not dict:
                 raise ValueError("reward comparison report is ambiguous")
-            result.append(reports[0])
         except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
             raise IntakeError(f"reward comparison cannot read retained margin: {exc}") from None
-    return result
