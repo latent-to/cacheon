@@ -192,7 +192,7 @@ def _state_rows(
     Only a call that carries the engine's batch can reach the cache pools: the cache
     rows at ``out_cache_loc``. An unrecognized cache layout raises rather than
     leaving written state unchecked. Native recurrent live and checkpoint rows
-    are restored too, with MTP verify scratch and KDA ReplaySSM rings (``_recurrent_rows``).
+    are restored too, with KDA ReplaySSM verify rings (``_recurrent_rows``).
 
     SGLang keeps an FP8 cache in ``uint8`` storage with the real type on the pool.
     Graded as bytes, a near-zero value whose sign flips reads as a jump of 128 (7% of
@@ -225,8 +225,9 @@ def _recurrent_rows(runner, batch, layer):
 
     KDA ReplaySSM verify (GLM-5.3-Flash, layout dumped from a TP2 engine on 2026-11-11) appends drafts to rings
     keyed by Mamba slot and writes request i's conv windows to verify scratch row i of the physical buffer.
-    ``rawv``/``rawk`` hold the BF16 rounding of ``d``/``k`` and are graded summed with them. Other ReplaySSM
-    layouts, like the retired GDN request rings the 21,400-call Qwen MTP audit never graded (2026-09-22), raise.
+    ``rawv``/``rawk`` hold the BF16 rounding of ``d``/``k`` and are graded summed with them. Other speculative
+    layouts raise: GDN native-MTP scratch and request rings served only the retired Qwen arena, whose 21,400-call
+    MTP audit never graded the rings (2026-09-22).
     """
     requests = runner.req_to_token_pool
     pool = getattr(requests, "mamba_pool", None)
@@ -234,8 +235,7 @@ def _recurrent_rows(runner, batch, layer):
         return []
     state = getattr(pool, "mamba_cache", None)
     replay = getattr(pool, "enable_linear_replayssm_spec", False)
-    if (state is None or (getattr(state, "intermediate_ssm", None) is not None
-                         and not torch.is_tensor(state.intermediate_ssm))
+    if (state is None or getattr(state, "intermediate_ssm", None) is not None
             or getattr(pool, "enable_linear_replayssm", False)
             or (replay and (not getattr(pool, "replayssm_is_kda", False)
                             or getattr(pool, "replayssm_request_ring", True)
@@ -259,9 +259,7 @@ def _recurrent_rows(runner, batch, layer):
             for buffer in (state.temporal, *state.conv) for index in layers
             if buffer[index].numel()]
     mode = getattr(batch, "forward_mode", None)
-    if mode is None or not mode.is_target_verify():
-        return rows
-    if replay:
+    if replay and mode is not None and mode.is_target_verify():
         slots = live.reshape(-1).long()
         slots = slots[slots >= 0]
         scratch = runner.attn_backend.linear_attn_backend.verify_intermediate_state_indices[:live.numel()].long()
@@ -271,12 +269,6 @@ def _recurrent_rows(runner, batch, layer):
             rows.extend((low[index], 0, slots, high[index]) for low, high in (
                 (state.replayssm_rawv, state.replayssm_d), (state.replayssm_rawk, state.replayssm_k)))
             rows.extend((window[index], 0, scratch, window.dtype) for window in pool._intermediate_conv_window_phys)
-    elif getattr(state, "intermediate_ssm", None) is not None:
-        # GDN verify scratch is indexed by batch position, not by a translated
-        # request or Mamba slot. The extra pool row is discard-only padding.
-        slots = torch.arange(live.numel(), device=live.device)
-        for buffer in (state.intermediate_ssm, *state.intermediate_conv_window):
-            rows.extend((buffer[index], 0, slots, buffer.dtype) for index in layers)
     return rows
 
 
@@ -286,7 +278,7 @@ def _cache_rows(pool, batch, layer: int | None) -> list[tuple]:
     paged = dsv4_state_rows(pool, batch, layer)
     if paged is not None:
         return paged
-    dsa = dsa_state_rows(pool, batch.out_cache_loc, layer)
+    dsa = dsa_state_rows(pool, batch, layer)
     if dsa is not None:
         return dsa
     pool = getattr(pool, "full_kv_pool", pool)

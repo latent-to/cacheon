@@ -42,23 +42,30 @@ def _index_values(raw: torch.Tensor, *, page: int, head: int) -> torch.Tensor:
     return keys.reshape(raw.shape[0], page, head) * scales.unsqueeze(-1)
 
 
-def dsa_state_rows(pool, locations: torch.Tensor, layer: int | None = None) -> list[tuple] | None:
+def dsa_state_rows(pool, batch, layer: int | None = None) -> list[tuple] | None:
     """Return raw DSA rows and their numerical formats, or None for ordinary pools.
 
-    ``layer`` keeps only that decoder layer's two caches. Grading every layer's rows on
+    ``layer`` keeps only that decoder layer's caches. Grading every layer's rows on
     every layer call cost 156 buffers a call and 78 calls a forward: the GLM audit took
     65 minutes against 14 before it (B300, 2026-09-23). A hybrid linear-attention pool
     (GLM-5.3-Flash) holds the DSA cache of its full-attention layers only, numbered
     compactly; a linear-attention layer writes none of it.
+
+    Pooled index keys (GLM-5.3-Flash, ``index_kpool`` 4) make a 256-token page one row of 64 keys; under
+    compression a group not yet pooled waits in per-request tail buffers (main 314bce7c, G3 2026-11-11).
     """
     mapping = getattr(pool, "full_attention_layer_id_mapping", None)
     pool = getattr(pool, "full_kv_pool", pool)
     index_buffers = getattr(pool, "index_k_with_scale_buffer", None)
     if index_buffers is None:
         return None
-    if torch.version.hip or pool.page_size != 64 or pool.index_head_dim != 128:
+    keys_per_row = pool.page_size // getattr(pool, "index_kpool", 1)
+    if (torch.version.hip or getattr(pool, "use_fp4_indexer", False) or keys_per_row != 64
+            or getattr(pool, "index_page_size", keys_per_row) != 64 or pool.index_head_dim != 128):
         raise RuntimeError("DSA audit requires the commissioned CUDA cache layout")
     kv_buffers = pool.kv_buffer
+    tails = [buffers for buffers in (getattr(pool, "_compress_tail_k", None),
+                                     getattr(pool, "_compress_tail_score", None)) if buffers is not None]
     if layer is not None:
         if mapping is not None and layer not in mapping:
             return []
@@ -66,7 +73,8 @@ def dsa_state_rows(pool, locations: torch.Tensor, layer: int | None = None) -> l
         if not (0 <= local < len(kv_buffers) and local < len(index_buffers)):
             raise RuntimeError(f"layer {layer} has no DSA cache in this pool")
         kv_buffers, index_buffers = [kv_buffers[local]], [index_buffers[local]]
-    index = locations.long()
+        tails = [[buffers[local]] for buffers in tails]
+    index = batch.out_cache_loc.long()
     rows = []
     for buffer in kv_buffers:
         if getattr(pool, "dsa_kv_cache_store_fp8", False):
@@ -77,6 +85,8 @@ def dsa_state_rows(pool, locations: torch.Tensor, layer: int | None = None) -> l
     # The store addresses tokens, but K and scale occupy separate regions of each
     # page. Preserve whole touched pages, as the engine's own cache offload does.
     pages = torch.unique(index // pool.page_size)
-    held = partial(_index_values, page=pool.page_size, head=pool.index_head_dim)
+    held = partial(_index_values, page=keys_per_row, head=pool.index_head_dim)
     rows.extend((buffer, 0, pages, held) for buffer in index_buffers if buffer.shape[0])
+    requests = torch.unique(batch.req_pool_indices.long())
+    rows.extend((buffer, 0, requests, buffer.dtype) for buffers in tails for buffer in buffers if buffer.shape[0])
     return rows

@@ -178,13 +178,14 @@
 # decode's ReplaySSM flag: cacheon +30, docs +3, examples -1, +3 notes. Next deletion: the GDN native-MTP verify rows
 # once no GDN arena is planned.
 # `cacheon check` expected a pair's top-level tp_size of members where its one-engine form boots the prefill role's;
-# pd_engine.untimed_ranks now owns that count for check and the audit policy: cacheon +6, +2 notes.
+# pd_engine.untimed_ranks now owns that count for check and the audit policy: cacheon +6, +2 notes. Pooled DSA
+# index rows and kpool key tails (+10) are paid by deleting the GDN native-MTP verify rows (-8): cacheon +2.
 (root) 1163
 .github 338
-cacheon 92318
+cacheon 92320
 cacheon_kernels 936
 dashboard 4393
-docs 13306
+docs 13305
 examples 380
-scripts 4489
+scripts 4490
 tests 14092
