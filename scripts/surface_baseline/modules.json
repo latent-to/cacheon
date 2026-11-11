@@ -152,7 +152,7 @@
  "cacheon.eval.resident_speed_policy": {"all":null,"exceptions":[],"public":["ResidentSpeedPolicy"]},
  "cacheon.eval.runtime_preflight": {"all":["CONTAINER_RECEIPT_SCHEMA","CommandResult","HOST_RECEIPT_SCHEMA","PLATFORM_DIGEST_SCHEMA","RuntimePreflightConfig","RuntimePreflightError","RuntimePreflightReceipt","WORKER_DIGEST_SCHEMA","WORKER_DISTRIBUTION","bounded_argv_runner","run_runtime_preflight"],"exceptions":["RuntimePreflightError"]},
  "cacheon.eval.scoring": {"all":null,"exceptions":["CrossoverRuntimeError","RawSpeedEvidenceError"],"public":["CrossoverRuntimeError","RawSpeedEvidenceError","SpeedupVerdict","marginal_workload_digest"]},
- "cacheon.eval.service_capacity": {"all":["LoadRead","ServiceContract","ServiceEvidenceError","ServiceVerdict","TurnRecord","WorkRate","attainment","completed_work","fixed_work_rate","grade","reference_grade","statistical_grade"],"exceptions":["ServiceEvidenceError"]},
+ "cacheon.eval.service_capacity": {"all":["LoadRead","ServiceContract","ServiceEvidenceError","ServiceVerdict","TurnRecord","WorkRate","attainment","completed_work","fixed_work_rate","reference_grade"],"exceptions":["ServiceEvidenceError"]},
  "cacheon.eval.speed_verdict": {"all":["SPEED_FAIL_REASONS","SpeedStageDecision","fail_reason"],"exceptions":[]},
  "cacheon.eval.tokenizer_identity": {"all":["SealedTokenizerDecoder","TOKENIZER_IDENTITY_DOMAIN","TOKENIZER_IDENTITY_PROBES","TokenizerIdentityError","tokenizer_identity_digest"],"exceptions":["TokenizerIdentityError"]},
  "cacheon.integrations": {"all":null,"exceptions":[],"public":[]},

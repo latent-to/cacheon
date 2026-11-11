@@ -2,8 +2,8 @@
 
 The validator owns this loopback HTTP adapter, chat template and timestamps.
 The candidate still sees only disclosed generation inputs over its OCI pipes.
-AIPerf owns trajectory order; the bridge owns arrival timing as lockstep rounds, or (version 20) one
-lockstep cold round followed by closed-loop arrival at the sealed session count.
+AIPerf owns trajectory order; the bridge owns arrival timing: one cold round, then closed-loop arrival
+at the sealed session count.
 """
 
 from __future__ import annotations
@@ -49,6 +49,7 @@ class AgentReplayPlan:
     windows: int = 1
     elapsed_cost: bool = field(default=False, metadata={"wire_optional": True})
     max_work_seconds: int = field(default=0, metadata={"wire_optional": True})
+    # Always true: lockstep rounds retired with speed policy 19. The field stays so sealed plans keep their wire shape.
     closed_loop: bool = field(default=False, metadata={"wire_optional": True})
     # Untimed windows before the sealed ones. Verda z3 lifetimes' third windows agreed to 0.04%; their first ran 1.4-3.1%
     # slow (stock Triton kernels keyed on batch and KV pool size compile on the clock), their second up to 1.3% (11-02).
@@ -60,8 +61,8 @@ class AgentReplayPlan:
         # A lifetime replays several loads highest first, in a closed loop: the top load's windows are the
         # one-load windows, so warm-up, quality controls and request indexing read them unchanged.
         if (type(self.loads) is not tuple or not self.loads or list(self.loads) != sorted(set(self.loads), reverse=True)
-                or (len(self.loads) > 1 and not self.closed_loop)):
-            raise ValueError("replay needs descending distinct sealed loads, several only in a closed loop")
+                or self.closed_loop is not True):
+            raise ValueError("replay needs descending distinct sealed loads in a closed loop")
         for load in self.loads:
             manifest.expected_work(load)
         if manifest.loader != "weka_trace":
@@ -72,8 +73,8 @@ class AgentReplayPlan:
             raise ValueError("agent replay needs at least one sealed window")
         if type(self.warm_windows) is not int or not 0 <= self.warm_windows <= 2:
             raise ValueError("agent replay warm windows are outside their bound")
-        if type(self.elapsed_cost) is not bool or type(self.closed_loop) is not bool:
-            raise ValueError("replay cost accounting and arrival must be boolean")
+        if type(self.elapsed_cost) is not bool:
+            raise ValueError("replay cost accounting must be boolean")
         if type(self.max_work_seconds) is not int or not 0 <= self.max_work_seconds <= 7200:
             raise ValueError("replay work deadline is outside its bound")
         object.__setattr__(self, "slice", manifest)
@@ -89,8 +90,6 @@ class AgentReplayPlan:
         longest one (output per session spans 4.5x on the Weka slice, so mean concurrency fell to ~N/4.5). A lower
         load replays the slice's first sessions in proportion, so every load turns its slots over equally and a
         window lasts about as long at each load (Shiv 2026-11-11: the battery must not lengthen a bundle's wall)."""
-        if not self.closed_loop:
-            return load
         return max(load, self.slice.max_load * load // self.loads[0])
 
     def workload_identity(self) -> dict:
@@ -105,7 +104,7 @@ class AgentReplayPlan:
             "loads": list(self.loads),
             "windows": self.windows,
             **({"warm_windows": self.warm_windows} if self.warm_windows else {}),
-            "arrival": "closed-loop-after-cold-round" if self.closed_loop else "lockstep-rounds",
+            "arrival": "closed-loop-after-cold-round",
             "contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
             "client": "aiperf-0.13.0", "scenario": None, "ignore_trace_delays": True,
             "cache_bust_identity": "sealed-slice-digest",
@@ -216,90 +215,58 @@ def _prompt_ids(raw: bytes) -> tuple[tuple[int, ...], str]:
     return cached
 
 
-_ROUND_SETTLE_S = 0.5
 _FIRST_ROUND_WAIT_S = 120.0
 
 
-class _Rounds:
-    """Lockstep arrival barrier: a round releases every held request at once, after the previous round drained.
+class _ColdRound:
+    """Release the window's first ``openings`` conversations together, then let every later request leave on arrival.
 
-    The client issues each conversation's next request the moment the previous
-    one completes, so its timing carries the engine's own jitter back into the
-    arrival pattern and a read is never the same schedule twice (closed-loop
-    calibration scattered 1% per read, 2026-09-27). Holding requests until
-    nothing is in flight and no new request has arrived for ``_ROUND_SETTLE_S``
-    makes the batch composition a function of the slice alone. The first round
-    waits for exactly ``openings`` conversations instead, so a slow client
-    worker cannot shrink it, and fails every held request when the client has
-    not opened them within ``_FIRST_ROUND_WAIT_S`` of its last arrival rather
-    than idling to the session deadline. A round is released in session-key
-    order so rank placement is the same in every read, and each release is
-    numbered in that order: the engine requires batch indices in dispatch
-    order, which arrival order no longer is.
-
-    ``closed_loop`` keeps only the first round: every later request leaves on
-    arrival, so the sealed session count is the engine's offered concurrency,
-    as a serving fleet sees it. Cold/warm membership stays a function of the
-    slice because the cold round is still one release.
+    The client issues each conversation's next request the moment the previous one completes, so the sealed
+    session count is the engine's offered concurrency, as a serving fleet sees it. Holding only the cold round
+    keeps cold/warm membership a function of the slice: it waits for exactly ``openings`` conversations, so a
+    slow client worker cannot shrink it, and fails every held request when the client has not opened them within
+    ``_FIRST_ROUND_WAIT_S`` of its last arrival rather than idling to the session deadline. It is released in
+    session-key order so rank placement is the same in every read, and each release is numbered in that order:
+    the engine requires batch indices in dispatch order, which arrival order is not.
     """
 
-    def __init__(self, openings: int, clock, settle_s: float = _ROUND_SETTLE_S,
-                 first_wait_s: float = _FIRST_ROUND_WAIT_S, closed_loop: bool = False):
-        self.openings, self.clock, self.settle_s, self.first_wait_s = openings, clock, settle_s, first_wait_s
-        self.closed_loop = closed_loop
+    def __init__(self, openings: int, clock, first_wait_s: float = _FIRST_ROUND_WAIT_S):
+        self.openings, self.clock, self.first_wait_s = openings, clock, first_wait_s
         self.pending: dict[str, tuple[str, asyncio.Future]] = {}
-        self.inflight: set[str] = set()
-        self.first_released = False
         self.released = 0
         self._timer = None
 
     async def hold(self, request_id: str, key: str) -> tuple[float, int]:
-        """Wait for the round this request joins; return its release time on the session clock and dispatch ordinal."""
-        if self.closed_loop and self.first_released:
-            self.inflight.add(request_id)
+        """Wait for the cold round if it is still open; return the release time on the session clock and dispatch ordinal."""
+        if self.released:
             self.released += 1
             return self.clock(), self.released - 1
         future = asyncio.get_running_loop().create_future()
         self.pending[request_id] = (key, future)
-        self._arm()
+        if self._timer is not None:
+            self._timer.cancel()
+        # Never inline: in the last opening's own hold() its future is already done, so it took
+        # rank 0 before the others woke in session-key order, randomising placement (2026-09-30).
+        full = len(self.pending) >= self.openings
+        self._timer = asyncio.get_running_loop().call_later(
+            0 if full else self.first_wait_s, self._release if full else self._starve)
         return await future
 
     def done(self, request_id: str) -> None:
-        self.inflight.discard(request_id)
         self.pending.pop(request_id, None)
-        self._arm()
-
-    def _arm(self) -> None:
-        if self._timer is not None:
-            self._timer.cancel()
-            self._timer = None
-        if self.inflight or not self.pending:
-            return
-        loop = asyncio.get_running_loop()
-        if self.first_released or len(self.pending) >= self.openings:
-            # Never inline: in the last opening's own hold() its future is already done, so it took
-            # rank 0 before the others woke in session-key order, randomising placement (2026-09-30).
-            self._timer = loop.call_later(self.settle_s if self.first_released else 0, self._release)
-        else:
-            self._timer = loop.call_later(self.first_wait_s, self._starve)
 
     def _release(self) -> None:
         self._timer = None
-        if (self.inflight or not self.pending
-            or (not self.first_released and len(self.pending) < self.openings)):
-            return
-        self.first_released = True
         stamp = self.clock()
-        for request_id, (_key, future) in sorted(self.pending.items(), key=lambda item: item[1][0]):
+        for _key, future in sorted(self.pending.values(), key=lambda item: item[0]):
             if not future.done():
-                self.inflight.add(request_id)
                 future.set_result((stamp, self.released))
                 self.released += 1
         self.pending.clear()
 
     def _starve(self) -> None:
         self._timer = None
-        error = RuntimeError(f"first lockstep round holds {len(self.pending)} of {self.openings} conversations "
+        error = RuntimeError(f"cold round holds {len(self.pending)} of {self.openings} conversations "
                              f"after {self.first_wait_s:g} s without a new arrival")
         for _key, future in self.pending.values():
             if not future.done():
@@ -310,12 +277,12 @@ class _Rounds:
 class ReplayBridge:
     """Adapt trusted chat requests to canonical IDs and retain their actual token evidence."""
 
-    def __init__(self, session, exchange, tokenizer, output: Path, load: int, closed_loop: bool):
+    def __init__(self, session, exchange, tokenizer, output: Path, load: int):
         self.session, self.exchange, self.tokenizer = session, exchange, tokenizer
         self.first_batch_index = session.next_batch_index
         self.rows, self.failure = {}, None
         self.stamps: dict[str, int] = {}
-        self.rounds = _Rounds(load, session.clock, closed_loop=closed_loop)
+        self.rounds = _ColdRound(load, session.clock)
         self.placement = _Placement(pd_engine.routes(dict(session.plan.engine_config.engine_kwargs)))
         self.failed = asyncio.Event()
         self.offset_ns = time.time_ns() - round(session.clock() * 1e9)
@@ -428,16 +395,14 @@ class ReplayBridge:
 def collect_read(plan: AgentReplayPlan, bridge: ReplayBridge, load: int) -> LoadRead:
     """Join client credits and source coordinates to host-observed pipe evidence.
 
-    Ordinals follow the round and the client's conversation coordinate, not its send time: two
-    conversations of one root leave 1 ms apart in either order, which swapped ordinals on one lane
-    and voided a complete read as different work (2026-10-01, off-chain request 959338a5). Closed-loop
-    arrival stamps every warm turn apart, so its ordinals follow the conversation coordinate alone.
+    Ordinals follow the client's conversation coordinate, not its send time: two conversations of one
+    root leave 1 ms apart in either order, which swapped ordinals on one lane and voided a complete read
+    as different work (2026-10-01, off-chain request 959338a5).
     """
     records, seen, ordinals = [], set(), defaultdict(int)
     metadata = [json.loads(line)["metadata"] for line in
                 (plan.output_directory / "aiperf" / "profile_export.jsonl").read_text().splitlines()]
-    for meta in sorted(metadata, key=lambda r: (0 if plan.closed_loop else bridge.stamps.get(r["x_request_id"], 0),
-                                                r["conversation_id"], r["turn_index"])):
+    for meta in sorted(metadata, key=lambda r: (r["conversation_id"], r["turn_index"])):
         external_id = meta["x_request_id"]
         if external_id in seen or external_id not in bridge.rows:
             raise ServiceEvidenceError("AIPerf/bridge request join is not one-to-one")
@@ -593,7 +558,7 @@ async def _run_load_read(session, plan: AgentReplayPlan, load: int, *, tokenizer
     output.mkdir(parents=True, exist_ok=False)
     pool = _slice_pool(current, output, plan.sessions_at(load))
     async with session.exchange() as exchange:
-        bridge = ReplayBridge(session, exchange, tokenizer, output, load, plan.closed_loop)
+        bridge = ReplayBridge(session, exchange, tokenizer, output, load)
         app = web.Application(client_max_size=MAX_BATCH_REQUEST_BYTES)
         app.router.add_post("/v1/chat/completions", bridge.chat)
         runner = web.AppRunner(app, access_log=None, shutdown_timeout=1)

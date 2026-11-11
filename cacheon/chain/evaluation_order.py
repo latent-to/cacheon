@@ -218,21 +218,10 @@ V17_REWARD_MARGIN = Decimal("0.015")
 
 
 def _reward_min_margin(db, qualifications):
-    """Use the ruled V17 margin for statistical policies; preserve historical sealed margins."""
-    from cacheon.chain.intake import IntakeError
-
-    policies = [report["speed_witness"]["resident_policy"] for report in _reward_reports(db, qualifications)]
-    # Versions 18 (paired windows), 19 and 20 (retained reference) are statistical too; read as a
-    # sealed margin, v18's 0 broke weights 2026-10-15.
-    statistical = [policy.get("version") in (17, 18, 19, 20, 21) for policy in policies]
-    if any(statistical) and not all(statistical):
-        raise IntakeError("reward comparison mixes statistical and historical qualifications")
-    if any(statistical):
-        return V17_REWARD_MARGIN
-    margins = [Decimal(str(policy["min_margin"])) for policy in policies]
-    if any(not value.is_finite() or not 0 < value < 1 for value in margins):
-        raise IntakeError("reward comparison margin is invalid")
-    return max(margins)
+    """Use the ruled V17 margin once the qualifications' retained attempts reopen. Every policy since v17 is
+    statistical and seals ``min_margin`` 0, which is no margin (read as one, v18's 0 broke weights 2026-10-15)."""
+    _reward_reports(db, qualifications)
+    return V17_REWARD_MARGIN
 
 
 def _reward_reports(db, qualifications):
@@ -261,11 +250,8 @@ def _reward_reports(db, qualifications):
             if "reports" in payload:
                 reports = [report for report in reports
                            if report["selected_delta_digest"] == qualification["selected_delta_digest"]]
-            if len(reports) != 1:
+            if len(reports) != 1 or type(reports[0]["speed_witness"]["resident_policy"]) is not dict:
                 raise ValueError("reward comparison report is ambiguous")
-            policy = reports[0]["speed_witness"]["resident_policy"]
-            if policy.get("version") not in (17, 18, 19, 20):
-                policy["min_margin"]
             result.append(reports[0])
         except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
             raise IntakeError(f"reward comparison cannot read retained margin: {exc}") from None

@@ -367,10 +367,9 @@ def _compose_locked(
     from cacheon.eval.goodput_runtime import GoodputPolicy
     settings = session_block["replay"]
     goodput = GoodputPolicy.from_dict(speed_block["goodput"])
-    if not goodput.error_rate:
+    if not goodput.error_rate or not goodput.decode_floor:
         raise B300QualificationCommissionError(
-            "new replay commissions require elapsed-work statistical eligibility; "
-            "V16 latency scoring is retained only for historical evidence"
+            "new replay commissions are prefill/decode pairs with elapsed-work eligibility and a decode floor"
         )
     replay = AgentReplayPlan(
         Path(settings["manifest_path"]),
@@ -380,7 +379,7 @@ def _compose_locked(
         goodput.contract, "incumbent", 1, screen_lane, windows=settings["windows"],
         elapsed_cost=True,
         max_work_seconds=settings.get("max_work_seconds", 0),
-        closed_loop=bool(goodput.decode_floor),
+        closed_loop=True,
         warm_windows=settings.get("warm_windows", 0),
     )
     if replay.slice.digest != settings["slice_digest"]:
@@ -463,10 +462,8 @@ def _compose_locked(
         max_qualification_seconds=speed_block["max_qualification_seconds"],
         calibration=calibration_manifest,
         context=calibration_context,
-        # New commissions run one engine on the whole lane against a retained
-        # stock reference (v19); PD references measure each stock pair in its own evaluator process (v21).
-        # Historical witnesses retain their original policy and arithmetic.
-        version=21 if goodput.decode_floor else 19,
+        # A PD reference measures each stock pair in its own evaluator process (v21).
+        version=21,
         min_windows=speed_block["min_windows"],
         max_window_scatter=float(speed_block["max_window_scatter"]),
         max_conditioning_slowdown=float(speed_block["max_conditioning_slowdown"]),

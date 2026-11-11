@@ -177,7 +177,7 @@ With an injected deployment registry, the same testnet loop may qualify, retain 
 complete audited PASS, and settle. That does not move qualification onto chain: the chain supplies
 arrival and current metagraph authority, while the registered OCI/referee fleet produces
 and retains the evidence. Production version-3 qualification runs candidate
-boots against a retained stock reference on one lane (speed policy 19), then
+boots against a retained stock reference on one lane (speed policy 21), then
 audit and pristine T. Verify the stock reference and both candidate boots
 before daemon mode.
 

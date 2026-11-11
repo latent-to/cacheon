@@ -44,14 +44,15 @@ Retained attempts identify the speed policy that created them:
 
 | Version | Timed reads | Purpose |
 |---|---|---|
-| v19 | Up to two fresh candidate boots of N windows against a retained four-boot stock reference on one lane | New commissions: log mean elapsed serving cost per boot with statistical eligibility |
-| v16–v18 | Paired windows on two concurrent lanes | Retained evidence: regrades and settles from its retained reads |
+| v21 | Up to two fresh prefill/decode pair boots of N windows per sealed load against a retained stock reference of two pairs on one lane | New commissions: log mean elapsed serving cost per boot with statistical eligibility and per-load decode floors |
+| v20 | The same, against a four-boot reference measured in one evaluator process | Retained evidence of the DeepSeek-V4.1-Flash PD arena (2026-10-28): regrades and settles from its retained reads |
 
-V19 is described in [Finite agent replay](#finite-agent-replay).
+Both are described in [Finite agent replay](#finite-agent-replay).
 
-Versions 8–15 measured batch cells, and versions 1–7
-preceded them. Their graders are not in the tree: a speed witness below version
-16 does not decode as qualification authority, and a commission that seals no
+Versions 16–19 (paired windows on two lanes, then one engine per node) served
+retired arenas, versions 8–15 measured batch cells, and versions 1–7 preceded
+them. Their graders are not in the tree: a speed witness below version 20 does
+not decode as qualification authority, and a commission that seals no PD
 replay is refused. The dashboard shows a retained batch-cell attempt's verdict
 only; its stored lane rates are not rendered.
 
@@ -62,7 +63,7 @@ Every calibrated threshold is the one the provider sealed.
 Fresh execution is resident-only: the runner refuses any other speed-evidence
 policy at entry, and the constructor default is the resident policy — the only
 one a fresh plan can run. A reopen binds the retained evidence's own policy
-explicitly, and retained v16–v18 witnesses regrade byte-for-byte without
+explicitly, and retained v20 witnesses regrade byte-for-byte without
 reinterpretation. Merely changing the policy label does not upgrade old
 evidence.
 
@@ -108,15 +109,15 @@ store under the commissioned root that later boots of the same tree reuse.
 
 1. **Stock reference.** The first qualification that finds no current reference
    for the stock identity (lane digest, stock launch digest, runtime preflight
-   SHA-256, workload digest, boot schedule) measures four fresh stock boots. PD
-   policy 21 measures them as two pairs, each the first two engine lifetimes of
+   SHA-256, workload digest, boot schedule) measures four fresh stock boots as
+   two pairs, each the first two engine lifetimes of
    its own evaluator process, the position every candidate pair holds: replay
    rates fall with each lifetime one evaluator process runs and recover in the
    next qualification's process, not after idle GPUs
    ([measurement](../results/deepseek-v41-flash-pd.md#reference-position)). A
    qualification that measures a stock pair retains it and ends `NO_DECISION`
    (infrastructure, never a candidate FAIL) without reading its candidate; the
-   next such qualification completes the reference. Policies 19–20 retain their
+   next such qualification completes the reference. Policy 20 retains its
    historical consecutive reference campaign. The producer
    publishes them to the evidence store (domain
    `cacheon.qualification.stock-reference`, schema
@@ -167,11 +168,11 @@ sequenceDiagram
     participant A as Audit-only role
     participant T as Pristine reference
     opt no current stock reference
-        loop four stock boots (policy 21: one pair)
+        loop one stock pair
             H->>L: boot stock, condition, flush, replay N windows
         end
-        H->>H: publish the reference and its pointer (policy 21: a first pair)
-        H->>H: policy 21: end NO_DECISION without a candidate read
+        H->>H: publish the first pair, or the reference and its pointer
+        H->>H: end NO_DECISION without a candidate read
     end
     H->>H: start the qualification and speed-stage clocks
     H->>L: candidate boot 1, condition, flush, replay N windows
@@ -532,7 +533,7 @@ The final report is derived from the serialized attempt, referenced graph/qualit
 artifacts, and calibration manifests. Reopen can regrade graph and raw quality evidence.
 Speed regrading uses the retained `ResidentSpeedWitness`, which retains every
 boot's turn records (reference, candidate and any retained stock bracket), physical-lane
-authority, operational timings, and budget. A witness below version 16 is batch-cell or MiniMax-M3 history and is
+authority, operational timings, and budget. A witness below version 20 is retired-arena history and is
 refused rather than decoded. Regrading recomputes costs and the frozen
 decision from those typed facts; it does not reconstruct them from raw session
 frames. A summary JSON line without these products is not authority.
@@ -684,7 +685,7 @@ runs first with at most the declared session count per conditioning batch and
 rows; AIPerf supplies the measured work. AIPerf starts exactly the declared number
 of root sessions and drains their turns and children; there is no duration cut
 or request-count truncation. `--ignore-trace-delays` removes recorded user and
-tool waiting; the bridge releases ready requests in lockstep rounds.
+tool waiting; the bridge releases the cold round together, then each request on arrival.
 Turn order and child joins remain intact. The loopback chat adapter passes canonical input IDs and
 sticky DP ranks, fixed at each session's first turn in release order, through the isolated-worker pipes.
 
@@ -700,7 +701,7 @@ The slice loader verifies the named files in sealed order. A per-load directory
 contains only the first `load` files. Output budgets come from those traces;
 context overflow or an incomplete export fails the read. The client preserves
 `X-Request-ID`; the collector joins it to source trace and child coordinates, numbers each root's
-turns by release round and conversation coordinate (never by client send time), then requires the
+turns by conversation coordinate (never by client send time), then requires the
 exact main/inner turn counts for every root. All scoring timestamps use host nanoseconds in the
 same epoch clock domain, with the monotonic-to-epoch anchor retained in `clock.json`.
 
@@ -717,28 +718,23 @@ the typed `LoadRead` records, so continuation retains them with the token eviden
 A window does not by itself provide the capacity comparison, quality audit or
 authoritative qualification result.
 
-Policy v19 uses the lockstep replay schedule: requests are released together
-in session-key order after the preceding round drains. The cold opening round
-establishes the declared warm-cache operating point before measurement.
-The measured cost spans the first warm release through the last warm completion,
-including handoffs and tails. Fixed workload value and GPU allocation make its
-inverse monotone in profit for this workload and pricing scenario. Native output
-generation, MTP acceptance costs, and prefix-cache behavior remain in this cost.
-The first opening group must fill within 120 seconds of its last arrival.
-V16 reads retain lockstep rounds and inverse mean request latency;
-that quantity is not wall-time throughput and is not the v19 score.
+The cold opening round is released together in session-key order and
+establishes the declared warm-cache operating point before measurement; it must
+fill within 120 seconds of its last arrival. The measured cost spans the first
+warm release through the last warm completion, including handoffs and tails.
+Fixed workload value and GPU allocation make its inverse monotone in profit for
+this workload and pricing scenario. Native output generation, MTP acceptance
+costs, and prefix-cache behavior remain in this cost.
 
-Policy v20 keeps only the cold round in lockstep: every later request leaves the
+After the cold round every request leaves the
 moment its session's previous turn completes, so the sealed load is the
 concurrency the engine is offered, as a serving fleet sees it. A window replays
 the whole sealed slice with the load in flight: the first `load` sessions open
 the cold round and each finished session hands its slot to the next in filename
 order. Replaying only `load` sessions would end the window on its longest one
-(output per session spans about 4.5× on the Weka slice), so a v20 slice is sealed
+(output per session spans about 4.5× on the Weka slice), so a slice is sealed
 longest session first and the drain at the end is made of the shortest. Cold/warm
-membership is still a function of the slice, and each root's turns are numbered
-by conversation coordinate alone, because closed-loop release stamps every warm
-turn apart. The workload identity records `closed-loop-after-cold-round`. Each
+membership is still a function of the slice. The workload identity records `closed-loop-after-cold-round`. Each
 lifetime is one or more prefill servers followed by a decode engine across the
 lane (`engine_config.engine_kwargs.pd_prefill`/`pd_decode` with the sealed
 `disaggregation_transfer_backend`; `pd_prefill.servers` sets the server count, a
@@ -791,9 +787,9 @@ its tail, with nothing compiling. Engine startup retains its separate OCI initia
 `attainment_margin`. These values use canonical decimal strings. The
 window-scatter, conditioning-slowdown and minimum-window fields of the retired
 batch-cell policies stay sealed as zero, because the policy digest binds them.
-V19 seals `required=1`, `error_rate=0.125`, per-window log-cost standard
+V20 and V21 seal `required=1`, `error_rate=0.125`, per-window log-cost standard
 deviation `null_noise`, per-boot standard deviation `boot_noise`, and
-`attainment_pooled=1`. An optional `futility_margin` fails a stage whose first
+`attainment_pooled=1` and `decode_floor=1`. An optional `futility_margin` fails a stage whose first
 candidate boot reads more than that fraction slower than the reference, without
 booting the second. At the final look, the candidate's service attainment over
 all its turns less the reference's over all its turns, less `attainment_margin`,
@@ -809,14 +805,14 @@ profile (`hidden_tasks_per_prompt=0`, `hidden_tasks_required=false`), not numeri
 answer tasks. Its reference token maximum equals the largest output budget in
 the selected slice; conditioning generates 16 tokens.
 
-New replay commissions seal V19, or V21 for the PD closed-loop workload. The commissioner rejects a legacy
-fixed-threshold goodput declaration before staging a run. A noise estimate
+New replay commissions seal V21. The commissioner rejects a goodput declaration
+without an error budget or a decode floor before staging a run. A noise estimate
 for summed request latency cannot calibrate elapsed serving cost. Calibration
 must cover the commissioned workload, arrivals, engine state and boot schedule.
 An error budget is conditional on those noise bounds; merely setting it does
 not establish a measured false-positive rate.
 
-V19–V21 use the same arithmetic over engine boots, not individual turns:
+V20 and V21 use the same arithmetic over engine boots, not individual turns:
 
 ```text
 cost(b)     = log(mean same-work elapsed time over boot b's N windows)
@@ -826,7 +822,7 @@ SE          = sqrt(Σ reference variances / 16 + Σ candidate variances / k²)
 PASS        when exp(log speedup − z·SE) > 1
 ```
 
-Sealed noise bounds the stock/candidate log ratio, as in v16–v18, so each arm's boot carries
+Sealed noise bounds the stock/candidate log ratio, so each arm's boot carries
 half of it. The shared reference variance never divides by the candidate's boot count. Requests sharing a window are not treated
 as independent replications. Looks fall at candidate boot boundaries and spend the
 sealed 12.5% one-sided error budget under v17's alpha-spending shares; the final
@@ -846,21 +842,21 @@ bar is +2.1% (v18: +2.24% at look 4, +4.28% at look 3). Boot spread is the floor
 [Full-node qualification and noise](../results/full-node-qualification-noise.md)
 records the TP8 run, its measured spreads and an outcome census.
 
-Reward credit uses the point estimate, not a confidence-bound haircut; a V17
-through V21 PASS is paid only when that estimate beats the best earlier rewarded
+Reward credit uses the point estimate, not a confidence-bound haircut; a PASS
+is paid only when that estimate beats the best earlier rewarded
 PASS against the same arena and incumbent stack, or stock for the first PASS, by 1.5%. The
 dispatcher seals that bar into each new request, so a PASS below it stops at the speed stage. Regrading
 checks the exact stopping point, all engine identities, host timings, and
-controls. Retained v16–v18 witnesses regrade under their own paired arithmetic.
+controls.
 
-The dashboard lists a V19 replay per engine boot — "Stock reference boot k",
+The dashboard lists a replay per engine boot — "Stock reference boot k",
 "Candidate boot k" and, on older evidence, "Stock bracket after PASS" — with each boot's mean
 same-work seconds, decode rate, first-token time and service attainment; its
 `score_basis` is `retained_reference_boots`. The detail adds the operating load,
 windows per boot, workload identity, required gain, unsuccessful request count
 and speed-stage duration. The attempt's retained workload and policy identify its
-regime, regardless of submission date. Retained paired attempts keep their
-per-window tables; retained batch-cell evaluations show their verdict only.
+regime, regardless of submission date. Retained evaluations under retired
+policies show their verdict only.
 
 The economic interpretation assumes identical billable work, fixed GPU
 allocation and cost, and demand for the measured capacity. At fixed basket

@@ -1,12 +1,10 @@
 """Bounded production speed stage: one engine at a time owns the lane.
 
-Stock and candidate replay the sealed session slice in whole engine lifetimes on
-the same lane (speed policy 19; ``goodput_runtime`` runs the lifetimes and
-``service_capacity`` grades them against the retained stock reference). Audit
-and pristine T are later stages and must not run unless this returns PASS.
-
-Paired two-lane stages (policies 16-18) and the batch-cell B/C/B-prime schedules
-(policies 8-15) no longer execute; their retained witnesses stay readable.
+Stock and candidate replay the sealed session slice in whole prefill/decode pair
+lifetimes on the same lane (speed policies 20-21; ``goodput_runtime`` runs the
+lifetimes and ``service_capacity`` grades them against the retained stock
+reference). Audit and pristine T are later stages and must not run unless this
+returns PASS.
 """
 
 from __future__ import annotations
@@ -109,7 +107,6 @@ class ResidentCrossoverPlan:
             type(self.baseline) is not ResidentArmPlan
             or type(self.candidate) is not ResidentArmPlan
             or type(self.policy) is not ResidentSpeedPolicy
-            or self.policy.version < 19
             or _workload(self.baseline.session_plan)
             != _workload(self.candidate.session_plan)
         ):
@@ -117,8 +114,6 @@ class ResidentCrossoverPlan:
         replay = self.baseline.session_plan.replay
         if (replay is None or replay.contract != self.policy.goodput.contract
                 or replay.elapsed_cost != bool(self.policy.goodput.error_rate)
-                or replay.closed_loop != (self.policy.version in (20, 21))
-                or (len(replay.loads) > 1 and not self.policy.goodput.decode_floor)
                 or set(dict(self.policy.goodput.decode_floors) or replay.loads) != set(replay.loads)):
             raise CrossoverRuntimeError("goodput plan requires its sealed loads, their floors and its service contract")
         allowed_differences = {
@@ -135,9 +130,9 @@ class ResidentCrossoverPlan:
         ):
             raise CrossoverRuntimeError("resident arms differ outside contribution identity")
         hardware = self.candidate.launch.hardware
-        # Version 20 times a prefill/decode pair over the whole lane; nothing else may.
+        # The policy times a prefill/decode pair over the whole lane; nothing else may.
         kwargs = dict(self.candidate.session_plan.engine_config.engine_kwargs)
-        if (pd_engine.is_pair(kwargs) != (self.policy.version in (20, 21))
+        if (not pd_engine.is_pair(kwargs)
                 or hardware.visible_gpu_count != pd_engine.lane_width(hardware.tp_size, kwargs)
                 or _expected_lane_digest(self.baseline) != _expected_lane_digest(self.candidate)):
             raise CrossoverRuntimeError("stock and candidate do not share one whole lane")
@@ -316,7 +311,7 @@ class ResidentCrossoverEvidence:
     reference_origin: str = dataclass_field(default="", metadata={"wire_optional": True})
 
     def __post_init__(self) -> None:
-        if (type(self.policy) is not ResidentSpeedPolicy or self.policy.version < 19 or self.replay_windows
+        if (type(self.policy) is not ResidentSpeedPolicy or self.replay_windows
             or len(self.prior_executions) < REFERENCE_BOOTS
             or any(type(v) is not EngineExecutionEvidence for v in self.prior_executions)
             or type(self.goodput) is not GoodputReadSet or not self.goodput.boots):

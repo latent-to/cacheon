@@ -69,12 +69,9 @@ engine configuration. See [Kernel ABI](kernel-abi.md) and
 
 Inside the published image, mount the model and public arena inputs read-only,
 with writable cache and result directories. Expose the full arena GPU topology.
-The [GLM development inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/glm53)
-provide two batches, 24 requests in all, that exercise prefill, decode and
-prefix reuse on its published B300 configuration.
-The [DeepSeek-V4.1-Flash inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/dsv41flash)
-provide the same layout for its B300 TP2 configuration, including the engine
-environment the Engram host tables need.
+The [DeepSeek-V4.1-Flash PD inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/dsv41pd)
+provide 24 requests that exercise prefill, decode and prefix reuse on its
+published B300 configuration; `check` runs the pair's one-engine form.
 Use the input set for your arena; its model and topology must match. Then run:
 
 ```bash

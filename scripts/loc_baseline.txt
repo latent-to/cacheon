@@ -167,13 +167,15 @@
 # Then the three loads share one lifetime's replay budget (lower loads replay a prefix), the pair runs N prefill servers
 # of their own TP (GLM: 2x TP2 + TP4 decode), and replay's dead hidden-judge call and top-k projection go: cacheon -67,
 # docs +9, examples +8, scripts +4 (+3 notes), tests +9.
-(root) 1166
+# Only the DeepSeek-V4.1-Flash PD arena is live (owner 2026-11-11): the retired arenas' inputs, the GLM-5.3 champion
+# bundle, lockstep replay, and policies 16-19's graders and branches go: cacheon +140/-464, docs +112/-377,
+# examples +1/-513, bundles -2398, tests +28/-36, root +4/-7, +3 notes.
+(root) 1163
 .github 338
-bundles 2398
-cacheon 92609
+cacheon 92285
 cacheon_kernels 936
 dashboard 4393
-docs 13567
-examples 890
-scripts 4471
-tests 14100
+docs 13302
+examples 380
+scripts 4473
+tests 14092

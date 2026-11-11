@@ -50,8 +50,7 @@ first time each decode rank meets a prefill rank (about 500 s of every boot's fi
 `cacheon check` runs the pair's one-engine form on four GPUs: the shared options
 with the prefill role's settings, as the eager audit runs it. Mount this folder
 read-only at `/arena`, the model at `/model` and a writable directory at `/work`,
-and use the DeepSeek-V4.1 development requests in
-`../dsv41flash/development-requests.json` (same tokenizer). A bundle loads in both
+with `development-requests.json` as the requests. A bundle loads in both
 engines of the pair: its kernels see long prefill chunks on the prefill GPUs and
 small decode and verify batches under CUDA graphs on the decode GPUs.
 

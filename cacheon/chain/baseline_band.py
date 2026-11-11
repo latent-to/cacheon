@@ -116,26 +116,19 @@ def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
             for index, read in enumerate(windows):
                 work = fixed_work_rate(read, reads.work(read.load))
                 elapsed = fixed_work_rate(read, reads.work(read.load), wall_time=True)
-                # Version 19 retains whole boots: reference boots, then any retained bracket, per arm.
-                boot = {"boot": index // (reads.window_limit * len(reads.loads))} if reads.boots else {}
+                # Whole boots: reference boots, then any retained bracket, per arm.
                 arm.append({"role": role, "window": read.window, "load": read.load,
-                            "physical_lane": read.lane, **boot,
+                            "physical_lane": read.lane, "boot": index // (reads.window_limit * len(reads.loads)),
                             "warm_turns": work.turns, "request_time_s": work.elapsed_s,
                             "mean_warm_latency_s": work.elapsed_s / work.turns,
                             "elapsed_s": elapsed.elapsed_s, "turns_per_second": elapsed.rate,
                             "attainment": attainment(read, policy.contract),
                             **_replay_diagnostics(read)})
-            if retained.resident_policy.version == 16:
-                best = min(row["mean_warm_latency_s"] for row in arm)
-                for row in arm:
-                    row["used_for_score"] = row["mean_warm_latency_s"] == best
             lanes.extend(arm)
         speed.update({
             "lanes": lanes, "speedup": float(grade.settled_speedup),
             "policy_version": retained.resident_policy.version,
-            "score_basis": {16: "fastest_pass_latency", 19: "retained_reference_boots",
-                            20: "retained_reference_boots", 21: "retained_reference_boots"}.get(
-                retained.resident_policy.version, "pooled_elapsed_orientation"),
+            "score_basis": "retained_reference_boots",
             "speed_stage_seconds": retained.completed_monotonic_s - retained.started_monotonic_s,
             "workload_digest": retained.workload_digest,
             "loads": list(reads.loads),

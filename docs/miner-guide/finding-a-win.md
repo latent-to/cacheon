@@ -122,14 +122,14 @@ The authoritative comparison is:
 ```text
 incumbent = exact incumbent engine, retained as a four-boot stock reference on the lane
 candidate = same stack with exactly the selected target delta, up to two fresh boots on that lane
-v19 = one engine at a time owns the whole lane; every boot replays the sealed
-      agent workload for the same N windows
+v21 = one prefill/decode pair at a time owns the whole lane; every boot replays
+      the sealed agent workload for the same N windows at each sealed load
 A = registered eager, untimed candidate audit
 T = candidate-free pristine quality reference once timed candidate boots end;
     beside A on a prefill/decode lane
 ```
 
-The V19 score is the mean log elapsed cost of the reference boots less that of
+The V21 score is the mean log elapsed cost of the reference boots less that of
 the candidate boots, each boot's cost being its mean over N windows. A PASS needs the
 statistical lower bound on that gain above one; there is no fixed percentage
 floor, but a gain inside the arena's run-to-run noise does not clear the bound.
@@ -208,10 +208,6 @@ statistical bound by the last sealed window, or a quality regression, is a
 candidate `FAIL`; revise the source and create a new identity. Missing evidence or
 infrastructure faults can be `NO_DECISION`. None of these outcomes justify
 changing the math after observing it.
-
-The [MiniMax-M3 results](../results/minimax-m3.md) show how profiling identified
-fused collective boundaries. Those measurements do not substitute for
-qualification under the current target, stack, and evidence.
 
 Once the mechanism survives this scrutiny, prepare the source-only archive and
 follow [Submitting](submitting.md).

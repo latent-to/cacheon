@@ -12,13 +12,14 @@ one exact marginal comparison:
 - B: the exact frozen incumbent stack; and
 - C: that same stack with one registered target replaced.
 
-B and C run one engine at a time on the whole commissioned lane and replay the
-same sealed agent slice (see
+B and C run one prefill/decode engine pair at a time on the whole commissioned
+lane and replay the same sealed agent slice (see
 [Finite agent replay](qualification.md#finite-agent-replay)). B is measured once
-as a retained stock reference of four fresh boots of N windows each; C gets up to
-two fresh boots of N windows on the same lane. The controller fixes
-the slice, the operating load and the output budgets, releases requests in
-lockstep rounds, and timestamps every request on the host. The durable resident
+as a retained stock reference of four fresh boots of N windows each, two per
+evaluator process; C gets up to two fresh boots of N windows on the same lane.
+The controller fixes the slice, the operating loads and the output budgets,
+releases a cold round together and every later request in a closed loop, and
+timestamps every request on the host. The durable resident
 witness retains each boot's turn records, physical-lane authority, operational
 timing, and budget. After the speed lifetimes are quiescent, qualification runs
 registered eager audit A when the plan requires it, destroys candidate lifetimes,
@@ -26,7 +27,7 @@ and then runs pristine T. Reopen recomputes the costs and the frozen decision
 from the retained records, not from raw session frames. Candidate-reported
 aggregate throughput is never accepted as authority.
 
-The policy-19 speed estimate is:
+The speed estimate is:
 
 ```text
 cost(boot)  = log(mean elapsed serving seconds over the boot's N windows)
@@ -43,17 +44,16 @@ Looks fall at candidate boot boundaries and spend the sealed 12.5% error budget
 sealed `futility_margin` (FAIL); a PASS needs both boots and the pooled
 attainment bound.
 
-Policy 20 keeps this arithmetic for a prefill/decode engine pair replaying the
-slice closed-loop at a sealed session count (see
-[Finite agent replay](qualification.md#finite-agent-replay)). With identical
+With identical
 token work the speedup is the ratio of served output tokens per second. A gate
 holds the pooled per-user decode rate (the median over every turn with at least
 two output tokens) to the contract's `decode_floor_tps` at every look: a
 candidate below it fails with `service_floor_not_met`, because tokens bought by
 slowing every user below the price floor are not revenue; a stock reference
-below it is a mis-sealed load and yields `NO_DECISION`. A sealed goodput policy
-with `decode_floor` 1 selects policy 20; its digest names the pair topology, the
-closed-loop arrival and the gate.
+below it is a mis-sealed load and yields `NO_DECISION`. The policy digest names
+the pair topology, the closed-loop arrival and the gate. Policy 21 measures the
+reference as two stock pairs, each the first two lifetimes of its own evaluator
+process; policy 20's single four-lifetime campaign stays readable.
 
 Policy 21 may seal several loads (for example low, mid and high session
 concurrencies) so that no single batch size carries the verdict. Every lifetime
@@ -79,8 +79,7 @@ Provenance still records the exact controller, but measurement reuse is not
 invalidated by an unrelated controller revision. Invalid or incomplete
 measurement yields `NO_DECISION`, never a fabricated miner loss or reward.
 Retained evidence regrades under the version that produced it. Evidence sealed
-below version 16 (the batch-cell policies 8–15 and the schedules before them) is
-refused rather than regraded.
+below version 20 (retired arenas' policies) is refused rather than regraded.
 
 Timed replay requests collect no log-probabilities (`top_logprobs_num` 0):
 quality is the teacher-NLL-only mode, digest-bound by a zero top-k width in the
@@ -141,7 +140,7 @@ rules live in
 
 A qualified PASS earns reward only when its speedup beats the best earlier
 rewarded PASS against the same arena and incumbent stack by the reward margin:
-1.5% for V17 through V21, the sealed `min_margin` for historical policies. The first PASS
+1.5%. The first PASS
 against a commissioned baseline must beat stock by the same margin; see
 [Settlement and weights](settlement-and-weights.md). Qualification ends a speed PASS
 below this bar at the speed stage as `FAIL` (`below_payment_bar`).

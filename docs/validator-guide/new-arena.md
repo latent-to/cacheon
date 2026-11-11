@@ -9,8 +9,8 @@ tools that produce the arena's own inputs: the prompt pools and authority, the
 retained image proof and the warm runtime seed. Bringing up an arena is
 therefore: write its inputs, build and retain, render the operator, review the
 render against the previous arena's, launch, prove off-chain, and connect. The
-DeepSeek-V4.1-Flash and Muse-Spark-Open arenas render from the same templates;
-their rendered operators differ only where their `operator.json` files differ.
+DeepSeek-V4.1-Flash and GLM-5.3-Flash prefill/decode arenas render from the same
+templates; their rendered operators differ only where their `operator.json` files differ.
 
 ## 1. Arena inputs
 
@@ -143,8 +143,8 @@ previous arena's controls as it replaces the replay load.
 ## 4. Render and review
 
 ```bash
-python scripts/arena/render_operator.py --arena musespark \
-  --retained-inputs /path/to/retained --out /path/to/operator-musespark
+python scripts/arena/render_operator.py --arena dsv41pd \
+  --retained-inputs /path/to/retained --out /path/to/operator-dsv41pd
 ```
 
 The output is the task-directory layout the validator VM launches from:
@@ -169,7 +169,7 @@ with the replay inputs archive (`replay-inputs-<slug>.tar`: the sealed workload
 slice and the tokenizer) placed beside the rendered `launch_stage.py`:
 
 ```bash
-python3 -B scripts/arena/launch_node.py --operator /path/to/operator-musespark \
+python3 -B scripts/arena/launch_node.py --operator /path/to/operator-dsv41pd \
   --task-dir /path/to/task --base /path/to/base --image-proof durable-images.json \
   --source runtime-source.tar --source-metadata runtime-source.json \
   --source-revision <commit> --image-digest <sha256 hex> -- \

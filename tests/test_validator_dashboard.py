@@ -30,7 +30,6 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -61,31 +60,32 @@ DELAY = 8 * 3600  # source and raw logs are released eight hours after the resul
 
 
 def _witness(gain: float) -> dict:
-    """A policy-17 paired-replay witness: two sessions of three turns, the candidate's warm turns ``gain`` faster."""
+    """A policy-21 reference witness: four stock lifetimes and two candidate lifetimes of two three-turn sessions,
+    the candidate's warm turns ``gain`` faster."""
 
     contract = ServiceContract(.1, 5.0, .8)
-    policy = replace(ResidentSpeedPolicy(600, .01, 2., .02, "a" * 64, "b" * 64, 16,
-                                         goodput=GoodputPolicy(contract, 1.01, .001, .02, 0.)),
-                     version=17, min_margin=0, goodput=GoodputPolicy(contract, 1., .001, .02, 0., .01, .001))
+    policy = ResidentSpeedPolicy(600, 0., 2., .02, "a" * 64, "b" * 64, 21, goodput=GoodputPolicy(
+        contract, 1., .001, .02, 0., .125, .001, attainment_pooled=1., decode_floor=1.))
     expected = (("0", 3, 0), ("1", 3, 0))
     arms = []
-    for arm in ("incumbent", "candidate"):
-        windows = []
-        for window, lane in ((1, arm), (2, "candidate" if arm == "incumbent" else "incumbent")):
+    for arm, boots in (("incumbent", range(4)), ("candidate", range(4, 6))):
+        lifetimes = []
+        for boot in boots:
             turns = []
             for session, _, _ in expected:
                 for turn in range(3):
-                    start = int((1e3 + 100 * window + 10 * turn) * 1e9)
-                    seconds = 50. if turn == 0 else (4. if window == 1 else 1.) / (gain if arm == "candidate" else 1)
+                    start = int((1e3 + 100 * boot + 10 * turn) * 1e9)
+                    seconds = 50. if turn == 0 else 4. / (gain if arm == "candidate" else 1)
                     turns.append(TurnRecord(session, "main", turn, start, start, start + 10**8,
                                             start + int(seconds * 1e9), 1000, 4, "ok"))
-            windows.append(LoadRead(arm, window, lane, 2, tuple(turns)))
-        arms.append(tuple(windows))
+            lifetimes.append(LoadRead(arm, 1, "lane", 2, tuple(turns)))
+        arms.append(tuple(lifetimes))
     excluded = {"resident_policy", "rates", "goodput", "started_monotonic_s", "completed_monotonic_s",
                 "evidence_digest"}
     fields = {name: f"{index + 1:064x}" for index, name in enumerate(ResidentSpeedWitness.__dataclass_fields__)
               if name not in excluded}
-    fields.update(resident_policy=policy, rates=(), goodput=GoodputReadSet(*arms, expected), started_monotonic_s=1.,
+    fields.update(resident_policy=policy, rates=(), goodput=GoodputReadSet(*arms, expected, 1, boots=2, reference_boots=4),
+                  started_monotonic_s=1.,
                   completed_monotonic_s=301., calibration_digest=policy.calibration_digest,
                   calibration_context_digest=policy.calibration_context_digest)
     return ResidentSpeedWitness(**fields, evidence_digest=_resident_speed_projection_digest(**fields)).to_dict()

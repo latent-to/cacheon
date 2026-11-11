@@ -182,7 +182,7 @@ target families. A submission for one is parked at intake with reason
 judgement on the bundle and it is not charged — the cited eval-cost payment
 stays spendable. The submission closes as `NO_DECISION` and is not re-queued:
 resubmit the same bytes when the family reopens. The operator's announcement
-names the open targets; see [GLM availability](slots.md#current-glm-53-availability).
+names the open targets; see [current availability](slots.md#current-availability).
 
 ## Things that are not valid submissions
 

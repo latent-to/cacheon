@@ -1,10 +1,10 @@
 """Run replay engine lifetimes on one lane and grade them through the service scorer.
 
-Version 19 gives one engine the whole node. A stock reference campaign is measured once per lane
-identity and retained; each candidate reads whole lifetimes against it, and a PASS takes its quality controls
-from it (Shiv deleted the post-PASS stock bracket 2026-11-05: 25.5 node-minutes, no PD verdict changed).
-Paired read sets (versions 16-18) stay readable for the witnesses that retain them. Version 21 reads stock and
-candidate only as the first two engine lifetimes of their own evaluator process: the reference is two stock pairs.
+A stock reference campaign is measured once per lane identity and retained; each candidate reads whole
+lifetimes against it, and a PASS takes its quality controls from it (Shiv deleted the post-PASS stock bracket
+2026-11-05: 25.5 node-minutes, no PD verdict changed). Stock and candidate are read only as the first two engine
+lifetimes of their own evaluator process, so the reference is two stock pairs (version 21; version 20's
+four-lifetime references stay readable).
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from cacheon.eval.scoring import CrossoverRuntimeError, SpeedupVerdict, marginal
 from cacheon.eval.speed_verdict import SpeedStageDecision
 from cacheon.stack_identity import canonical_digest, canonical_json_bytes
 
-# Version 19: stock lifetimes in one reference campaign, and the most candidate lifetimes a stage reads.
+# Stock lifetimes in one reference campaign, and the most candidate lifetimes a stage reads.
 REFERENCE_BOOTS = 4
 CANDIDATE_BOOTS = 2
 # Replay rates fall with every engine lifetime one evaluator process runs and recover only in a new
@@ -141,10 +141,10 @@ class GoodputPolicy:
 class GoodputReadSet:
     """The turn records replacing token-window rates in a replay speed witness.
 
-    Paired policies hold one incumbent read per candidate read. Version 19 holds the stock reference
-    campaign (``reference_boots`` lifetimes, then at most one stock sentinel lifetime) as the incumbent
-    and up to ``boots`` candidate lifetimes on one lane, every lifetime ``window_limit`` windows at each
-    sealed load in the reference's load order.
+    The incumbent is the stock reference campaign (``reference_boots`` lifetimes, then at most one stock
+    sentinel lifetime) and the candidate up to ``boots`` lifetimes on one lane, every lifetime
+    ``window_limit`` windows at each sealed load in the reference's load order. ``orientations`` stays on
+    the wire, always empty, from the retired paired policies.
 
     ``payment_bar`` is the speedup settlement would pay, sealed by the dispatcher in the request. A PASS
     below it grades FAIL, so it ends before the quality controls, audit and T (Shiv, 2026-10-30).
@@ -170,43 +170,26 @@ class GoodputReadSet:
             or any(not roots or tuple(sorted(set(roots))) != roots or not set(roots) <= {row[0] for row in self.expected}
                    for _, roots in self.load_roots)):
             raise ValueError("goodput reads or fixed-work authority are incomplete")
-        if self.boots or self.reference_boots:
-            if type(self.window_limit) is not int or not 1 <= self.window_limit <= 5:
-                raise ValueError("reference read set is not whole lifetimes on one lane")
-            order = [(load, window) for load in self.loads for window in range(1, self.window_limit + 1)]
-            size = len(order)
-            if (type(self.boots) is not int or type(self.reference_boots) is not int or self.orientations
-                or not 2 <= self.boots <= CANDIDATE_BOOTS or self.reference_boots != REFERENCE_BOOTS
-                or len(self.incumbent) not in (self.reference_boots * size, (self.reference_boots + 1) * size)
-                or len(self.candidate) % size or len(self.candidate) > self.boots * size
-                or any((read.load, read.window) != order[index % size] for reads in (self.incumbent, self.candidate)
-                       for index, read in enumerate(reads))
-                or any(read.arm != "incumbent" for read in self.incumbent)
-                or any(read.arm != "candidate" for read in self.candidate)
-                or len({read.lane for read in self.candidate}) != 1
-                or any(read.lane != (self.reference_lane or self.candidate[0].lane)
-                       for read in self.incumbent[:self.reference_boots * size])
-                or any(read.lane != self.candidate[0].lane
-                       for read in self.incumbent[self.reference_boots * size:])):
-                raise ValueError("reference read set is not whole lifetimes on one lane")
-            for read in (*self.incumbent, *self.candidate):
-                fixed_work_rate(read, self.work(read.load))
-            return
-        if len(self.incumbent) != len(self.candidate):
-            raise ValueError("goodput reads or fixed-work authority are incomplete")
-        if (type(self.window_limit) is not int or self.window_limit < 0
-            or (self.window_limit and not len(self.incumbent) <= self.window_limit <= 5)):
-            raise ValueError("goodput read budget is invalid")
-        if self.orientations and self.orientations != tuple(
-                int(i >= self.window_limit // 2) for i in range(len(self.incumbent))):
-            raise ValueError("portable replay changed its sealed orientation order")
-        for baseline, candidate in zip(self.incumbent, self.candidate, strict=True):
-            if (baseline.arm != "incumbent" or candidate.arm != "candidate"
-                or (baseline.window, baseline.load) != (candidate.window, candidate.load)
-                or baseline.lane == candidate.lane):
-                raise ValueError("goodput reads are not a paired load window")
-            fixed_work_rate(baseline, self.work(baseline.load))
-            fixed_work_rate(candidate, self.work(candidate.load))
+        if type(self.window_limit) is not int or not 1 <= self.window_limit <= 5:
+            raise ValueError("reference read set is not whole lifetimes on one lane")
+        order = [(load, window) for load in self.loads for window in range(1, self.window_limit + 1)]
+        size = len(order)
+        if (type(self.boots) is not int or type(self.reference_boots) is not int or self.orientations
+            or not 2 <= self.boots <= CANDIDATE_BOOTS or self.reference_boots != REFERENCE_BOOTS
+            or len(self.incumbent) not in (self.reference_boots * size, (self.reference_boots + 1) * size)
+            or len(self.candidate) % size or len(self.candidate) > self.boots * size
+            or any((read.load, read.window) != order[index % size] for reads in (self.incumbent, self.candidate)
+                   for index, read in enumerate(reads))
+            or any(read.arm != "incumbent" for read in self.incumbent)
+            or any(read.arm != "candidate" for read in self.candidate)
+            or len({read.lane for read in self.candidate}) != 1
+            or any(read.lane != (self.reference_lane or self.candidate[0].lane)
+                   for read in self.incumbent[:self.reference_boots * size])
+            or any(read.lane != self.candidate[0].lane
+                   for read in self.incumbent[self.reference_boots * size:])):
+            raise ValueError("reference read set is not whole lifetimes on one lane")
+        for read in (*self.incumbent, *self.candidate):
+            fixed_work_rate(read, self.work(read.load))
 
     @property
     def loads(self) -> tuple[int, ...]:
@@ -219,35 +202,19 @@ class GoodputReadSet:
         roots = dict(self.load_roots).get(load)
         return work if roots is None else {root: work[root] for root in roots}
 
-    def grade(self, policy: GoodputPolicy, *, max_windows: int | None = None):
+    def grade(self, policy: GoodputPolicy):
         """Call the data/scoring owner's single grade entrypoint; retain no second estimator."""
         from cacheon.eval import service_capacity
 
-        work = self.work(self.loads[0])
-        service = dict(attainment_tolerance=policy.attainment_tolerance, attainment_margin=policy.attainment_margin)
-        if self.boots:
-            split = self.reference_boots * self.window_limit * len(self.loads)
-            result = service_capacity.reference_grade(
-                self.candidate, self.incumbent[:split], policy.contract, {load: self.work(load) for load in self.loads},
-                window_noise=policy.null_noise,
-                boot_noise=policy.boot_noise, error_rate=policy.error_rate, boots=self.boots,
-                futility_margin=policy.futility_margin, sentinel=self.incumbent[split:],
-                decode_floors=policy.floors(self.loads), **service,
-                reference_lane=self.reference_lane,
-            )
-        elif policy.error_rate:
-            result = service_capacity.statistical_grade(
-                self.candidate, self.incumbent, policy.contract, work, window_noise=policy.null_noise,
-                boot_noise=policy.boot_noise, error_rate=policy.error_rate,
-                max_windows=max_windows or self.window_limit or len(self.candidate),
-                futility_margin=policy.futility_margin, pooled_attainment=bool(policy.attainment_pooled),
-                **({"orientations": self.orientations} if self.orientations else {}), **service,
-            )
-        else:
-            result = service_capacity.grade(self.candidate, self.incumbent, policy.contract, work,
-                                            required=policy.required, **service)
-        if (type(result) is not ServiceVerdict or (not policy.error_rate and result.required != policy.required)
-            or not math.isfinite(result.ratio) or result.ratio <= 0):
+        split = self.reference_boots * self.window_limit * len(self.loads)
+        result = service_capacity.reference_grade(
+            self.candidate, self.incumbent[:split], policy.contract, {load: self.work(load) for load in self.loads},
+            window_noise=policy.null_noise, boot_noise=policy.boot_noise, error_rate=policy.error_rate,
+            boots=self.boots, futility_margin=policy.futility_margin, sentinel=self.incumbent[split:],
+            decode_floors=policy.floors(self.loads), attainment_tolerance=policy.attainment_tolerance,
+            attainment_margin=policy.attainment_margin, reference_lane=self.reference_lane,
+        )
+        if type(result) is not ServiceVerdict or not math.isfinite(result.ratio) or result.ratio <= 0:
             raise ValueError("service scorer returned another policy or result type")
         if (self.payment_bar and result.decision is SpeedStageDecision.PASS
                 and Decimal(format(result.ratio, ".17g")) < Decimal(self.payment_bar)):
@@ -256,7 +223,7 @@ class GoodputReadSet:
         confident = result.decision is not SpeedStageDecision.NO_DECISION
         passed = result.decision is SpeedStageDecision.PASS
         verdict = SpeedupVerdict(
-            result.ratio, result.standard_error if policy.error_rate else policy.null_noise, result.required, passed, confident,
+            result.ratio, result.standard_error, result.required, passed, confident,
             len(self.incumbent), result.detail, len(self.candidate),
         )
         return ScheduleGrade(verdict, result.decision, format(result.ratio, ".17g"))
@@ -374,7 +341,7 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
     """Reopen the lane's current stock reference, or measure its campaign when none is current.
 
     The campaign runs before the speed clock starts. A missing or retired reference is measured
-    again on this lane, never borrowed from another lane, image, launch or workload. Version 21
+    again on this lane, never borrowed from another lane, image, launch or workload. A missing reference
     measures one stock pair as the first lifetimes of this evaluator process, as every candidate pair
     is read, then ends the qualification without a candidate read (infrastructure, never a candidate
     FAIL); the second such pair completes the reference.
@@ -403,14 +370,13 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
                 raise CrossoverRuntimeError("stock reference import differs from its original publication")
         return _ReferenceExecutions((codec.decode(row) for row in record["executions"]), origin)
 
-    paired = plan.policy.version >= 21
     if pointer.exists():
         executions, target = reopen(pointer), None
     else:
         tokenizer = _tokenizer(plan)
         measured = tuple(_boot(executor, plan.baseline, lane, model_mount, prefix="incumbent", deadline=deadline,
-                               tokenizer=tokenizer)[0] for _ in range(CANDIDATE_BOOTS if paired else REFERENCE_BOOTS))
-        executions = (reopen(first) if paired and first.exists() else ()) + measured
+                               tokenizer=tokenizer)[0] for _ in range(CANDIDATE_BOOTS))
+        executions = (reopen(first) if first.exists() else ()) + measured
         target = pointer if len(executions) == REFERENCE_BOOTS else first
     if (len(executions) != (CANDIDATE_BOOTS if target == first else REFERENCE_BOOTS)
             or any(type(row) is not EngineExecutionEvidence for row in executions)):
@@ -423,7 +389,7 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
             "identity": pointer.stem, "executions": [codec.encode(row) for row in executions],
         }), domain=REFERENCE_DOMAIN, media_type="application/json", schema=REFERENCE_SCHEMA,
             max_bytes=_REFERENCE_BYTES)
-        if paired and target == pointer:
+        if target == pointer:
             # Before the pointer exists, so a reference retired later never lends its first pair.
             first.rename(first.with_name(f"{first.stem}.merged-{time.time_ns()}.json"))
         target.parent.mkdir(mode=0o700, exist_ok=True)
@@ -431,8 +397,7 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
             handle.write(json.dumps(reference.to_dict(), sort_keys=True) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
-        if paired:
-            raise CrossoverRuntimeError("stock reference pair retained; candidates are read in a fresh evaluator process")
+        raise CrossoverRuntimeError("stock reference pair retained; candidates are read in a fresh evaluator process")
     from cacheon.eval.service_capacity import decode_p50
 
     for load, floor in plan.policy.goodput.floors(plan.baseline.session_plan.replay.loads).items():
