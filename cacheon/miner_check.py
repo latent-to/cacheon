@@ -283,6 +283,10 @@ def check(args: argparse.Namespace) -> int:
                 decision, detail = gate(report["receipts"]["audit"],
                                         min_calls=args.minimum_audit_windows,
                                         expected_slots=slots, expected_member_count=ranks)
+                # Stock raising is never a graded call: a layer pass that stock refused on
+                # every DSA layer graded only the KDA layers (G3, 2026-11-11).
+                if decision == "PASS" and any(row.get("baseline_refused") for row in report["receipts"]["audit"]):
+                    decision = "NO_DECISION"
                 report.update(decision=decision, detail=detail)
                 result.write_text(json.dumps(report, indent=2) + "\n")
                 print(f"{decision}: {detail}")

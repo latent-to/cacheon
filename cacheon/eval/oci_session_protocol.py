@@ -642,19 +642,6 @@ def frame_message(message: Mapping[str, object], *, max_bytes: int) -> bytes:
     return CONTROL_MAGIC + struct.pack(">I", len(payload)) + payload
 
 
-def parse_frame_bytes(frame: bytes, *, max_bytes: int) -> dict[str, Any]:
-    if not isinstance(frame, bytes) or len(frame) < FRAME_HEADER_BYTES:
-        raise SessionProtocolError("session control frame is truncated")
-    if frame[:4] != CONTROL_MAGIC:
-        raise SessionProtocolError("session control frame magic/version mismatch")
-    size = struct.unpack(">I", frame[4:8])[0]
-    if size > max_bytes:
-        raise SessionProtocolError("session control frame declares an oversized payload")
-    if len(frame) != FRAME_HEADER_BYTES + size:
-        raise SessionProtocolError("session control frame has trailing or missing bytes")
-    return decode_message(frame[8:], max_bytes=max_bytes)
-
-
 def make_init(
     config: EngineSessionConfig,
     *,
@@ -1075,20 +1062,6 @@ def decode_evidence_payload(payload: bytes, *, request: BatchRequest) -> BatchEv
     if offset != len(payload):  # pragma: no cover - exact size already proves it
         raise SessionProtocolError("binary evidence contains trailing bytes")
     return _validated_evidence(BatchEvidence(tuple(prompts)), request=request)
-
-
-def parse_evidence_frame_bytes(frame: bytes, *, request: BatchRequest) -> BatchEvidence:
-    if not isinstance(frame, bytes) or len(frame) < FRAME_HEADER_BYTES:
-        raise SessionProtocolError("binary evidence frame is truncated")
-    if frame[:4] != EVIDENCE_MAGIC:
-        raise SessionProtocolError("binary evidence frame magic/version mismatch")
-    size = struct.unpack(">I", frame[4:8])[0]
-    expected = expected_evidence_payload_bytes(request)
-    if size != expected:
-        raise SessionProtocolError("binary evidence frame declares the wrong exact size")
-    if len(frame) != FRAME_HEADER_BYTES + size:
-        raise SessionProtocolError("binary evidence frame has trailing or missing bytes")
-    return decode_evidence_payload(frame[8:], request=request)
 
 
 def error_message(

@@ -13,7 +13,6 @@ the check-and-raise body is shared and audited once.
 
 from __future__ import annotations
 
-import operator
 import re
 from collections.abc import Iterable, Mapping
 from itertools import combinations
@@ -186,33 +185,6 @@ def duplicate_key_pairs(
             raise error(f"{label} contains duplicate key {key!r}")
         result[key] = value
     return result
-
-
-def require_driver_integer(
-    value: object,
-    *,
-    field: str,
-    error: type[Exception],
-) -> int:
-    """Accept integer-protocol CUDA driver values without lossy coercion.
-
-    Driver bindings return plain ints or enum wrappers exposing ``.value``;
-    bools and anything non-integral are malformed. ``operator.index`` keeps
-    the conversion exact (no ``int()`` truncation).
-    """
-
-    if isinstance(value, bool):
-        raise error(f"CUDA driver returned a malformed {field}")
-    try:
-        return operator.index(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError, OverflowError):
-        enum_value = getattr(value, "value", None)
-        if isinstance(enum_value, bool):
-            raise error(f"CUDA driver returned a malformed {field}") from None
-        try:
-            return operator.index(enum_value)  # type: ignore[arg-type]
-        except (TypeError, ValueError, OverflowError):
-            raise error(f"CUDA driver returned a malformed {field}") from None
 
 
 def truthy_flag(value: str | None) -> bool:

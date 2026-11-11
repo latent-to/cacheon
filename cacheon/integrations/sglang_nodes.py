@@ -511,16 +511,20 @@ def _native_forward(module):
 
 @contextmanager
 def _native(module):
-    """Use supported native paths while the DSA indexer retains hardware dispatch.
+    """Use native paths, except on ops whose pinned native forward is a raising stub.
 
-    The pinned Indexer explicitly has no native implementation. Its children and
-    surrounding ops still take native paths; forcing its stub refused 6,048
-    references in the first full GLM layer-bundle audit (B300, 2026-09-20).
+    The DSA Indexer has none, and GLM-5.3-Flash's IndexerKPool inherits the
+    MultiPlatformOp stub; their children and surrounding ops still take native paths.
+    Forcing the Indexer stub refused 6,048 references in the first full GLM
+    layer-bundle audit (B300, 2026-09-20); forcing IndexerKPool's refused stock on
+    every DSA layer, so only KDA layers were graded (G3, 2026-11-11).
     """
 
-    indexer = getattr(sys.modules.get("sglang.srt.layers.attention.dsa.dsa_indexer"), "Indexer", ())
+    stubs = [getattr(getattr(sys.modules.get(name), cls, None), "forward_native", None)
+             for name, cls in (("sglang.srt.layers.attention.dsa.dsa_indexer", "Indexer"),
+                               ("sglang.srt.layers.utils.multi_platform", "MultiPlatformOp"))]
     sites = [m for m in module.modules()
-             if "_forward_method" in vars(m) and not isinstance(m, indexer)]
+             if "_forward_method" in vars(m) and type(m).forward_native not in stubs]
     saved = [m._forward_method for m in sites]
     for m in sites:
         m._forward_method = _native_forward(m)

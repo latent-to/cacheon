@@ -123,16 +123,6 @@ def _get(value: object, *path: str, default: Any = None) -> Any:
     return value
 
 
-def _number(value: object) -> float | None:
-    """Rates cross the wire as strings to survive float round-tripping."""
-
-    try:
-        result = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-    return result if result == result and abs(result) != float("inf") else None
-
-
 def _decoded_evidence(product: dict) -> list[tuple[str, dict]]:
     """``(domain, payload)`` for every readable evidence row, in product order.
 

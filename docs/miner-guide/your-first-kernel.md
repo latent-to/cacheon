@@ -120,8 +120,8 @@ address/rank. Set `--timeout-seconds` and `--minimum-audit-windows` to the arena
 published development limits, not to values chosen after seeing a result.
 
 Exit 0 means the development audit and capture checks passed, 2 means a failure
-or execution error, and 3 means insufficient/incomplete audit evidence. The
-[wrong control](https://github.com/latent-to/cacheon/tree/main/examples/miner_node_wrong)
+or execution error, and 3 means insufficient/incomplete audit evidence, including
+any call on which the stock reference itself raised. The [wrong control](https://github.com/latent-to/cacheon/tree/main/examples/miner_node_wrong)
 has a valid interface but scales tensor-valued MLP outputs by 1.5 and should fail
 the engine audit.
 

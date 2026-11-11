@@ -493,10 +493,6 @@ class CausalQualificationInput:
             object.__setattr__(self, field, require_sha256_hex(getattr(self, field), field=field))
 
 
-def _profile(authority: CandidateAuthority) -> QualificationProfile:
-    return authority.profile
-
-
 def _decision(value: str | QualificationDecision) -> QualificationDecision:
     try:
         return value if type(value) is QualificationDecision else QualificationDecision(value)

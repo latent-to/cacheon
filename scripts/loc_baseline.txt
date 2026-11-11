@@ -175,17 +175,16 @@
 # DeepGEMM at next_n 6): examples +3 (the DSV README drops its duplicate of the results page), scripts +6, docs +1,
 # +3 notes; cacheon -3 (the reward walk's unused report list).
 # The KDA ReplaySSM audit rows (GLM-5.3-Flash decode speculation) replace their refusal and the colocated audit takes
-# decode's ReplaySSM flag: cacheon +30, docs +3, examples -1, +3 notes. Next deletion: the GDN native-MTP verify rows
-# once no GDN arena is planned.
-# `cacheon check` expected a pair's top-level tp_size of members where its one-engine form boots the prefill role's;
-# pd_engine.untimed_ranks now owns that count for check and the audit policy: cacheon +6, +2 notes. Pooled DSA
-# index rows and kpool key tails (+10) are paid by deleting the GDN native-MTP verify rows (-8): cacheon +2.
+# decode's ReplaySSM flag: cacheon +30, docs +3, examples -1, +3 notes. `check` counts the one-engine form's members
+# via pd_engine.untimed_ranks: cacheon +6. Pooled DSA index rows and tails (+10) cost the GDN native-MTP rows (-8).
+# Stock keeps hardware dispatch on stub-native ops (IndexerKPool) and `check` refuses a pass stock refused calls in
+# (+14), paid by five callerless definitions (-75): cacheon -61.
 (root) 1163
 .github 338
-cacheon 92320
+cacheon 92259
 cacheon_kernels 936
 dashboard 4393
 docs 13305
 examples 380
-scripts 4490
+scripts 4489
 tests 14092
