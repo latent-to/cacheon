@@ -66,10 +66,10 @@ from cacheon.eval.reference_protocol import (
     ReferenceRoleInput, request_sha256,
 )
 from cacheon.eval.reference_quality import (
-    RAW_QUALITY_DOMAIN, RAW_QUALITY_SCHEMA, RawHiddenTaskResult,
+    RAW_QUALITY_DOMAIN, RAW_QUALITY_SCHEMA,
     RawPromptQualityEvidence, RawRolloutEvidence, RawTokenEvidence,
     ReferenceQualityRawArtifact, ReferenceQualityRawBinding, ReferenceQualityVerdict,
-    distribution_from_f32_logprobs, reopen_reference_quality_evidence,
+    reopen_reference_quality_evidence,
     score_reference_quality, target_nll_from_f32,
     expected_raw_binding,
 )
@@ -218,10 +218,9 @@ class EntropyProvider(Protocol):
                  teardown: OCIQuiescenceReceipt) -> SelectionEntropyReceipt: ...
 
 class HiddenJudge(Protocol):
-    binding: "HiddenJudgeBinding"
+    """The packet's sealed judge binding; replay quality declares no hidden tasks, so it is never called."""
 
-    def __call__(self, *, prompt_digest: str, output_ids: tuple[int, ...],
-                 task_digests: tuple[str, ...]) -> "HiddenJudgeReceipt": ...
+    binding: "HiddenJudgeBinding"
 
 @dataclass(frozen=True)
 class HiddenJudgeBinding:
@@ -240,40 +239,6 @@ class HiddenJudgeBinding:
             "hidden_judge_digest": self.hidden_judge_digest,
             "hidden_task_policy_digest": self.hidden_task_policy_digest,
         })
-
-@dataclass(frozen=True)
-class HiddenJudgeReceipt:
-    binding_digest: str
-    prompt_digest: str
-    output_ids_digest: str
-    task_digests: tuple[str, ...]
-    passed: tuple[bool, ...]
-
-    def __post_init__(self) -> None:
-        for field in ("binding_digest", "prompt_digest", "output_ids_digest"):
-            object.__setattr__(self, field, require_sha256_hex(getattr(self, field), field=field))
-        tasks, results = tuple(self.task_digests), tuple(self.passed)
-        if (
-            tasks != tuple(sorted(set(tasks)))
-            or any(require_sha256_hex(row, field="hidden task") != row for row in tasks)
-            or len(results) != len(tasks)
-            or any(type(row) is not bool for row in results)
-        ):
-            raise QualificationRunnerError("hidden judge receipt is malformed")
-        object.__setattr__(self, "task_digests", tasks)
-        object.__setattr__(self, "passed", results)
-
-def hidden_judge_output_digest(prompt_digest: str, output_ids: tuple[int, ...]) -> str:
-    """Bind one hidden-judge answer to the exact sealed rollout tokens."""
-
-    prompt = require_sha256_hex(prompt_digest, field="hidden judge prompt")
-    ids = tuple(output_ids)
-    if any(type(token) is not int or token < 0 for token in ids):
-        raise QualificationRunnerError("hidden judge output IDs are malformed")
-    return canonical_digest(
-        "cacheon.qualification.hidden-judge-output",
-        {"output_ids": list(ids), "prompt_digest": prompt},
-    )
 
 @dataclass(frozen=True)
 class CandidateQualificationAuthority:
@@ -1425,21 +1390,6 @@ def _reference_request(
         tuple(prompts),
     )
 
-def _task_digests(
-    profile: QualificationProfile,
-    prompt_digest: str,
-) -> tuple[str, ...]:
-    return tuple(sorted(canonical_digest(
-        "cacheon.qualification.hidden-task",
-        {
-            "corpus": profile.reference.hidden_corpus_commitment,
-            "judge": profile.reference.hidden_judge_digest,
-            "policy": profile.hidden_task_policy_digest,
-            "prompt": prompt_digest,
-            "index": index,
-        },
-    ) for index in range(profile.hidden_tasks_per_prompt)))
-
 def _hidden_judge_binding(
     profile: QualificationProfile,
 ) -> HiddenJudgeBinding:
@@ -1457,7 +1407,6 @@ def _raw_artifact(
     selection: SelectionReceipt,
     reference_execution: PristineReferenceExecutionEvidence,
     exchange: object,
-    hidden_judge: HiddenJudge,
 ) -> ReferenceQualityRawArtifact:
     profile = authority.profile
     request = exchange.request
@@ -1479,7 +1428,6 @@ def _raw_artifact(
             frame=frame,
             role_input=role_input,
             role_evidence=role_evidence,
-            hidden_judge=hidden_judge,
         ) for frame, role_input, role_evidence in zip(
             role_frames, request_prompt.roles, teacher_prompt.roles, strict=True
         ))
@@ -2164,17 +2112,6 @@ def run_causal_qualification(
                     "final continuation names an unknown product domain"
                 )
             return durable_final
-    judge_cache: dict[tuple[object, ...], HiddenJudgeReceipt] = {}
-
-    def judge_once(*, prompt_digest: str, output_ids: tuple[int, ...],
-                   task_digests: tuple[str, ...]) -> HiddenJudgeReceipt:
-        key = (judge_binding.digest, prompt_digest,
-               hidden_judge_output_digest(prompt_digest, output_ids), task_digests)
-        if key not in judge_cache:
-            judge_cache[key] = hidden_judge(prompt_digest=prompt_digest, output_ids=output_ids,
-                                            task_digests=task_digests)
-        return judge_cache[key]
-
     quality_state: QualityContinuation | None = (
         None if continuation is None else continuation.load_quality()
     )
@@ -2315,7 +2252,6 @@ def run_causal_qualification(
             selection,
             reference_execution,
             exchange,
-            judge_once,  # type: ignore[arg-type]
         )
         validate_quality_binding(
             authority.profile,
@@ -2444,12 +2380,12 @@ def run_causal_qualification(
 __all__ = [
     "AuditWitness", "CandidateQualificationAuthority", "CandidateQualificationReport",
     "CausalQualificationInput", "CohortQualificationAttempt", "EntropyProvider",
-    "HiddenJudge", "HiddenJudgeBinding", "HiddenJudgeReceipt",
+    "HiddenJudge", "HiddenJudgeBinding",
     "QualificationRunnerError", "QualificationStageExit",
     "QualificationTimingWitness",
     "ReferenceExecutionWitness", "SpeedEvidencePolicy",
     "SpeedStageDisposition",
-    "ResidentSpeedWitness", "hidden_judge_output_digest",
+    "ResidentSpeedWitness",
     "publish_causal_qualification", "qualification_authority_digest",
     "publish_qualification_stage_exit", "reopen_causal_qualification",
     "reopen_qualification_stage_exit", "run_causal_qualification",

@@ -384,7 +384,8 @@ def statistical_grade(
     return ServiceVerdict(decision, ratio, required, detail, se, lower)
 
 
-def _boot_costs(reads: Sequence[LoadRead], arm: str, expected: dict[str, tuple[int, int]]) -> list[dict[int, list[float]]]:
+def _boot_costs(reads: Sequence[LoadRead], arm: str,
+                expected: dict[int, dict[str, tuple[int, int]]]) -> list[dict[int, list[float]]]:
     """Split one arm's reads into engine lifetimes; a lifetime replays each load once, numbering its windows from 1."""
     boots: list[dict[int, list[float]]] = []
     for read in reads:
@@ -396,7 +397,7 @@ def _boot_costs(reads: Sequence[LoadRead], arm: str, expected: dict[str, tuple[i
             if not boots or read.load in lifetime:
                 boots.append({})
             boots[-1][read.load] = []
-        boots[-1][read.load].append(fixed_work_rate(read, expected, wall_time=True).elapsed_s)
+        boots[-1][read.load].append(fixed_work_rate(read, expected[read.load], wall_time=True).elapsed_s)
     return boots
 
 
@@ -423,7 +424,7 @@ def _boot_term(lifetime: dict[int, list[float]], window_noise: float, boot_noise
 
 def reference_grade(
     candidate: Sequence[LoadRead], reference: Sequence[LoadRead],
-    contract: ServiceContract, expected: dict[str, tuple[int, int]], *,
+    contract: ServiceContract, expected: dict[int, dict[str, tuple[int, int]]], *,
     window_noise: float, boot_noise: float, error_rate: float, boots: int,
     attainment_tolerance: float, attainment_margin: float, futility_margin: float = 0.0,
     sentinel: Sequence[LoadRead] = (), decode_floors: dict[int, float] | None = None, reference_lane: str = "",
@@ -452,7 +453,7 @@ def reference_grade(
         or window_noise == boot_noise == 0):
         raise ServiceEvidenceError("reference comparison has invalid reads or uncertainty")
     every = (*reference, *sentinel, *candidate)
-    # Every load replays the same sealed sessions; its cold round, and so its warm membership, is its own.
+    # Each load replays its own sealed prefix of the sessions; its cold round, and so its warm membership, is its own.
     shapes: dict[int, object] = {}
     starts = [min(row.request_start_ns for row in read.records) for read in every]
     if (len({read.lane for read in (*sentinel, *candidate)}) != 1

@@ -55,10 +55,11 @@ below it is a mis-sealed load and yields `NO_DECISION`. A sealed goodput policy
 with `decode_floor` 1 selects policy 20; its digest names the pair topology, the
 closed-loop arrival and the gate.
 
-Policy 21 may seal several loads (for example low, mid and high session counts) so
-that no single batch size carries the verdict. Every lifetime replays each load in
-the sealed order, and a boot's cost becomes the mean over loads of each load's
-log mean window cost:
+Policy 21 may seal several loads (for example low, mid and high session
+concurrencies) so that no single batch size carries the verdict. Every lifetime
+replays each load, highest first, each over its own fixed work (the highest load the
+whole pool, a lower one a proportional prefix of it), and a boot's cost becomes the
+mean over loads of each load's log mean window cost:
 
 ```text
 cost(boot)  = mean over loads l of log(mean elapsed serving seconds over the boot's N windows at l)

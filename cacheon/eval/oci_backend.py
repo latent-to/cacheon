@@ -1418,11 +1418,11 @@ class OCIEngineExecutor:
             resolved, preflight, identity, expected, model_root = self._validate_launch(
                 launch, binding, mount, plan
             )
-            # The eager audit runs a PD pair's prefill role alone on the lane's first TP GPUs
-            # (pd_engine.colocated); requiring a process on the decode role's empty GPUs voided the PD
-            # arena's first audit (2026-10-28). Its receipts cover only those, so pristine T can run beside it.
+            # The eager audit runs a PD pair's prefill role alone on its GPUs (pd_engine.untimed_gpus): requiring a process
+            # on the decode role's empty GPUs voided the PD arena's first audit (2026-10-28); pristine T runs beside it.
             colocated = plan.audit_policy is not None and pd_engine.is_pair(plan.engine_config.engine_kwargs)
-            engine_gpu_ids = self.device_guard.policy.physical_gpu_ids[:plan.engine_config.tp_size] if colocated else None
+            engine_gpu_ids = self.device_guard.policy.physical_gpu_ids[pd_engine.untimed_gpus(
+                plan.engine_config.tp_size, plan.engine_config.engine_kwargs)[0]] if colocated else None
 
             def run(
                 transport: AttachedSessionTransport,
@@ -1607,8 +1607,8 @@ class OCIEngineExecutor:
                 model_root=model_root,
                 session_protocol="reference",
                 run=run,
-                gpu_ids=(self.device_guard.policy.physical_gpu_ids[-plan.engine_config.tp_size:]
-                         if pd_engine.is_pair(plan.engine_config.engine_kwargs) else None),
+                gpu_ids=(self.device_guard.policy.physical_gpu_ids[pd_engine.untimed_gpus(plan.engine_config.tp_size,
+                         plan.engine_config.engine_kwargs)[1]] if pd_engine.is_pair(plan.engine_config.engine_kwargs) else None),
             )
             if (
                 type(raw.value) is not ReferenceSessionEvidence

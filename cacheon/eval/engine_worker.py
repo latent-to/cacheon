@@ -509,15 +509,16 @@ def _process_tree(root: int) -> list[int]:
     return tree
 
 
-def _pin_engine_processes(plan: str | None, *, schedulers: int, pinned: int, companion: int | None = None,
-                          engine: int = 0, dp_sizes: tuple[int, ...]) -> None:
+def _pin_engine_processes(plan: str | None, *, pinned: int, lane_engines: int, first: int = 0,
+                          engines: tuple[tuple[int | None, int, int, int], ...]) -> None:
     """Pin each SGLang scheduler (by TP rank) to its sealed vCPU and every other engine process to the pool.
 
     On the B300 VM, 13 of every 15 vCPUs run single-thread code at half speed, and unpinned schedulers
     landed on different ones each boot: whole-boot copy offsets up to 6.7% (2026-09-30). A plan that
     does not match the running engine fails the launch. The plan names ``pinned`` schedulers, one per lane
-    GPU in device order: a prefill/decode pair pins the ``companion`` prefill server's ranks to the first
-    ``schedulers`` and the decode ranks to the rest; a lone engine of a pair's lane runs as plan ``engine``.
+    GPU in device order, and the (DP controller, frontend) vCPUs of the lane's ``lane_engines`` engines in the
+    same order. ``engines`` are the ones running here, in lane order from plan engine ``first``: (companion
+    root pid, or None for this worker's own engine; first lane GPU; TP ranks; DP size).
     """
     if not plan:
         return
@@ -525,39 +526,37 @@ def _pin_engine_processes(plan: str | None, *, schedulers: int, pinned: int, com
     scheduler_cpus, pool = list(spec["schedulers"]), set(spec["pool"])
     if len(scheduler_cpus) != pinned:
         raise RuntimeError(f"CPU pin plan covers {len(scheduler_cpus)} schedulers; the lane pins {pinned}")
-    # The eager audit runs as the full lane plan's first engine, pristine T as its second (z6 audit failure, 2026-11-02).
-    engines = spec.get("engines")
-    roots = (companion, os.getpid()) if companion else (os.getpid(),)
-    if engines is not None and len(engines) != pinned // schedulers:
-        raise RuntimeError(f"CPU pin plan names {len(engines)} engines; the lane pins {pinned // schedulers}")
-    prefill = set(_process_tree(companion)) if companion else set()
-    sides = (0, 1) if companion else (engine,)
+    # The eager audit runs as the full lane plan's first engine, pristine T as its last (z6 audit failure, 2026-11-02).
+    roles = spec.get("engines")
+    if roles is not None and len(roles) != lane_engines:
+        raise RuntimeError(f"CPU pin plan names {len(roles)} engines; the lane runs {lane_engines}")
+    owner = {pid: side for side, (root, *_) in enumerate(engines) if root for pid in _process_tree(root)}
+    local = next(side for side, (root, *_) in enumerate(engines) if root is None)
     ranks: dict[int, list[int]] = {}
-    controllers = dict.fromkeys(sides, 0)
+    controllers = [0] * len(engines)
     for pid in _process_tree(os.getpid()):
         with contextlib.suppress(ProcessLookupError, FileNotFoundError):
             title = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
             rank = re.search(r"^sglang::scheduler\S*_TP(\d+)", title)
-            side = int(pid not in prefill) if companion else engine
-            offset = side * schedulers
+            side = owner.get(pid, local)
             if rank:
-                ranks.setdefault(offset, []).append(int(rank[1]))
-                cpus = {scheduler_cpus[offset + int(rank[1])]}
-            elif engines is not None and title.startswith("sglang::data_parallel_controller"):
+                ranks.setdefault(side, []).append(int(rank[1]))
+                cpus = {scheduler_cpus[engines[side][1] + int(rank[1])]}
+            elif roles is not None and title.startswith("sglang::data_parallel_controller"):
                 controllers[side] += 1
-                cpus = {engines[side][0]}
-            elif engines is not None and pid in roots:
-                cpus = {engines[side][1]}
+                cpus = {roles[first + side][0]}
+            elif roles is not None and pid == (engines[side][0] or os.getpid()):
+                cpus = {roles[first + side][1]}
             else:
                 cpus = pool
             for task in os.listdir(f"/proc/{pid}/task"):
                 with contextlib.suppress(ProcessLookupError):
                     os.sched_setaffinity(int(task), cpus)
-    if {offset: sorted(found) for offset, found in ranks.items()} != {
-            side * schedulers: list(range(schedulers)) for side in sides}:
-        raise RuntimeError(f"CPU pin plan found scheduler ranks {ranks}; each engine runs {schedulers}")
+    if {side: sorted(found) for side, found in ranks.items()} != {
+            side: list(range(tp)) for side, (_, _, tp, _) in enumerate(engines)}:
+        raise RuntimeError(f"CPU pin plan found scheduler ranks {ranks}; the engines run {engines}")
     # SGLang starts a DP controller only for an engine with dp_size > 1 (a GLM-5.3-Flash decode role runs dp 1).
-    if engines is not None and list(controllers.values()) != [int(size > 1) for size in dp_sizes]:
+    if roles is not None and controllers != [int(dp > 1) for *_, dp in engines]:
         raise RuntimeError(f"CPU pin plan pins one DP controller per DP engine; found {controllers}")
 
 
@@ -616,19 +615,21 @@ def isolated_engine_session(
     receipt_dir = tempfile.mkdtemp(prefix="cacheon_receipts_") if active else ""
     kwargs = engine_kwargs(cfg, active=active)
     kwargs["custom_sigquit_handler"] = _engine_child_failed
-    tp = int(kwargs.get("tp_size", 1) or 1)
-    pinned = tp * 2 if pd_engine.is_pair(kwargs) else tp
+    servers, prefill_tp, decode_tp = pd_engine.layout(int(kwargs.get("tp_size", 1) or 1), kwargs)
+    pinned, decode_gpu = servers * prefill_tp + decode_tp, servers * prefill_tp
     # Pristine T scores on a pair lane's decode GPUs, the only ones CUDA shows it, while the eager audit
-    # holds the prefill GPUs (2026-11-05).
-    lone = int(pd_engine.is_pair(kwargs) and not install_seams)
-    placement = {"CUDA_VISIBLE_DEVICES": ",".join(map(str, range(tp, 2 * tp)))} if lone else {}
-    prefill = None
+    # holds the first prefill GPUs (2026-11-05).
+    lone = pd_engine.is_pair(kwargs) and not install_seams
+    pristine = pd_engine.untimed_gpus(int(kwargs.get("tp_size", 1) or 1), kwargs)[1]
+    placement = {"CUDA_VISIBLE_DEVICES": ",".join(map(str, range(pristine.start, pristine.stop)))} if lone else {}
+    prefills = []
     # Only timed lifetimes run the pair; the eager audit and the seamless pristine reference run one engine.
     if pd_engine.is_pair(kwargs) and audit_policy is None and install_seams:
-        prefill, prefill_env, kwargs, role_env = pd_engine.split(kwargs, {})
+        prefills, kwargs, role_env = pd_engine.split(kwargs, {})
     else:
         kwargs, role_env = pd_engine.colocated(kwargs, {})
-    companion = None
+    tp = int(kwargs.get("tp_size", 1) or 1)
+    companions: list = []
     try:
         session_environment = build_session_environment(
             active=active,
@@ -656,7 +657,7 @@ def isolated_engine_session(
                 ENGINE_CONFIG_PREFIX
                 + json.dumps(
                     {"arm": "candidate" if active else "stock", "engine": kwargs,
-                     **({"prefill": prefill} if prefill else {})},
+                     **({"prefill": [server for server, _ in prefills]} if prefills else {})},
                     sort_keys=True,
                     default=str,
                 ),
@@ -664,28 +665,32 @@ def isolated_engine_session(
                 flush=True,
             )
             plan = os.environ.get("CACHEON_CPU_PINS")
-            if prefill is not None:
-                # The prefill server boots on its own GPUs while the decode engine boots here.
-                _bind_engine_boot(plan, slice(0, tp))
-                companion = pd_engine.start_prefill(prefill, prefill_env)
-            _bind_engine_boot(plan, slice(tp, None) if prefill is not None or lone else slice(0, tp))
+            for server, server_env in prefills:
+                # Each prefill server boots on its own GPUs while the decode engine boots here.
+                _bind_engine_boot(plan, slice(server["base_gpu_id"], server["base_gpu_id"] + prefill_tp))
+                companions.append(pd_engine.start_prefill(server, server_env))
+            _bind_engine_boot(plan, slice(decode_gpu, None) if prefills or lone else slice(0, tp))
             with _environment(**role_env):
                 engine = sgl.Engine(**kwargs)
             active_receipts: list[dict] = []
             expected_slots: list[str] = []
-            expected_members = tp * 2 if prefill is not None else tp
+            expected_members = pinned if prefills else tp
             eager_members: frozenset[int] = frozenset()
             try:
                 _report_running_engine_failures(engine)
-                dp_sizes = tuple(int(role.get("dp_size") or 1) for role in (prefill, kwargs) if role is not None)
-                if prefill is not None:
-                    url = pd_engine.wait_ready(companion, prefill, time.monotonic() + 1800)
-                    engine = pd_engine.PrefillDecodePair(
-                        engine, url, prefill["disaggregation_bootstrap_port"], companion, *dp_sizes)
-                    eager_members = frozenset(_process_tree(companion.pid))
-                _pin_engine_processes(plan, schedulers=tp, pinned=pinned,
-                                      companion=companion.pid if companion else None, engine=lone,
-                                      dp_sizes=dp_sizes)
+                dp = int(kwargs.get("dp_size") or 1)
+                running = ((None, decode_gpu if prefills or lone else 0, tp, dp),)
+                if prefills:
+                    routes = [(pd_engine.wait_ready(process, server, time.monotonic() + 1800),
+                               server["disaggregation_bootstrap_port"])
+                              for process, (server, _) in zip(companions, prefills, strict=True)]
+                    prefill_dp = int(prefills[0][0].get("dp_size") or 1)
+                    engine = pd_engine.PrefillDecodePair(engine, routes, companions, prefill_dp, dp)
+                    eager_members = frozenset(pid for process in companions for pid in _process_tree(process.pid))
+                    running = (*((process.pid, server["base_gpu_id"], prefill_tp, prefill_dp)
+                                 for process, (server, _) in zip(companions, prefills)), *running)
+                _pin_engine_processes(plan, pinned=pinned, lane_engines=servers + 1 if servers else 1,
+                                      first=servers if lone else 0, engines=running)
                 if active:
                     assert receipts is not None
                     active_receipts = receipts.require(
@@ -750,8 +755,9 @@ def isolated_engine_session(
                 raise CandidateEngineFailure(failure) from exc
         raise
     finally:
-        if companion is not None and companion.poll() is None:
-            companion.kill()
+        for process in companions:
+            if process.poll() is None:
+                process.kill()
         if receipt_dir:
             _emit_execution_summary(receipt_dir)
             shutil.rmtree(receipt_dir, ignore_errors=True)

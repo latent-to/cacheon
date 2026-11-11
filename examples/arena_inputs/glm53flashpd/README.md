@@ -7,17 +7,18 @@ sparse attention, 288 routed experts with eight active, and a native MTP layer.
 The engine image is SGLang's `dev-cu13` nightly at main `314bce7c`
 (`lmsysorg/sglang@sha256:387e9021…`), used unmodified.
 
-The arena serves one prefill/decode pair on the whole node: prefill on GPUs 0-3
-(TP4 with DP attention 2) and decode on GPUs 4-7 (TP4, DP 1), with KV moving between
-them over Mooncake's intra-node NVLink transport. Both roles run NVFP4 weights, an
-FP8 KV cache with TRT-LLM DSA kernels, FlashInfer TRT-LLM MoE and native MTP (EAGLE,
-five steps, top-k one, six draft tokens). The roles differ only where
-`engine-config.json` says so under `pd_prefill` and `pd_decode`: 16K prefill chunks on
-prefill; DP 1, 128 running requests, 128-row decode graphs and ReplaySSM speculative
-state (`enable_linear_replayssm_spec`) on decode. SGLang refuses ReplaySSM on a
-prefill server, and the eager audit and pristine reference run the prefill role's
-one-engine form, where the recurrent-state audit does not support it. The replay
-routes each session to one prefill DP rank for all its turns; decode has one rank.
+The arena serves the whole node as two TP2 prefill servers (GPUs 0-1 and 2-3,
+`pd_prefill.servers`) feeding one TP4 decode engine (GPUs 4-7), with KV moving
+between them over Mooncake's intra-node NVLink transport; no role runs DP attention.
+Every role runs NVFP4 weights, an FP8 KV cache with TRT-LLM DSA kernels, FlashInfer
+TRT-LLM MoE and native MTP (EAGLE, five steps, top-k one, six draft tokens). The roles
+differ only where `engine-config.json` says so under `pd_prefill` and `pd_decode`: TP2
+and 16K prefill chunks on prefill; 128 running requests, 128-row decode graphs and
+ReplaySSM speculative state (`enable_linear_replayssm_spec`) on decode. SGLang refuses
+ReplaySSM on a prefill server, and the eager audit and pristine reference run the
+prefill role's one-engine form (TP2, on GPUs 0-1 and 4-5), where the recurrent-state
+audit grades the KDA state tensors without it. The replay routes each session to one
+prefill server for all its turns, so its context stays in that server's radix cache.
 
 The configuration is TEE-shaped: NVLS, symmetric-memory multicast, the HiCache host
 tier and RDMA are off. The KV transfer uses legacy CUDA IPC handles; it has not been
@@ -25,25 +26,33 @@ measured under confidential computing.
 
 ## Speed policy
 
-Speed policy 21 replays the sealed agent-trace pool in a closed loop at three loads
-in each engine lifetime, low, mid and high (`replay_load` in `operator.json`), each
-after its own warm window, and scores the geometric mean of the three served-throughput
-ratios against the retained stock reference. Each load also holds the candidate's pooled
+Speed policy 21 replays the sealed agent-trace pool in a closed loop at three session
+concurrencies in each engine lifetime, low, mid and high (`replay_load` in
+`operator.json`), and scores the geometric mean of the three served-throughput ratios
+against the retained stock reference. One warm window at the high load precedes one
+scored window per load (`replay_windows`), highest first; a lower load replays the
+first sessions of the pool in proportion to its concurrency, so the three windows
+together replay less work than the three whole-pool windows of a one-load lifetime and
+the bundle's wall clock does not grow. Each load also holds the candidate's pooled
 per-user decode median to its own floor (`decode_floors`). A candidate cannot win by
 tuning one batch size: a gain at one load is diluted by the other two, and a loss in
-per-user speed at any load fails it.
+per-user speed at any load fails it. The high load saturates prefill, so it rewards
+prefill and time-to-first-token gains.
 
-The values in `operator.json` are placeholders until the pair's load curve is
-measured: loads 16, 64 and 128 sessions; floors 240, 165 and 80 tokens/s, about 90
-percent of stock's light-load (~270) and ~2 req/s (~185) per-user medians and the high-load
-floor Shiv set (2026-11-11). Stock must hold each floor at its load, or the reference
-campaign refuses the commission as mis-sealed before any candidate runs. The
-`node` block (scheduler pin starts and client CPU set), `tokens_per_prompt` and
-`model_profile_key` are also placeholders for the commissioned node and slice.
+The values in `operator.json` are placeholders read off stock's measured load curve
+(2026-11-11): about 130 concurrent sessions (~2 requests/s, ~160 tokens/s per user),
+about 250 (~3.5 requests/s, decode median ~115, break-even) and about 300 (~4.5
+requests/s, prefill-saturated); floors 145, 105 and 80 tokens/s. Recalibrate them from
+the commissioned pair's stock reference: stock must hold each floor at its load, or the
+reference campaign refuses the commission as mis-sealed before any candidate runs, and
+the sealed slice must hold at least as many sessions as the high load. The `node` block
+(scheduler pin starts, client CPU set and, with DP 1 everywhere, no `engine_cpus`),
+`tokens_per_prompt` and `model_profile_key` are also placeholders for the commissioned
+node and slice.
 
 ## Development check
 
-`cacheon check` runs the pair's one-engine form on four GPUs: the shared options with
+`cacheon check` runs the pair's one-engine form on two GPUs: the shared options with
 the prefill role's settings, as the eager audit runs it. Mount this folder read-only at
 `/arena`, the model at `/model` and a writable directory at `/work`. A bundle loads in
 both engines of the pair. The open target is `forward_pass` (for example

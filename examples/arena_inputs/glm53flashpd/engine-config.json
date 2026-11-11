@@ -8,8 +8,6 @@
   "random_seed": 7,
   "log_level": "error",
   "tp_size": 4,
-  "dp_size": 2,
-  "enable_dp_attention": true,
   "quantization": "modelopt_fp4",
   "kv_cache_dtype": "fp8_e4m3",
   "dsa_prefill_backend": "trtllm",
@@ -22,11 +20,11 @@
   "enable_hierarchical_cache": false,
   "disaggregation_transfer_backend": "mooncake",
   "pd_prefill": {
-    "engine_kwargs": {"chunked_prefill_size": 16384}
+    "servers": 2,
+    "engine_kwargs": {"tp_size": 2, "chunked_prefill_size": 16384}
   },
   "pd_decode": {
-    "engine_kwargs": {"dp_size": 1, "enable_dp_attention": false, "enable_linear_replayssm_spec": true,
-                      "max_running_requests": 128, "cuda_graph_max_bs_decode": 128}
+    "engine_kwargs": {"enable_linear_replayssm_spec": true, "max_running_requests": 128, "cuda_graph_max_bs_decode": 128}
   },
   "engine_env": {
     "NCCL_NVLS_ENABLE": "0",

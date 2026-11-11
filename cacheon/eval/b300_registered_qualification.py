@@ -54,6 +54,7 @@ from cacheon.eval.marginal_runtime import (
     PreparedCandidateRuntime,
     prepare_marginal_runtime,
 )
+from cacheon.eval import pd_engine
 from cacheon.eval.oci_session_protocol import SlotAuditPolicy
 from cacheon.eval.qualification import (
     QualificationProfile,
@@ -457,12 +458,14 @@ class B300RegisteredQualificationFactory:
             + secret
             + bytes.fromhex(candidate.reservation.selected_delta_digest)
         ).hexdigest()[:32]
+        config = prepared_candidate.session_plan.engine_config
         audit_policy = SlotAuditPolicy(
             audit_seed,
             inputs.policy.audit_sample_rate_ppm,
             inputs.policy.audit_minimum_calls,
             tuple(sorted(candidate.reservation.target_members)),
-            prepared_candidate.session_plan.engine_config.tp_size,
+            # The audit runs a pair's one-engine form: the prefill role's ranks.
+            pd_engine.layout(config.tp_size, config.engine_kwargs)[1] or config.tp_size,
         )
         audit_authority = ResidentAuditExecutionAuthority.derive(
             prepared_candidate.launch,

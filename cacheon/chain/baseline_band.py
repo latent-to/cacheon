@@ -110,13 +110,12 @@ def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
         grade = reads.grade(policy)
         if policy.error_rate:
             speed["metric"] = "fixed_work_rate"
-        expected = {root: (main, inner) for root, main, inner in reads.expected}
         lanes = []
         for role, windows in (("B", reads.incumbent), ("C", reads.candidate)):
             arm = []
             for index, read in enumerate(windows):
-                work = fixed_work_rate(read, expected)
-                elapsed = fixed_work_rate(read, expected, wall_time=True)
+                work = fixed_work_rate(read, reads.work(read.load))
+                elapsed = fixed_work_rate(read, reads.work(read.load), wall_time=True)
                 # Version 19 retains whole boots: reference boots, then any retained bracket, per arm.
                 boot = {"boot": index // (reads.window_limit * len(reads.loads))} if reads.boots else {}
                 arm.append({"role": role, "window": read.window, "load": read.load,

@@ -739,16 +739,19 @@ longest session first and the drain at the end is made of the shortest. Cold/war
 membership is still a function of the slice, and each root's turns are numbered
 by conversation coordinate alone, because closed-loop release stamps every warm
 turn apart. The workload identity records `closed-loop-after-cold-round`. Each
-lifetime is a prefill server on the first half of the lane and a decode engine
-on the second (`engine_config.engine_kwargs.pd_prefill`/`pd_decode` with the
-sealed `disaggregation_transfer_backend`): the worker posts every turn to the
-prefill server and hands it to the decode engine with the same bootstrap room
-and DP rank, flushes both caches before each window, and requires execution
-coverage from both engines' ranks. The prefill server captures no decode graph,
-so its completions count without one. The eager audit and the pristine reference
-run one colocated engine with the prefill role's settings on the first half of
-the lane; the audit's final-warmup device check requires active processes only
-on those GPUs.
+lifetime is one or more prefill servers followed by a decode engine across the
+lane (`engine_config.engine_kwargs.pd_prefill`/`pd_decode` with the sealed
+`disaggregation_transfer_backend`; `pd_prefill.servers` sets the server count, a
+role's `tp_size` its width, and together they must fill the commissioned lane):
+the worker posts every turn to its session's prefill server, the one its first
+turn was placed on, and hands it to the decode engine with the same bootstrap
+room and DP rank, flushes every cache before each window, and requires execution
+coverage from every engine's ranks, numbered in lane GPU order. A prefill server
+captures no decode graph, so its completions count without one. The eager audit
+runs one colocated engine with the prefill role's settings on the first prefill
+server's GPUs, and the pristine reference the same engine from the first decode
+GPU; the audit's final-warmup device check requires active processes only on its
+GPUs.
 The driver uses the executable's sibling Python interpreter to call AIPerf's
 single-run API. The sealed slice digest supplies its benchmark identity, keeping
 cache-buster tokens identical between arms and windows. Each
@@ -767,15 +770,19 @@ explicit zero. The engine still receives its ordinary conditioning requests.
 
 Replay qualification is commissioned with `session.replay`: absolute `manifest_path`,
 `aiperf_binary` and `tokenizer_path`, the manifest's computed `slice_digest`, the
-operating `load` (one session count, or a list of distinct counts that a
-closed-loop replay runs in order), and the number of `windows` N each engine boot
-replays at each load.
+operating `load` (one session concurrency, or a list of distinct concurrencies that
+a closed-loop replay runs highest first), and the number of `windows` N each engine
+boot replays at each load. The highest load replays the whole pool; a lower load
+replays the first sessions of the sealed order in proportion to its concurrency
+(at least as many as its concurrency), so three loads together replay less work than
+three whole-pool windows; the read set records each lower load's roots
+(`load_roots`) and checks its completed work against them.
 Optional `max_work_seconds` bounds each boot's replay work; expiry aborts, never
 grades incomplete work. Optional `warm_windows` (1 or 2) replays that many whole
-windows untimed before each load's sealed windows, each after its own cache flush.
-Their directories (`warm1`, ...) are retained, but their reads never reach the
-session evidence or the grader. The first load's directories keep the one-load
-layout; a later load's sit under `load<sessions>/`. On an 8x B300 VM four stock lifetimes' third windows agreed to 0.04 percent,
+windows untimed at the highest load before the sealed windows, each after its own
+cache flush. Their directories (`warm1`, ...) are retained, but their reads never
+reach the session evidence or the grader. The highest load's directories keep the
+one-load layout; a lower load's sit under `load<concurrency>/`. On an 8x B300 VM four stock lifetimes' third windows agreed to 0.04 percent,
 while their first ran 1.4 to 3.1 percent slow (stock Triton kernels keyed on the decode batch and KV pool size
 compile on the clock, so a seed harvested on another host never matches) and their second up to 1.3 percent, in
 its tail, with nothing compiling. Engine startup retains its separate OCI initialization deadline. `resident_speed.goodput` seals the service `contract`

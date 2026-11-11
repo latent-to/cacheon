@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from cacheon.eval.qualification import QualificationProfile
-    from cacheon.eval.qualification_runner import HiddenJudge
     from cacheon.eval.reference_quality import RawRolloutEvidence
 
 from cacheon.eval.qualification import QualificationError, SelectionReceipt
@@ -216,66 +215,20 @@ def _rollout(
     frame: dict[str, object],
     role_input: ReferenceRoleInput,
     role_evidence: object,
-    hidden_judge: HiddenJudge,
 ) -> RawRolloutEvidence:
-    """Retain teacher evidence and grade only hidden tasks declared by the profile."""
+    """Retain teacher NLL evidence: replay quality seals no top-k width and no hidden tasks, so no
+    distribution or judge evidence exists to project."""
     from cacheon.eval import qualification_runner as owner
 
+    if profile.topk_width or profile.hidden_tasks_per_prompt or any(role_input.supports):
+        raise owner.QualificationRunnerError("replay rollouts carry no top-k supports or hidden tasks")
     tokens = []
-    evidence_tokens = tuple(getattr(role_evidence, "tokens"))
-    for position, (output_id, support, teacher, raw_position) in enumerate(zip(
-        role_input.output_ids,
-        role_input.supports,
-        evidence_tokens,
-        frame["top_logprobs"],
-        strict=True,
+    for position, (output_id, teacher, raw_position) in enumerate(zip(
+        role_input.output_ids, tuple(getattr(role_evidence, "tokens")), frame["top_logprobs"], strict=True,
     )):
-        by_token = {row[1]: float(row[0]) for row in raw_position}
-        if tuple(sorted(by_token)) != support:
+        if raw_position:
             raise owner.QualificationRunnerError("rollout support differs from its T request")
-        if support:
-            rollout = owner.distribution_from_f32_logprobs(
-                support,
-                tuple(by_token[token] for token in support),
-                true_argmax_token_id=raw_position[0][1],
-            )
-            teacher_distribution = owner.distribution_from_f32_logprobs(
-                support,
-                teacher.support_logprobs,
-                true_argmax_token_id=teacher.true_argmax_token_id,
-            )
-        else:
-            # Teacher-NLL-only mode (topk_width 0): the retained frames carry
-            # no top-k and no distribution evidence exists to project.
-            rollout = teacher_distribution = None
         tokens.append(owner.RawTokenEvidence(
-            position,
-            output_id,
-            owner.target_nll_from_f32(teacher.target_logprob),
-            teacher_distribution,
-            rollout,
+            position, output_id, owner.target_nll_from_f32(teacher.target_logprob), None, None,
         ))
-    tasks = owner._task_digests(profile, prompt_digest)
-    if not tasks:
-        return owner.RawRolloutEvidence(tuple(tokens), ())
-    receipt = hidden_judge(
-        prompt_digest=prompt_digest,
-        output_ids=role_input.output_ids,
-        task_digests=tasks,
-    )
-    if (
-        type(receipt) is not owner.HiddenJudgeReceipt
-        or receipt.binding_digest != owner._hidden_judge_binding(profile).digest
-        or receipt.prompt_digest != prompt_digest
-        or receipt.output_ids_digest
-        != owner.hidden_judge_output_digest(prompt_digest, role_input.output_ids)
-        or receipt.task_digests != tasks
-    ):
-        raise owner.QualificationRunnerError("hidden judge receipt differs from the sealed rollout")
-    return owner.RawRolloutEvidence(
-        tuple(tokens),
-        tuple(
-            owner.RawHiddenTaskResult(task, passed)
-            for task, passed in zip(tasks, receipt.passed, strict=True)
-        ),
-    )
+    return owner.RawRolloutEvidence(tuple(tokens), ())

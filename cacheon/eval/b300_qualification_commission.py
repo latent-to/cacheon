@@ -99,37 +99,14 @@ def _pristine_reference_authority(
     return pristine_launch, pristine_session_plan
 
 
-def _bind_hidden_judge(
-    capability: object,
-    *,
-    binding: HiddenJudgeBinding,
-    tokenizer_digest: str,
-    prompt_batches: tuple[tuple[str, ...], ...],
-    workload_digest: str,
-    hidden_tasks_per_prompt: int,
-) -> object:
-    judge = capability
-    binder = getattr(capability, "bind_prompt_plan", None)
-    if hidden_tasks_per_prompt and callable(binder):
-        if getattr(capability, "tokenizer_digest", None) != tokenizer_digest:
-            raise B300QualificationCommissionError(
-                "hidden judge tokenizer differs from the sealed prompt identity"
-            )
-        try:
-            judge = binder(
-                prompt_batches=prompt_batches,
-                workload_digest=workload_digest,
-                hidden_tasks_per_prompt=hidden_tasks_per_prompt,
-            )
-        except Exception as exc:
-            raise B300QualificationCommissionError(
-                f"hidden judge prompt-plan binding failed: {exc}"
-            ) from None
-    if not callable(judge) or getattr(judge, "binding", None) != binding:
+def _bind_hidden_judge(capability: object, *, binding: HiddenJudgeBinding) -> object:
+    """Replay quality declares no hidden tasks (``_require_replay_quality``), so the packet's judge is never
+    bound to a prompt plan or called; its sealed binding still enters the reference identity."""
+    if not callable(capability) or getattr(capability, "binding", None) != binding:
         raise B300QualificationCommissionError(
             "bound hidden judge differs from the sealed prompt identity"
         )
-    return judge
+    return capability
 
 
 def _tracked_deadline_provider(
@@ -397,7 +374,7 @@ def _compose_locked(
         )
     replay = AgentReplayPlan(
         Path(settings["manifest_path"]),
-        tuple(settings["load"]) if type(settings["load"]) is list else (settings["load"],),
+        tuple(sorted(settings["load"], reverse=True)) if type(settings["load"]) is list else (settings["load"],),
         Path(settings["aiperf_binary"]), Path(settings["tokenizer_path"]),
         inputs.root / "qualification-replays" / screen_lane,
         goodput.contract, "incumbent", 1, screen_lane, windows=settings["windows"],
@@ -442,14 +419,7 @@ def _compose_locked(
         pristine_native=pristine_native,
     )
     workload_digest = marginal_workload_digest(baseline_session_plan)
-    hidden_judge = _bind_hidden_judge(
-        capabilities.hidden_judge,
-        binding=hidden_binding,
-        tokenizer_digest=inputs.prompt_identity["tokenizer_digest"],
-        prompt_batches=inputs.prompt_batches,
-        workload_digest=workload_digest,
-        hidden_tasks_per_prompt=policy.hidden_tasks_per_prompt,
-    )
+    hidden_judge = _bind_hidden_judge(capabilities.hidden_judge, binding=hidden_binding)
     model_mount = TrustedArenaModelMountReceipt.capture(
         inputs.model_root,
         arena_digest=manifest.digest,

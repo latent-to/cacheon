@@ -167,10 +167,7 @@ class B300QualificationCapabilities:
         if (
             not callable(self.secret_loader)
             or not callable(self.entropy_provider)
-            or not (
-                callable(self.hidden_judge)
-                or callable(getattr(self.hidden_judge, "bind_prompt_plan", None))
-            )
+            or not callable(self.hidden_judge)
             or not callable(getattr(self.source_resolver, "resolve_proposal", None))
         ):
             raise B300QualificationCommissionError(
@@ -360,7 +357,7 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
     }:
         raise B300RegisteredQualificationError("sealed replay fields differ")
     _digest(replay["slice_digest"], "replay slice")
-    # One load is an integer; several (low, mid, high sessions) a list replayed in order.
+    # One load is an integer; several (low, mid, high concurrency) a list, replayed highest first.
     for load in replay["load"] if type(replay["load"]) is list and replay["load"] else [replay["load"]]:
         _commission_int(load, "replay load", minimum=1)
     _commission_int(replay["windows"], "replay windows", minimum=1)

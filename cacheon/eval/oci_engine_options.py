@@ -75,7 +75,7 @@ ENGINE_ENV_KINDS: Mapping[str, str] = dict.fromkeys(
      # throughput as NIXL, a 165 s faster boot, and no whole-pool descriptor registration the first time a decode
      # rank meets a prefill rank, which cost NIXL ~500 s of every boot's first window (8xB300, 2026-10-27).
      "MC_INTRANODE_NVLINK", "MC_TCP_ENABLE_CONNECTION_POOL", "SGLANG_MOONCAKE_CUSTOM_MEM_POOL"), "token")
-_ROLE_FIELDS = frozenset({"engine_kwargs", "engine_env"})
+_ROLE_FIELDS = frozenset({"engine_kwargs", "engine_env", "servers"})
 
 _TOKEN = re.compile(r"[A-Za-z0-9_.:+/@-]{1,256}\Z")
 _MODEL_SUBDIR = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}\Z")
@@ -154,13 +154,16 @@ def _validate_options(value: object, kinds: Mapping[str, str], *, label: str,
                 raise error(f"{field_name} must be a strictly increasing bounded int array")
             result[key] = list(item)
         elif kind == "role":
-            if not isinstance(item, Mapping) or not item or set(item) - _ROLE_FIELDS:
-                raise error(f"{field_name} must hold engine_kwargs and/or engine_env")
-            # A role overrides only scalar options, its own running-request cap among them; it
-            # never nests another role or carries a float.
+            if (not isinstance(item, Mapping) or not item or set(item) - _ROLE_FIELDS
+                    or ("servers" in item and (key != "pd_prefill" or type(item["servers"]) is not int
+                                               or not 1 <= item["servers"] <= 8))):
+                raise error(f"{field_name} must hold engine_kwargs and/or engine_env, and prefill servers")
+            # A role overrides only scalar options, its own TP degree and running-request cap among them; it
+            # never nests another role or carries a float. Prefill may run several servers (pd_engine.layout).
             scalar = {**{name: k for name, k in kinds.items() if k not in ("role", "unit_float")},
-                      "max_running_requests": "positive_int"}
+                      "max_running_requests": "positive_int", "tp_size": "positive_int"}
             result[key] = {
+                **({"servers": item["servers"]} if "servers" in item else {}),
                 **({"engine_kwargs": _validate_options(item["engine_kwargs"], scalar, label=f"{field_name}.engine_kwargs",
                                                        error=error)} if "engine_kwargs" in item else {}),
                 **({"engine_env": _validate_options(item["engine_env"], ENGINE_ENV_KINDS, label=f"{field_name}.engine_env",

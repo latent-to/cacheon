@@ -159,13 +159,17 @@ class GoodputReadSet:
     reference_boots: int = field(default=0, metadata={"wire_optional": True})
     payment_bar: str = field(default="", metadata={"wire_optional": True})
     reference_lane: str = field(default="", metadata={"wire_optional": True})
+    # A load below the first replays a prefix of the first load's sessions: its roots, sorted, per load.
+    load_roots: tuple[tuple[int, tuple[str, ...]], ...] = field(default=(), metadata={"wire_optional": True})
 
     def __post_init__(self):
         if (not self.incumbent or not self.candidate
             or tuple(sorted(set(self.expected))) != self.expected
-            or len({row[0] for row in self.expected}) != len(self.expected)):
+            or len({row[0] for row in self.expected}) != len(self.expected)
+            or tuple(load for load, _ in self.load_roots) != self.loads[1:]
+            or any(not roots or tuple(sorted(set(roots))) != roots or not set(roots) <= {row[0] for row in self.expected}
+                   for _, roots in self.load_roots)):
             raise ValueError("goodput reads or fixed-work authority are incomplete")
-        work = {root: (main, inner) for root, main, inner in self.expected}
         if self.boots or self.reference_boots:
             if type(self.window_limit) is not int or not 1 <= self.window_limit <= 5:
                 raise ValueError("reference read set is not whole lifetimes on one lane")
@@ -186,7 +190,7 @@ class GoodputReadSet:
                        for read in self.incumbent[self.reference_boots * size:])):
                 raise ValueError("reference read set is not whole lifetimes on one lane")
             for read in (*self.incumbent, *self.candidate):
-                fixed_work_rate(read, work)
+                fixed_work_rate(read, self.work(read.load))
             return
         if len(self.incumbent) != len(self.candidate):
             raise ValueError("goodput reads or fixed-work authority are incomplete")
@@ -201,24 +205,31 @@ class GoodputReadSet:
                 or (baseline.window, baseline.load) != (candidate.window, candidate.load)
                 or baseline.lane == candidate.lane):
                 raise ValueError("goodput reads are not a paired load window")
-            fixed_work_rate(baseline, work)
-            fixed_work_rate(candidate, work)
+            fixed_work_rate(baseline, self.work(baseline.load))
+            fixed_work_rate(candidate, self.work(candidate.load))
 
     @property
     def loads(self) -> tuple[int, ...]:
         """The sealed loads in the order every lifetime replays them."""
         return tuple(dict.fromkeys(read.load for read in self.incumbent))
 
+    def work(self, load: int) -> dict[str, tuple[int, int]]:
+        """The sealed fixed work of one load: every root at the first load, a prefix of them below it."""
+        work = {root: (main, inner) for root, main, inner in self.expected}
+        roots = dict(self.load_roots).get(load)
+        return work if roots is None else {root: work[root] for root in roots}
+
     def grade(self, policy: GoodputPolicy, *, max_windows: int | None = None):
         """Call the data/scoring owner's single grade entrypoint; retain no second estimator."""
         from cacheon.eval import service_capacity
 
-        work = {root: (main, inner) for root, main, inner in self.expected}
+        work = self.work(self.loads[0])
         service = dict(attainment_tolerance=policy.attainment_tolerance, attainment_margin=policy.attainment_margin)
         if self.boots:
             split = self.reference_boots * self.window_limit * len(self.loads)
             result = service_capacity.reference_grade(
-                self.candidate, self.incumbent[:split], policy.contract, work, window_noise=policy.null_noise,
+                self.candidate, self.incumbent[:split], policy.contract, {load: self.work(load) for load in self.loads},
+                window_noise=policy.null_noise,
                 boot_noise=policy.boot_noise, error_rate=policy.error_rate, boots=self.boots,
                 futility_margin=policy.futility_margin, sentinel=self.incumbent[split:],
                 decode_floors=policy.floors(self.loads), **service,
@@ -434,8 +445,11 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
     return executions
 
 
-def _expected(replay):
-    return tuple(sorted((root, main, inner) for root, (main, inner) in replay.slice.expected_work(replay.sessions).items()))
+def _work(replay):
+    """The read set's fixed work: the first load's sessions, and the prefix each lower load replays."""
+    expected = tuple(sorted((root, main, inner) for root, (main, inner) in replay.slice.expected_work(replay.sessions).items()))
+    return dict(expected=expected, load_roots=tuple(
+        (load, tuple(sorted(replay.slice.expected_work(replay.sessions_at(load))))) for load in replay.loads[1:]))
 
 
 def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root, deadline, clock,
@@ -458,7 +472,7 @@ def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root
         boots.append(_boot(executor, plan.candidate, lane, model_mount, prefix="candidate",
                            deadline=deadline, tokenizer=tokenizer))
         reads = GoodputReadSet(stock, tuple(read for row in boots for read in row[0].session.replay_reads),
-                               _expected(replay), replay.windows, boots=CANDIDATE_BOOTS,
+                               window_limit=replay.windows, boots=CANDIDATE_BOOTS, **_work(replay),
                                reference_boots=REFERENCE_BOOTS, payment_bar=payment_bar,
                                reference_lane=stock[0].lane if getattr(reference, "origin", "") else "")
         grade = reads.grade(plan.policy.goodput)
@@ -515,7 +529,7 @@ def regrade_reference_speed(evidence, plan):
     stock = tuple(read for row in reference for read in row.session.replay_reads)
     rebuilt = GoodputReadSet(stock + (bracket.session.replay_reads if bracket else ()),
                              tuple(read for row in candidates for read in row.session.replay_reads),
-                             _expected(replay), replay.windows, boots=CANDIDATE_BOOTS, reference_boots=REFERENCE_BOOTS,
+                             window_limit=replay.windows, boots=CANDIDATE_BOOTS, reference_boots=REFERENCE_BOOTS, **_work(replay),
                              payment_bar=evidence.goodput.payment_bar,
                              reference_lane=stock[0].lane if evidence.reference_origin else "")
     if rebuilt != evidence.goodput:
@@ -545,16 +559,20 @@ def _validate_replay_sessions(sessions, replay):
     """Bind every retained read to the host requests of the engine session that produced it."""
     from cacheon.eval.crossover_runtime import _validate_execution_binding, _expected_lane_digest
 
-    count = replay.slice.turns(replay.sessions)
+    counts = [replay.slice.turns(replay.sessions_at(load)) for load in replay.loads]
     for reads, execution, arm, controls in sessions:
         _validate_execution_binding(execution, arm)
         session = execution.session
         windows, warm = arm.session_plan.replay.windows, arm.session_plan.replay.warm_windows
         if reads != session.replay_reads or len(reads) != windows * len(replay.loads):
             raise CrossoverRuntimeError("goodput reads differ from their completed engine session")
-        # Each load replays its warm windows, then its sealed ones, after the session's warmup requests.
-        warmup, per_load = arm.session_plan.warmup_count, (warm + windows) * count
-        measured = per_load * len(replay.loads)
+        # After the session's warmup requests the first load replays its warm windows once, then every load,
+        # highest first, replays its sealed windows over its own prefix of the sessions.
+        warmup = arm.session_plan.warmup_count
+        starts = [warmup + warm * counts[0]]
+        for count in counts:
+            starts.append(starts[-1] + windows * count)
+        measured = starts[-1] - warmup
         if (len(session.batches) != warmup + measured + len(controls)
             or tuple(row.batch_index for row in session.batches) != tuple(range(len(session.batches)))
             or len({row.request_id for row in session.batches}) != len(session.batches)
@@ -564,7 +582,7 @@ def _validate_replay_sessions(sessions, replay):
             load, window = divmod(index, windows)
             if (read.window, read.load, read.lane) != (window + 1, replay.loads[load], _expected_lane_digest(arm)):
                 raise CrossoverRuntimeError("goodput read differs from its commissioned load, window or lane")
-            first = warmup + load * per_load + (warm + window) * count
+            first, count = starts[load] + window * counts[load], counts[load]
             rows = sorted(session.batches[first:first + count], key=lambda row: row.request_started_at)
             records = sorted(read.records, key=lambda row: row.request_start_ns)
             offset = records[0].request_start_ns - round(rows[0].request_started_at * 1e9)
