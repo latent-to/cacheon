@@ -51,6 +51,11 @@ reference campaign refuses the commission as mis-sealed before any candidate run
 (scheduler pin starts, client CPU set and, with DP 1 everywhere, no `engine_cpus`),
 and `model_profile_key` are also placeholders for the commissioned node.
 
+The node audit's row floor is 15% (`audit_row_floor_ppm` 150000), not the 2% default: this
+model's honest twin is bitwise, FP8 block-scaled projections sit at 6-13% row error at layer
+0 and the wrong control at 50% (pod, 2026-11-11). It holds once `cacheon check
+--audit-row-floor-ppm 150000` passes the validator-built FP8 control and fails the wrong one.
+
 ## Development check
 
 `cacheon check` runs the pair's one-engine form on two GPUs: the shared options with

@@ -281,6 +281,7 @@ def build_session_environment(
         "CACHEON_SLOT_AUDIT_SEED": (
             str(int(audit_policy.validator_seed, 16)) if audited else ""
         ),
+        "CACHEON_SLOT_AUDIT_FLOOR_PPM": str(audit_policy.row_floor_ppm) if audited else "",
         # Names the kernels the candidate actually launched on the device.
         # Bound to the audit role for the same reason ``disable_cuda_graph`` is:
         # arming it replaces every registry entry with a wrapper for the life of

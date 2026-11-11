@@ -53,19 +53,4 @@ def install(registry: KernelRegistry = REGISTRY) -> None:
         return fn(*args, **kwargs)
 
     setattr(run_scheduler_process, _GATE_FLAG, True)
-    run_scheduler_process._cacheon_orig = fn  # type: ignore[attr-defined]
     mod.run_scheduler_process = run_scheduler_process
-
-
-def uninstall() -> None:
-    mod = sys.modules.get(_MODULE)
-    fn = getattr(mod, "run_scheduler_process", None) if mod is not None else None
-    if fn is None or not getattr(fn, _GATE_FLAG, False):
-        return
-    mod.run_scheduler_process = fn._cacheon_orig
-
-
-def is_installed() -> bool:
-    mod = sys.modules.get(_MODULE)
-    fn = getattr(mod, "run_scheduler_process", None) if mod is not None else None
-    return bool(fn is not None and getattr(fn, _GATE_FLAG, False))

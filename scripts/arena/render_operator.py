@@ -36,8 +36,9 @@ PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size", "replay_load",
         "tokens_per_prompt", "tokenizer_asset", "model_in_ram", "owner", "audit_control_delta_digests", "node"}
 # decode_floors: per-user decode floor per load (tok/s keyed by session count), required with several loads;
-# replay_windows: the scored windows per load, replacing the packet's.
-OPTIONAL_KEYS = {"decode_floors", "replay_windows"}
+# replay_windows: the scored windows per load, replacing the packet's; audit_row_floor_ppm: the node audit's
+# sealed per-row floor, absent at the 2% default.
+OPTIONAL_KEYS = {"decode_floors", "replay_windows", "audit_row_floor_ppm"}
 NODE_KEYS = {"name", "scheduler_starts", "client_cpus"}
 # engine_cpus: an engine's first GPU -> [DP controller vCPU, frontend vCPU] (oci_cpuset.canonical_cpu_roles).
 OPTIONAL_NODE_KEYS = {"engine_cpus", "lifetime_memory_gib"}
@@ -111,6 +112,9 @@ def load_operator(path: Path) -> dict:
     controls = operator["audit_control_delta_digests"]
     if controls != sorted(set(controls)) or not all(re.fullmatch(r"[0-9a-f]{64}", d) for d in controls):
         raise SystemExit(f"{path}: audit_control_delta_digests must be sorted, distinct, lowercase sha256 hex")
+    floor = operator.get("audit_row_floor_ppm")
+    if floor is not None and (type(floor) is not int or not 0 < floor <= 400_000 or floor == 20_000):
+        raise SystemExit(f"{path}: audit_row_floor_ppm is an integer in (0, 400000], absent at the 20000 default")
     return operator
 
 
@@ -200,7 +204,9 @@ def main() -> None:
     text = capabilities.read_text()
     # The registered audit controls are the arena's own bundles (a wrong control for this model's node address):
     # their digests replace the previous arena's in the sealed policy, as the replay load does.
-    controls = lambda match: "".join((f'{match["indent"]}"audit_control_delta_digests": [\n',
+    floor = operator.get("audit_row_floor_ppm")
+    controls = lambda match: "".join((*([f'{match["indent"]}"audit_row_floor_ppm": {floor},\n'] if floor else []),
+                                      f'{match["indent"]}"audit_control_delta_digests": [\n',
                                       *(f'{match["indent"]}    "{digest}",\n'
                                         for digest in operator["audit_control_delta_digests"]), f'{match["indent"]}]'))
     rewrites = [(r'"load": (?:\d+|\[[\d, ]*\])', lambda _: f'"load": {json.dumps(operator["replay_load"])}'),

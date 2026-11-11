@@ -101,8 +101,12 @@ same call, under the tolerance and 75% window bar the
 [`cacheon/audit.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/audit.py)
 the fraction it measured for the rolling receipt. Both operands are the engine's own
 low-precision results, so the tolerance is measured on an honest twin rather than
-declared; changing the floor, the ceiling or the bar requires fresh honest and wrong
-control evidence and review.
+declared, above a per-row floor the arena seals as `row_floor_ppm` in its audit policy
+(2% when absent; the worker passes it as `CACHEON_SLOT_AUDIT_FLOOR_PPM`). The audit is
+attribution and control, not the quality judge: it must pass an honest lossy control
+(validator-built FP8 block-scaled projections on GLM-5.3-Flash) and fail the wrong
+control, and pristine T decides output quality. Changing the floor, the ceiling or the
+bar requires fresh honest-lossy and wrong control evidence and review.
 
 The environment variables and rolling receipt are only worker instrumentation. Running
 that instrumentation during development does not create crown authority. Authority

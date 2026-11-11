@@ -46,6 +46,7 @@ from cacheon.eval.calibration import (
     publish_calibration_evidence,
 )
 from cacheon.eval.crossover_runtime import ResidentSpeedPolicy
+from cacheon.eval.oci_session_protocol import ROW_FLOOR_PPM
 from cacheon.eval.engine_launch import (
     EngineLaunchSpec,
     TrustedLaunchBinding,
@@ -285,6 +286,7 @@ def compose_commissioned_qualifications(
             audit_control_delta_digests=tuple(
                 policy_block.get("audit_control_delta_digests", ())
             ),
+            audit_row_floor_ppm=policy_block.get("audit_row_floor_ppm", ROW_FLOOR_PPM),
         )
     except B300RegisteredQualificationError as exc:
         raise B300QualificationCommissionError(

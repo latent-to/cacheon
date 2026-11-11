@@ -178,13 +178,14 @@
 # decode's ReplaySSM flag: cacheon +30, docs +3, examples -1, +3 notes. `check` counts the one-engine form's members
 # via pd_engine.untimed_ranks: cacheon +6. Pooled DSA index rows and tails (+10) cost the GDN native-MTP rows (-8).
 # Stock keeps hardware dispatch on stub-native ops (IndexerKPool) and `check` refuses a pass stock refused calls in
-# (+14), paid by five callerless definitions (-75): cacheon -61.
+# (+14), paid by five callerless definitions (-75): cacheon -61. The node audit's row floor becomes a sealed per-arena
+# policy value (GLM-5.3-Flash 15%): docs +12, examples +6, scripts +8, paid by ten callerless definitions: cacheon -212.
 (root) 1163
 .github 338
-cacheon 92259
+cacheon 92047
 cacheon_kernels 936
 dashboard 4393
-docs 13305
-examples 380
-scripts 4489
+docs 13317
+examples 386
+scripts 4496
 tests 14092

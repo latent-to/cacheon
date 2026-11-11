@@ -45,6 +45,7 @@ MAX_PROMPT_TOKENS = 16_777_216
 MAX_TOP_LOGPROBS = 4096
 MAX_ERROR_CHARS = 16_384
 MAX_AUDIT_RECEIPTS = 4_096
+ROW_FLOOR_PPM = 20_000  # the node audit's default per-row floor, 2%
 
 CONTAINER_MODEL_PATH = "/cacheon/input/model"
 
@@ -84,8 +85,15 @@ class SlotAuditControl:
     minimum_calls: int
     expected_slots: tuple[str, ...]
     expected_member_count: int
+    # The node audit's per-row error floor in ppm, at most the 40% ceiling. Absent from
+    # the wire at the default 2%, so every control sealed before it keeps its digest.
+    row_floor_ppm: int = ROW_FLOOR_PPM
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "row_floor_ppm",
+            _bounded_int(self.row_floor_ppm, field_name="audit row_floor_ppm", minimum=1, maximum=400_000),
+        )
         object.__setattr__(
             self,
             "sample_rate_ppm",
@@ -131,30 +139,31 @@ class SlotAuditControl:
             raise SessionProtocolError("audit slot/member receipt bound is exceeded")
 
     def to_dict(self) -> dict[str, object]:
+        floor = {} if self.row_floor_ppm == ROW_FLOOR_PPM else {"row_floor_ppm": self.row_floor_ppm}
         return {
             "expected_member_count": self.expected_member_count,
             "expected_slots": list(self.expected_slots),
             "minimum_calls": self.minimum_calls,
+            **floor,
             "sample_rate_ppm": self.sample_rate_ppm,
         }
 
     @classmethod
     def from_dict(cls, value: object) -> "SlotAuditControl":
-        row = _exact_object(
-            value,
-            fields=frozenset(
-                "expected_member_count expected_slots minimum_calls sample_rate_ppm".split()
-            ),
-            label="slot audit control",
-        )
+        fields = "expected_member_count expected_slots minimum_calls sample_rate_ppm".split()
+        floor = isinstance(value, Mapping) and "row_floor_ppm" in value
+        row = _exact_object(value, fields=frozenset(fields + ["row_floor_ppm"] * floor), label="slot audit control")
         slots = row["expected_slots"]
         if not isinstance(slots, list):
             raise SessionProtocolError("audit expected_slots must be an array")
+        if row.get("row_floor_ppm") == ROW_FLOOR_PPM:
+            raise SessionProtocolError("audit row_floor_ppm at its default must be absent")
         return cls(
             row["sample_rate_ppm"],
             row["minimum_calls"],
             tuple(slots),
             row["expected_member_count"],
+            row.get("row_floor_ppm", ROW_FLOOR_PPM),
         )  # type: ignore[arg-type]
 
     @property
@@ -171,6 +180,7 @@ class SlotAuditPolicy:
     minimum_calls: int
     expected_slots: tuple[str, ...]
     expected_member_count: int
+    row_floor_ppm: int = field(default=ROW_FLOOR_PPM, metadata={"wire_optional": True})
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -183,6 +193,7 @@ class SlotAuditPolicy:
             self.minimum_calls,
             self.expected_slots,
             self.expected_member_count,
+            self.row_floor_ppm,
         )
         for name in SlotAuditControl.__dataclass_fields__:
             object.__setattr__(self, name, getattr(control, name))
@@ -194,6 +205,7 @@ class SlotAuditPolicy:
             self.minimum_calls,
             self.expected_slots,
             self.expected_member_count,
+            self.row_floor_ppm,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -201,24 +213,12 @@ class SlotAuditPolicy:
 
     @classmethod
     def from_dict(cls, value: object) -> "SlotAuditPolicy":
-        row = _exact_object(
-            value,
-            fields=frozenset(
-                "expected_member_count expected_slots minimum_calls "
-                "sample_rate_ppm validator_seed".split()
-            ),
-            label="slot audit policy",
-        )
-        slots = row["expected_slots"]
-        if not isinstance(slots, list):
-            raise SessionProtocolError("audit expected_slots must be an array")
-        return cls(
-            row["validator_seed"],
-            row["sample_rate_ppm"],
-            row["minimum_calls"],
-            tuple(slots),
-            row["expected_member_count"],
-        )  # type: ignore[arg-type]
+        if not isinstance(value, Mapping):
+            raise SessionProtocolError("slot audit policy fields do not match the schema")
+        control = SlotAuditControl.from_dict({k: v for k, v in value.items() if k != "validator_seed"})
+        _exact_object(value, fields=frozenset((*control.to_dict(), "validator_seed")), label="slot audit policy")
+        return cls(value["validator_seed"], control.sample_rate_ppm, control.minimum_calls,
+                   control.expected_slots, control.expected_member_count, control.row_floor_ppm)
 
     @property
     def digest(self) -> str:

@@ -37,6 +37,7 @@ call the stock children it does not replace.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sys
 from collections import deque
@@ -64,10 +65,14 @@ _RUNNER = "sglang.srt.model_executor.model_runner"
 _STOCK_LOAD = "_cacheon_stock_load_model"
 # A row passes within max(_FLOOR, _TWIN_FACTOR x the twin's 90th-percentile row
 # error), never above _CEILING. No honest single kernel reached a quarter of the
-# floor; the widest honest node needed 0.33 (three times 11% at the whole stack) and
-# the wrong controls sat at 0.5 (H100 Qwen runs, 2026-09-19). The ceiling is what a
-# candidate that managed to make the twin noisy could buy at most.
+# 2% default floor; the widest honest node needed 0.33 (three times 11% at the whole
+# stack) and the wrong controls sat at 0.5 (H100 Qwen runs, 2026-09-19). The ceiling
+# is what a candidate that managed to make the twin noisy could buy at most. An arena
+# seals its own floor (SlotAuditControl.row_floor_ppm): GLM-5.3-Flash's twin is
+# bitwise, so 2% admitted nothing lossy, FP8 block-scaled projections sat at 6-13%
+# (pod, 2026-11-11).
 _FLOOR = 0.02
+_ARENA_FLOOR = int(os.environ.get("CACHEON_SLOT_AUDIT_FLOOR_PPM") or 0) / 1_000_000 or _FLOOR
 _TWIN_FACTOR = 3.0
 _CEILING = 0.4
 # Share of rows that must pass, graded once this many rows have pooled. Honest noise
@@ -583,7 +588,7 @@ def _grade(slot: str, node: int, actual: list, twin: list, *, node_name: str = "
         # noise: quiet decode history falsely rejected GLM's 4096-row prefill calls.
         history_p90 = sorted(noise)[int(0.9 * (len(noise) - 1))]
         measured = _TWIN_FACTOR * max(noise[-1], history_p90)
-        tolerance = min(_CEILING, max(_FLOOR, measured))
+        tolerance = min(_CEILING, max(_ARENA_FLOOR, measured))
         if pruned and position in pruned:
             _prune.pool(slot, (node, position, step), errors, *pruned[position], tolerance)
         pooled = _pooled.setdefault(key, [0, 0, [], 1])
@@ -797,15 +802,3 @@ def install(registry: KernelRegistry = REGISTRY) -> None:
 
     setattr(runner, _STOCK_LOAD, load)
     runner.load_model = load_model
-
-
-def is_installed() -> bool:
-    runner = getattr(sys.modules.get(_RUNNER), "ModelRunner", None)
-    return runner is not None and _STOCK_LOAD in runner.__dict__
-
-
-def uninstall() -> None:
-    runner = getattr(sys.modules.get(_RUNNER), "ModelRunner", None)
-    if runner is not None and _STOCK_LOAD in runner.__dict__:
-        runner.load_model = runner.__dict__[_STOCK_LOAD]
-        delattr(runner, _STOCK_LOAD)

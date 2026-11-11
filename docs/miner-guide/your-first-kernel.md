@@ -116,8 +116,9 @@ The output directory must be new and outside the bundle. It retains inputs,
 `audit/engine.log`, `graph/engine.log`, stage results and the original receipt
 files, including failures. A failed audit stops before the graph launch.
 Default limits are 1,800 seconds per engine and four audit windows per
-address/rank. Set `--timeout-seconds` and `--minimum-audit-windows` to the arena's
-published development limits, not to values chosen after seeing a result.
+address/rank, and a 2% audit row floor. Set `--timeout-seconds`, `--minimum-audit-windows`
+and `--audit-row-floor-ppm` to the arena's published development limits, not to values
+chosen after seeing a result.
 
 Exit 0 means the development audit and capture checks passed, 2 means a failure
 or execution error, and 3 means insufficient/incomplete audit evidence, including

@@ -441,19 +441,6 @@ class CalibrationThresholdPolicy:
             raise CalibrationError("quality metrics must be unique and name-sorted")
         object.__setattr__(self, "quality_metrics", metrics)
 
-    @classmethod
-    def from_manifest(cls, manifest: CalibrationManifest) -> "CalibrationThresholdPolicy":
-        if type(manifest) is not CalibrationManifest:
-            raise CalibrationError("configured calibration manifest is not exact and typed")
-        return cls(
-            context=manifest.context,
-            algorithm_id=manifest.algorithm_id,
-            status=manifest.status,
-            speed=manifest.speed,
-            quality_metrics=manifest.quality_metrics,
-            familywise_z=manifest.familywise_z,
-        )
-
     def to_dict(self) -> dict[str, object]:
         return {
             "algorithm_id": self.algorithm_id,

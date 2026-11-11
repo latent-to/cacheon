@@ -107,35 +107,6 @@ def stale_incumbent_release_reason_digests(
     return fields[0], fields[1], fields[2], fields[3], fields[4]
 
 
-def stale_incumbent_release_reason(
-    *,
-    product_digest: str,
-    previous_stack_digest: str,
-    previous_tree_digest: str,
-    live_stack_digest: str,
-    live_tree_digest: str,
-) -> str:
-    """Bind a recovery release to both stale and live incumbent identities."""
-
-    for field, value in (
-        ("stale qualification product digest", product_digest),
-        ("stale qualification incumbent stack digest", previous_stack_digest),
-        ("stale qualification incumbent tree digest", previous_tree_digest),
-        ("live qualification stack digest", live_stack_digest),
-        ("live qualification tree digest", live_tree_digest),
-    ):
-        require_sha256_hex(value, field=field)
-    return STALE_INCUMBENT_RELEASE_REASON_PREFIX + ":".join(
-        (
-            product_digest,
-            previous_stack_digest,
-            previous_tree_digest,
-            live_stack_digest,
-            live_tree_digest,
-        )
-    )
-
-
 def evaluation_recovery_id(lease: EvaluationLease) -> str:
     if type(lease) is not EvaluationLease or lease.stage != "qualification":
         raise EvaluationRecoveryError(
@@ -472,7 +443,6 @@ __all__ = [
     "WORKER_PRE_RESIDENT_RELEASE_REASONS",
     "evaluation_recovery_event_id",
     "evaluation_recovery_id",
-    "stale_incumbent_release_reason",
     "stale_incumbent_release_reason_digests",
     "valid_evaluation_recovery_event_transition",
 ]

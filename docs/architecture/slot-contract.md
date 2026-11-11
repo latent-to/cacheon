@@ -154,11 +154,17 @@ FP8. The first
 failed window of each bound node is logged with its concrete name and tensor
 position, including when the contribution claims a wildcard address.
 
-A row passes within the larger of 2% and three times the twin's
+A row passes within the larger of the arena's row floor and three times the twin's
 90th-percentile row error on that node, taking the larger of the current call
 and the recent-call estimate. Quiet decode history therefore cannot suppress
 the reference noise of a later prefill call. The limit never exceeds 40%: the widest honest node
-measured needed 33% and the wrong controls sat at 50%. Rows stock itself left
+measured needed 33% and the wrong controls sat at 50%. The floor is 2% unless the arena's
+sealed audit policy sets `row_floor_ppm`, which the settlement binds with the rest of the
+audit control. The audit attributes and controls: it proves the contribution ran in its
+slot on every rank and computes the same function within a bounded deviation, and output
+quality is pristine T's to judge. An arena whose twin is bitwise (GLM-5.3-Flash) gets no
+noise from the twin term, so 2% admitted no lossy node there: FP8 block-scaled projections
+sat at 6–13% row error while the wrong control sits at 50%. Rows stock itself left
 non-finite (an idle data-parallel rank's padding) are not graded. The tolerance is measured because honest
 rounding grows with the width of the node: the twin sits 0.4% from stock at a block
 and 4–11% at the whole stack. It is kept per bound node, not per address, because

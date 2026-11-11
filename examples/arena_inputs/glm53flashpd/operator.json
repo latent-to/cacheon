@@ -11,6 +11,7 @@
   "tokenizer_asset": "tokenizer-official",
   "model_in_ram": true,
   "owner": "glm53flashpd-node",
+  "audit_row_floor_ppm": 150000,
   "audit_control_delta_digests": [
     "4c253998e53d898caaebbff3bc7aeca2ab687f3d3eec507cc9257defc474d184"
   ],

@@ -465,6 +465,7 @@ class B300RegisteredQualificationFactory:
             inputs.policy.audit_minimum_calls,
             tuple(sorted(candidate.reservation.target_members)),
             pd_engine.untimed_ranks(config.tp_size, config.engine_kwargs),
+            inputs.policy.audit_row_floor_ppm,
         )
         audit_authority = ResidentAuditExecutionAuthority.derive(
             prepared_candidate.launch,
