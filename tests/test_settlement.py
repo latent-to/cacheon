@@ -154,7 +154,7 @@ def _candidate(
         audit_evidence_digest=_h(f"reproduction-audit-evidence:{label}"),
         speedup=("1.04" if speedup == "1.05" else speedup),
     )
-    return SettlementCandidate.from_reproductions(primary, reproduction)
+    return SettlementCandidate(primary, reproduction)
 
 
 def test_candidate_json_round_trip_and_digest_are_canonical() -> None:
@@ -207,7 +207,7 @@ def test_resident_reproduction_requires_exact_physical_lane_role_swap() -> None:
         resident_lane_orientation=reproduction_orientation,
     )
 
-    resident = SettlementCandidate.from_reproductions(primary, reproduction)
+    resident = SettlementCandidate(primary, reproduction)
     assert SettlementCandidate.from_dict(resident.to_dict()) == resident
     assert resident.primary.resident_lane_orientation is not None
     assert resident.reproduction.resident_lane_orientation is not None
@@ -216,7 +216,7 @@ def test_resident_reproduction_requires_exact_physical_lane_role_swap() -> None:
     )
 
     with pytest.raises(SettlementError, match="did not swap physical TP lane"):
-        SettlementCandidate.from_reproductions(
+        SettlementCandidate(
             primary,
             replace(
                 candidate.reproduction,
@@ -227,7 +227,7 @@ def test_resident_reproduction_requires_exact_physical_lane_role_swap() -> None:
             ),
         )
     with pytest.raises(SettlementError, match="did not swap physical TP lane"):
-        SettlementCandidate.from_reproductions(
+        SettlementCandidate(
             primary,
             replace(
                 candidate.reproduction,
@@ -284,8 +284,7 @@ def test_auditless_resident_pair_becomes_settlement_candidate() -> None:
 
     Exact production shape of mainnet reservation ``87982705…`` on
     2026-08-15: primary and lane-swapped reproduction both PASS without an
-    audit witness; ``from_reproductions`` must accept the pair, while an
-    auditless pair without lane orientation stays legacy-only.
+    audit witness and the pair is accepted.
     """
 
     catalog = default_target_catalog()
@@ -314,18 +313,11 @@ def test_auditless_resident_pair_becomes_settlement_candidate() -> None:
         resident_lane_orientation=reproduction_orientation,
         **auditless,
     )
-    pair = SettlementCandidate.from_reproductions(primary, reproduction)
+    pair = SettlementCandidate(primary, reproduction)
     assert pair.primary.audit_policy is None
     assert pair.reproduction.audit_policy is None
     assert SettlementCandidate.from_dict(pair.to_dict()) == pair
     assert pair.speedup == min(primary.speedup, reproduction.speedup, key=Decimal)
-    with pytest.raises(SettlementError, match="requires two audited"):
-        SettlementCandidate.from_reproductions(
-            replace(primary, resident_lane_orientation=None,
-                    speed_evidence_policy_digest=candidate.primary.speed_evidence_policy_digest),
-            replace(reproduction, resident_lane_orientation=None,
-                    speed_evidence_policy_digest=candidate.reproduction.speed_evidence_policy_digest),
-        )
 
 
 def test_resident_lane_orientation_is_registered_and_nonoverlapping() -> None:
@@ -379,9 +371,9 @@ def test_single_pass_or_reused_evidence_cannot_become_settlement_candidate() -> 
         _stack(catalog), _ref(catalog, FORWARD, "a"), catalog, label="a"
     )
     with pytest.raises(SettlementError, match="reuses primary"):
-        SettlementCandidate.from_reproductions(candidate.primary, candidate.primary)
+        SettlementCandidate(candidate.primary, candidate.primary)
     with pytest.raises(SettlementError, match="reproduction identity"):
-        SettlementCandidate.from_reproductions(
+        SettlementCandidate(
             candidate.primary,
             replace(candidate.reproduction, hotkey="different-miner"),
         )
@@ -411,7 +403,7 @@ def test_each_reproduction_authority_and_evidence_identity_must_be_distinct(
         **{field: getattr(candidate.primary, field)},
     )
     with pytest.raises(SettlementError, match="reuses primary"):
-        SettlementCandidate.from_reproductions(candidate.primary, reproduced)
+        SettlementCandidate(candidate.primary, reproduced)
 
 
 def test_conservative_speed_uses_slower_independent_reproduction() -> None:
@@ -421,7 +413,7 @@ def test_conservative_speed_uses_slower_independent_reproduction() -> None:
         label="a", speedup="1.09",
     )
     slower = replace(candidate.reproduction, speedup="1.03")
-    reproduced = SettlementCandidate.from_reproductions(candidate.primary, slower)
+    reproduced = SettlementCandidate(candidate.primary, slower)
     assert reproduced.speedup == "1.03"
 
 
@@ -435,7 +427,7 @@ def test_reproduction_must_use_the_same_speed_evidence_policy() -> None:
         speed_evidence_policy_digest=_h("repeat-speed-policy"),
     )
     with pytest.raises(SettlementError, match="contribution identity"):
-        SettlementCandidate.from_reproductions(candidate.primary, mismatched)
+        SettlementCandidate(candidate.primary, mismatched)
 
 
 @pytest.mark.parametrize("field", ("sample_rate_ppm", "minimum_calls"))
@@ -459,7 +451,7 @@ def test_reproduction_must_use_the_same_seed_independent_audit_control(
         audit_policy=changed_policy,
     )
     with pytest.raises(SettlementError, match="contribution identity"):
-        SettlementCandidate.from_reproductions(candidate.primary, mismatched)
+        SettlementCandidate(candidate.primary, mismatched)
 
 
 def test_reproduction_requires_distinct_audit_seed_and_evidence() -> None:
@@ -476,13 +468,13 @@ def test_reproduction_requires_distinct_audit_seed_and_evidence() -> None:
         ),
     )
     with pytest.raises(SettlementError, match="slot-audit authority"):
-        SettlementCandidate.from_reproductions(candidate.primary, reused_seed)
+        SettlementCandidate(candidate.primary, reused_seed)
     reused_evidence = replace(
         candidate.reproduction,
         audit_evidence_digest=candidate.primary.audit_evidence_digest,
     )
     with pytest.raises(SettlementError, match="slot-audit authority"):
-        SettlementCandidate.from_reproductions(candidate.primary, reused_evidence)
+        SettlementCandidate(candidate.primary, reused_evidence)
 
 
 def test_new_candidate_rejects_legacy_auditless_qualification_but_reopens_history() -> None:
@@ -506,10 +498,6 @@ def test_new_candidate_rejects_legacy_auditless_qualification_but_reopens_histor
         audit_policy=None,
         audit_evidence_digest=legacy_primary.audit_evidence_digest,
     )
-    with pytest.raises(SettlementError, match="requires two audited"):
-        SettlementCandidate.from_reproductions(
-            legacy_primary, legacy_reproduction
-        )
     historical = SettlementCandidate(legacy_primary, legacy_reproduction)
     assert SettlementCandidate.from_dict(historical.to_dict()) == historical
 

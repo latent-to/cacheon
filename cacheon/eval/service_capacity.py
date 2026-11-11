@@ -141,14 +141,13 @@ def completed_work(read: LoadRead) -> dict[str, tuple[int, int]]:
     return {root: (main, inner) for root, (main, inner) in counts.items()}
 
 
-def fixed_work_rate(read: LoadRead, expected: dict[str, tuple[int, int]], *, wall_time=False) -> WorkRate:
-    """Rate over exact warm work; new policies charge the complete elapsed serving span.
+def fixed_work_rate(read: LoadRead, expected: dict[str, tuple[int, int]]) -> WorkRate:
+    """Rate over exact warm work, charged the complete elapsed serving span.
 
     Cold openings populate the declared warm-cache operating point before timing.
     Wall time includes tails and client handoffs between warm turns. With fixed
-    work value and GPU allocation its inverse is monotone in profit. Historical
-    policies retain summed request latency only for reopening their old scores;
-    inverse mean latency under round barriers is not throughput.
+    work value and GPU allocation its inverse is monotone in profit; inverse mean
+    request latency under round barriers is not throughput.
     """
     done = completed_work(read)
     if done != expected:
@@ -163,8 +162,7 @@ def fixed_work_rate(read: LoadRead, expected: dict[str, tuple[int, int]], *, wal
     warm = [record for record in read.records if record.credit_issued_ns != cold]
     if not warm:
         raise ServiceEvidenceError("read has no timed warm turns")
-    latency = ((max(r.request_end_ns for r in warm) - min(r.credit_issued_ns for r in warm)) / 1e9
-               if wall_time else sum((r.request_end_ns-r.credit_issued_ns)/1e9 for r in warm))
+    latency = (max(r.request_end_ns for r in warm) - min(r.credit_issued_ns for r in warm)) / 1e9
     if latency <= 0:
         raise ServiceEvidenceError("read has no timed warm turns")
     return WorkRate(len(warm), latency, len(warm) / latency)
@@ -218,7 +216,7 @@ def _boot_costs(reads: Sequence[LoadRead], arm: str,
             if not boots or read.load in lifetime:
                 boots.append({})
             boots[-1][read.load] = []
-        boots[-1][read.load].append(fixed_work_rate(read, expected[read.load], wall_time=True).elapsed_s)
+        boots[-1][read.load].append(fixed_work_rate(read, expected[read.load]).elapsed_s)
     return boots
 
 

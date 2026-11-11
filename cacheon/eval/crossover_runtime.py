@@ -113,7 +113,6 @@ class ResidentCrossoverPlan:
             raise CrossoverRuntimeError("resident crossover plan is inconsistent")
         replay = self.baseline.session_plan.replay
         if (replay is None or replay.contract != self.policy.goodput.contract
-                or replay.elapsed_cost != bool(self.policy.goodput.error_rate)
                 or set(dict(self.policy.goodput.decode_floors) or replay.loads) != set(replay.loads)):
             raise CrossoverRuntimeError("goodput plan requires its sealed loads, their floors and its service contract")
         allowed_differences = {

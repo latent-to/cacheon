@@ -773,6 +773,15 @@ replays the first sessions of the sealed order in proportion to its concurrency
 (at least as many as its concurrency), so three loads together replay less work than
 three whole-pool windows; the read set records each lower load's roots
 (`load_roots`) and checks its completed work against them.
+Optional `pause_order: true` opens every session of the window in the cold round,
+keeps `load` requests in flight, and gives a freed slot to the waiting request due
+first: a session not yet started at once, a session's next turn at the moment it
+went idle plus the pause the trace recorded before that turn (`think_time`). No
+turn waits for the wall clock; the pauses only order the returns, so a session
+that paused for an hour returns behind those that paused for seconds and finds its
+prefix wherever the cache left it. Without the setting each session sends its next
+turn when the last completes and no session is ever idle. The fixed work is the
+same; the setting is part of the workload identity, so references do not cross it.
 Optional `max_work_seconds` bounds each boot's replay work; expiry aborts, never
 grades incomplete work. Optional `warm_windows` (1 or 2) replays that many whole
 windows untimed at the highest load before the sealed windows, each after its own

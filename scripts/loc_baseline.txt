@@ -183,12 +183,15 @@
 # the packet judge's HiddenJudgeReceipt and hidden_judge_output_digest come back (+37) for commissioning step 3.
 # Commission refuses a non-stock incumbent (docs +4), paid by the uncalled batch_request wrapper: cacheon -18.
 # Sealed one-sided per-load regression guard (load_margin): cacheon +17 after the uncalled sandbox.load_entry, docs +6.
+# Pause-order replay arrival (sealed setting, operator key): cacheon +18, docs +10, scripts +5 after deleting the
+# replay plan's fixed-value flags, the summed-latency rate, the opening-text session key, the test-only
+# SettlementCandidate.from_reproductions and the dashboard's paired-lane views (dashboard -20, tests -12): tree +1.
 (root) 1163
 .github 338
-cacheon 92083
+cacheon 92101
 cacheon_kernels 936
-dashboard 4393
-docs 13327
+dashboard 4373
+docs 13337
 examples 387
-scripts 4502
-tests 14092
+scripts 4507
+tests 14080

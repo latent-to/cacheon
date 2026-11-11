@@ -37,8 +37,9 @@ KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size
         "tokens_per_prompt", "tokenizer_asset", "model_in_ram", "owner", "audit_control_delta_digests", "node"}
 # decode_floors: per-user decode floor per load (tok/s keyed by session count), required with several loads;
 # replay_windows: the scored windows per load, replacing the packet's; audit_row_floor_ppm: the node audit's
-# sealed per-row floor, absent at the 2% default; load_margin: the per-load regression margin, off when absent.
-OPTIONAL_KEYS = {"decode_floors", "replay_windows", "audit_row_floor_ppm", "load_margin"}
+# sealed per-row floor, absent at the 2% default; load_margin: the per-load regression margin, off when absent;
+# pause_order: true releases replay turns in the order of the trace's recorded pauses, absent for arrival on completion.
+OPTIONAL_KEYS = {"decode_floors", "replay_windows", "audit_row_floor_ppm", "load_margin", "pause_order"}
 NODE_KEYS = {"name", "scheduler_starts", "client_cpus"}
 # engine_cpus: an engine's first GPU -> [DP controller vCPU, frontend vCPU] (oci_cpuset.canonical_cpu_roles).
 OPTIONAL_NODE_KEYS = {"engine_cpus", "lifetime_memory_gib"}
@@ -217,8 +218,9 @@ def main() -> None:
         floors = ", ".join(f"({load}, {operator['decode_floors'][load]})" for load in sorted(operator["decode_floors"], key=int))
         margin = f', load_margin={operator["load_margin"]}' if "load_margin" in operator else ""
         rewrites.append((r"decode_floor=1\.0\)", lambda _: f"decode_floor=1.0, decode_floors=({floors},){margin})"))
-    if "replay_windows" in operator:
-        rewrites.append((r'"windows": \d+', lambda _: f'"windows": {operator["replay_windows"]}'))
+    if {"replay_windows", "pause_order"} & set(operator):  # the commission refuses a pause_order that is not true
+        pause = f', "pause_order": {operator["pause_order"]!r}' if "pause_order" in operator else ""
+        rewrites.append((r'"windows": (\d+)', lambda m: f'"windows": {operator.get("replay_windows", m[1])}{pause}'))
     for pattern, value in rewrites:
         text, count = re.subn(pattern, value, text)
         if count != 1:

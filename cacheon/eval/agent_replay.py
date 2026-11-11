@@ -3,7 +3,7 @@
 The validator owns this loopback HTTP adapter, chat template and timestamps.
 The candidate still sees only disclosed generation inputs over its OCI pipes.
 AIPerf owns trajectory order; the bridge owns arrival timing: one cold round, then closed-loop arrival
-at the sealed session count.
+at the sealed session count, or under ``pause_order`` release in the order of the trace's recorded pauses.
 """
 
 from __future__ import annotations
@@ -47,22 +47,22 @@ class AgentReplayPlan:
     window: int
     lane: str
     windows: int = 1
-    elapsed_cost: bool = field(default=False, metadata={"wire_optional": True})
-    max_work_seconds: int = field(default=0, metadata={"wire_optional": True})
-    # Always true: lockstep rounds retired with speed policy 19. The field stays so sealed plans keep their wire shape.
-    closed_loop: bool = field(default=False, metadata={"wire_optional": True})
+    max_work_seconds: int = 0
     # Untimed windows before the sealed ones. Verda z3 lifetimes' third windows agreed to 0.04%; their first ran 1.4-3.1%
     # slow (stock Triton kernels keyed on batch and KV pool size compile on the clock), their second up to 1.3% (11-02).
-    warm_windows: int = field(default=0, metadata={"wire_optional": True})
+    warm_windows: int = 0
+    # Every session is live from the cold round and a freed slot goes to the waiting turn whose recorded pause ends
+    # first. The Weka sessions are alive 25x longer than they are in flight (48-session slice, 2026-11-11); arrival
+    # on completion never let a paused session's KV go cold, so no tier or retention choice could be scored.
+    pause_order: bool = False
     slice: SliceManifest = field(init=False, repr=False)
 
     def __post_init__(self):
         manifest = load_slice_manifest(self.manifest_path)
-        # A lifetime replays several loads highest first, in a closed loop: the top load's windows are the
-        # one-load windows, so warm-up, quality controls and request indexing read them unchanged.
-        if (type(self.loads) is not tuple or not self.loads or list(self.loads) != sorted(set(self.loads), reverse=True)
-                or self.closed_loop is not True):
-            raise ValueError("replay needs descending distinct sealed loads in a closed loop")
+        # A lifetime replays several loads highest first: the top load's windows are the one-load windows, so
+        # warm-up, quality controls and request indexing read them unchanged.
+        if type(self.loads) is not tuple or not self.loads or list(self.loads) != sorted(set(self.loads), reverse=True):
+            raise ValueError("replay needs descending distinct sealed loads")
         for load in self.loads:
             manifest.expected_work(load)
         if manifest.loader != "weka_trace":
@@ -73,8 +73,8 @@ class AgentReplayPlan:
             raise ValueError("agent replay needs at least one sealed window")
         if type(self.warm_windows) is not int or not 0 <= self.warm_windows <= 2:
             raise ValueError("agent replay warm windows are outside their bound")
-        if type(self.elapsed_cost) is not bool:
-            raise ValueError("replay cost accounting must be boolean")
+        if type(self.pause_order) is not bool:
+            raise ValueError("replay release order must be boolean")
         if type(self.max_work_seconds) is not int or not 0 <= self.max_work_seconds <= 7200:
             raise ValueError("replay work deadline is outside its bound")
         object.__setattr__(self, "slice", manifest)
@@ -95,7 +95,7 @@ class AgentReplayPlan:
     def workload_identity(self) -> dict:
         """Bind the consumed bytes, root accounting and replay policy, not local paths."""
         return {
-            **({"time_accounting": "elapsed-serving-span"} if self.elapsed_cost else {}),
+            "time_accounting": "elapsed-serving-span",
             **({"max_work_seconds": self.max_work_seconds} if self.max_work_seconds else {}),
             "slice": self.slice.digest, "dataset": self.slice.dataset,
             "revision": self.slice.revision,
@@ -105,6 +105,7 @@ class AgentReplayPlan:
             "windows": self.windows,
             **({"warm_windows": self.warm_windows} if self.warm_windows else {}),
             "arrival": "closed-loop-after-cold-round",
+            **({"release_order": "recorded-pause"} if self.pause_order else {}),
             "contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
             "client": "aiperf-0.13.0", "scenario": None, "ignore_trace_delays": True,
             "cache_bust_identity": "sealed-slice-digest",
@@ -112,30 +113,11 @@ class AgentReplayPlan:
         }
 
 
-def _session_key(messages: list[dict]) -> str:
-    """The conversation's opening (system messages plus the first user turn), stable across its turns.
-
-    AIPerf's per-session cache-bust marker sits at the head of the first user turn and is stripped
-    so the key names the sealed session, not the marker a client happened to mint for it.
-    """
-    head = [("system", json.dumps(m.get("content"), sort_keys=True)[:4096])
-            for m in messages if m.get("role") == "system"]
-    for message in messages:
-        if message.get("role") == "user":
-            content = message.get("content")
-            text = content if isinstance(content, str) else json.dumps(content, sort_keys=True)
-            if text.startswith("[rid:") and "\n\n" in text[:80]:
-                text = text.split("\n\n", 1)[1]
-            head.append(("user", text[:4096]))
-            break
-    return hashlib.sha256(json.dumps(head).encode()).hexdigest()
-
-
 class _Placement:
     """Balanced session-to-rank placement for one read: each DP rank owns its own radix cache.
 
-    A session's every turn goes to the rank chosen at its first turn. A new session takes
-    the rank with the fewest turns in flight, then the fewest sessions placed, then the lowest
+    A sealed session's every request, its subagents' included, goes to the rank chosen at its first turn. A new
+    session takes the rank with the fewest turns in flight, then the fewest sessions placed, then the lowest
     index, so a read's roots land 0,1,2,3,... whatever the arrival timing. Hashing the opening
     instead re-randomised placement per run and cost 5-7% of the fixed-work rate at loads 12-16
     (calibration, 2026-09-27).
@@ -145,10 +127,9 @@ class _Placement:
         self.ranks = ranks
         self.assigned = [0] * ranks
         self.inflight = [0] * ranks
-        self.table: dict[str, int] = {}
+        self.table: dict[int, int] = {}
 
-    def acquire(self, messages: list[dict]) -> int:
-        key = _session_key(messages)
+    def acquire(self, key: int) -> int:
         rank = self.table.get(key)
         if rank is None:
             rank = min(range(self.ranks), key=lambda r: (self.inflight[r], self.assigned[r], r))
@@ -193,8 +174,11 @@ def _pool_chat_input_ids(body: dict) -> tuple[list[int], str]:
 # each turn's IDs and dumped them to bridge.jsonl: ~6 ms a request and ~480M int allocations a window on the one loop
 # every first token passes through. Each distinct body is now tokenized once per evaluator process, by prime_replay
 # before the first engine lifetime, into one tuple of shared ints that every later request reuses. A timed body the
-# prime did not see fails the read: it would put the tokenizer back inside the clock.
-_PROMPTS: dict[bytes, tuple[tuple[int, ...], str]] = {}
+# prime did not see fails the read: it would put the tokenizer back inside the clock. The prime also records each
+# body's place in the sealed slice: (session order, root turn or None, recorded pause in seconds before that session's
+# next root turn or None). Subagent and inner requests carry no turn: the trace records no pause for them.
+_Place = tuple[int, int | None, float | None]
+_PROMPTS: dict[bytes, tuple[tuple[int, ...], str, _Place]] = {}
 _PRIMED: set[str] = set()
 _TOKEN_INTS: tuple[int, ...] = ()
 
@@ -207,82 +191,151 @@ def _shared(ids: list[int]) -> tuple[int, ...]:
     return tuple(map(_TOKEN_INTS.__getitem__, ids))
 
 
-def _prompt_ids(raw: bytes) -> tuple[tuple[int, ...], str]:
-    """The primed canonical IDs and their digest for one exact request body."""
+def _prompt_ids(raw: bytes) -> tuple[tuple[int, ...], str, _Place]:
+    """The primed canonical IDs, their digest and the slice place for one exact request body."""
     cached = _PROMPTS.get(hashlib.sha256(raw).digest())
     if cached is None:
         raise RuntimeError("AIPerf sent a replay body the prime did not tokenize")
     return cached
 
 
+def _places(current: SliceManifest, export: Path, seen: dict[str, bytes]) -> dict[bytes, _Place]:
+    """Join the prime's request bodies to the client's source coordinates and the trace's own pauses.
+
+    A Weka request's ``think_time`` is the idle gap before it (t minus the previous request's end, checked on the
+    48-session slice), and ``source_outer_idx`` is its index in the session file's requests.
+    """
+    order = {session.id: index for index, session in enumerate(current.sessions)}
+    places, roots = {}, defaultdict(list)
+    for line in export.read_text().splitlines():
+        meta = json.loads(line)["metadata"]
+        key, trace = seen[meta["x_request_id"]], meta["source_trace_id"]
+        places[key] = (order[trace], None, None)
+        if meta["conversation_id"] == trace and meta.get("source_inner_idx") is None:
+            roots[trace].append((meta["turn_index"], meta["source_outer_idx"], key))
+    for trace, turns in roots.items():
+        requests = json.loads((current.directory / f"{order[trace]:03d}_{trace}.json").read_text())["requests"]
+        turns.sort()
+        for (turn, _outer, key), following in zip(turns, [*turns[1:], None]):
+            pause = None if following is None else float(requests[following[1]].get("think_time") or 0.0)
+            places[key] = (order[trace], turn, pause)
+    return places
+
+
 _FIRST_ROUND_WAIT_S = 120.0
 
 
-class _ColdRound:
-    """Release the window's first ``openings`` conversations together, then let every later request leave on arrival.
+class _Arrival:
+    """Release the window's first ``openings`` conversations together, then every later request by the sealed rule.
 
     The client issues each conversation's next request the moment the previous one completes, so the sealed
     session count is the engine's offered concurrency, as a serving fleet sees it. Holding only the cold round
     keeps cold/warm membership a function of the slice: it waits for exactly ``openings`` conversations, so a
     slow client worker cannot shrink it, and fails every held request when the client has not opened them within
     ``_FIRST_ROUND_WAIT_S`` of its last arrival rather than idling to the session deadline. It is released in
-    session-key order so rank placement is the same in every read, and each release is numbered in that order:
+    sealed session order so rank placement is the same in every read, and each release is numbered in that order:
     the engine requires batch indices in dispatch order, which arrival order is not.
+
+    Without ``limit`` a later request leaves on arrival. With it (pause order) every session of the window is an
+    opening, ``limit`` requests are in flight, and a freed slot goes to the waiting request that is due first: a
+    cold start at once, a session's next root turn at the moment the session went idle plus the pause the trace
+    recorded before that turn. Nothing waits for the wall clock, so a session that paused for an hour returns
+    behind the turns that paused for seconds, with its KV wherever the cache left it. An idle session's next turn
+    is expected before the client sends it and one slot is kept for it, not handed to a later-due request in the
+    client's milliseconds; requests held behind a turn that never arrives fail after ``first_wait_s``.
     """
 
-    def __init__(self, openings: int, clock, first_wait_s: float = _FIRST_ROUND_WAIT_S):
-        self.openings, self.clock, self.first_wait_s = openings, clock, first_wait_s
-        self.pending: dict[str, tuple[str, asyncio.Future]] = {}
+    def __init__(self, openings: int, clock, limit: int | None = None, first_wait_s: float = _FIRST_ROUND_WAIT_S):
+        self.openings, self.clock, self.limit, self.first_wait_s = openings, clock, limit, first_wait_s
         self.released = 0
         self._timer = None
+        self.places: dict[str, _Place] = {}
+        self.inflight: set[str] = set()
+        # Held requests as (due time, sealed session order, future); the cold round is due at zero.
+        self.waiting: dict[str, tuple[float, int, asyncio.Future]] = {}
+        # Per sealed session: requests held or in flight, the pause before its next root turn, that turn's due time.
+        self.active: dict[int, int] = defaultdict(int)
+        self.pauses: dict[int, float] = {}
+        self.expected: dict[int, float] = {}
 
-    async def hold(self, request_id: str, key: str) -> tuple[float, int]:
-        """Wait for the cold round if it is still open; return the release time on the session clock and dispatch ordinal."""
-        if self.released:
+    async def hold(self, request_id: str, place: _Place) -> tuple[float, int]:
+        """Wait for release; return the release time on the session clock and dispatch ordinal."""
+        if self.limit is None and self.released:
             self.released += 1
             return self.clock(), self.released - 1
+        order, turn, _pause = self.places[request_id] = place
+        self.active[order] += 1
         future = asyncio.get_running_loop().create_future()
-        self.pending[request_id] = (key, future)
-        if self._timer is not None:
-            self._timer.cancel()
+        if self.released:
+            due = self.expected.pop(order, None)
+            if turn is not None:
+                self.pauses.pop(order, None)
+            self.waiting[request_id] = (self.clock() if due is None or turn is None else due, order, future)
+            self._grant()
+            return await future
+        self.waiting[request_id] = (0.0, order, future)
         # Never inline: in the last opening's own hold() its future is already done, so it took
-        # rank 0 before the others woke in session-key order, randomising placement (2026-09-30).
-        full = len(self.pending) >= self.openings
-        self._timer = asyncio.get_running_loop().call_later(
-            0 if full else self.first_wait_s, self._release if full else self._starve)
+        # rank 0 before the others woke in session order, randomising placement (2026-09-30).
+        full = len(self.waiting) >= self.openings
+        self._arm(0 if full else self.first_wait_s, self._grant if full else lambda: self._fail(
+            f"cold round holds {len(self.waiting)} of {self.openings} conversations"))
         return await future
 
     def done(self, request_id: str) -> None:
-        self.pending.pop(request_id, None)
+        self.waiting.pop(request_id, None)
+        place = self.places.pop(request_id, None)
+        if place is None:
+            return
+        order, _turn, pause = place
+        if request_id in self.inflight and pause is not None:
+            self.pauses[order] = pause
+        self.inflight.discard(request_id)
+        self.active[order] -= 1
+        if not self.active[order] and order in self.pauses:
+            self.expected[order] = self.clock() + self.pauses[order]
+        if self.limit is not None and self.released:
+            self._grant()
 
-    def _release(self) -> None:
-        self._timer = None
+    def _arm(self, delay: float | None, callback=None) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+        self._timer = None if delay is None else asyncio.get_running_loop().call_later(delay, callback)
+
+    def _grant(self) -> None:
         stamp = self.clock()
-        for _key, future in sorted(self.pending.values(), key=lambda item: item[0]):
+        free = float("inf") if self.limit is None else self.limit - len(self.inflight)
+        for request_id, (due, _order, future) in sorted(self.waiting.items(), key=lambda item: item[1][:2]):
+            if free <= sum(1 for expected in self.expected.values() if expected < due):
+                break
+            del self.waiting[request_id]
             if not future.done():
+                self.inflight.add(request_id)
                 future.set_result((stamp, self.released))
                 self.released += 1
-        self.pending.clear()
+                free -= 1
+        held = bool(self.waiting) and free > 0
+        self._arm(self.first_wait_s if held else None, lambda: self._fail(
+            f"{len(self.expected)} idle conversations sent no next turn; {len(self.waiting)} requests are held behind them"))
 
-    def _starve(self) -> None:
+    def _fail(self, cause: str) -> None:
         self._timer = None
-        error = RuntimeError(f"cold round holds {len(self.pending)} of {self.openings} conversations "
-                             f"after {self.first_wait_s:g} s without a new arrival")
-        for _key, future in self.pending.values():
+        error = RuntimeError(f"{cause} after {self.first_wait_s:g} s without a new arrival")
+        for _due, _order, future in self.waiting.values():
             if not future.done():
                 future.set_exception(error)
-        self.pending.clear()
+        self.waiting.clear()
 
 
 class ReplayBridge:
     """Adapt trusted chat requests to canonical IDs and retain their actual token evidence."""
 
-    def __init__(self, session, exchange, tokenizer, output: Path, load: int):
+    def __init__(self, session, exchange, tokenizer, output: Path, load: int, live: int = 0):
         self.session, self.exchange, self.tokenizer = session, exchange, tokenizer
         self.first_batch_index = session.next_batch_index
         self.rows, self.failure = {}, None
         self.stamps: dict[str, int] = {}
-        self.rounds = _ColdRound(load, session.clock)
+        # ``live`` sessions open at once under pause order; without it the client's concurrency is the limit.
+        self.rounds = _Arrival(live or load, session.clock, load if live else None)
         self.placement = _Placement(pd_engine.routes(dict(session.plan.engine_config.engine_kwargs)))
         self.failed = asyncio.Event()
         self.offset_ns = time.time_ns() - round(session.clock() * 1e9)
@@ -308,13 +361,13 @@ class ReplayBridge:
                 raise ValueError("AIPerf repeated an X-Request-ID")
             if body.get("stream") is not True:
                 raise ValueError("agent replay requires streaming requests")
-            ids, digest = _prompt_ids(raw)
+            ids, digest, place = _prompt_ids(raw)
             count = body.get("max_tokens", body.get("max_completion_tokens"))
             self.rows[external_id] = None
-            stamp, ordinal = await self.rounds.hold(external_id, _session_key(body["messages"]))
+            stamp, ordinal = await self.rounds.hold(external_id, place)
             self.stamps[external_id] = self._ns(stamp)
             index = self.first_batch_index + ordinal
-            rank = self.placement.acquire(body["messages"])
+            rank = self.placement.acquire(place[0])
             request = BatchRequest(
                 self.session.session_id, self.session.plan.launch_digest,
                 request_id, secrets.token_hex(16), index, (), count, 0,
@@ -425,7 +478,7 @@ def collect_read(plan: AgentReplayPlan, bridge: ReplayBridge, load: int) -> Load
     if seen != set(bridge.rows):
         raise ServiceEvidenceError("bridge has requests absent from the retained AIPerf export")
     read = LoadRead(plan.arm, plan.window, plan.lane, load, tuple(records))
-    rate = fixed_work_rate(read, plan.slice.expected_work(plan.sessions_at(load)), wall_time=plan.elapsed_cost)
+    rate = fixed_work_rate(read, plan.slice.expected_work(plan.sessions_at(load)))
     output = plan.output_directory
     with (output / "turns.jsonl").open("x") as f:
         for record in records:
@@ -462,7 +515,8 @@ def _aiperf_argv(plan: AgentReplayPlan, current: SliceManifest, output: Path, po
             "--url", f"http://127.0.0.1:{port}", "--endpoint-type", "chat", "--streaming",
             "--no-fixed-schedule", "--input-file", str(pool),
             "--custom-dataset-type", "weka_trace", "--num-conversations", str(plan.sessions_at(load)),
-            "--concurrency", str(load), "--dataset-sampling-strategy", "sequential",
+            "--concurrency", str(plan.sessions_at(load) if plan.pause_order else load),
+            "--dataset-sampling-strategy", "sequential",
             "--cache-bust", "first_turn_prefix", "--ignore-trace-delays", "--use-server-token-count",
             "--random-seed", str(current.rules["seed"]), "--ui", "none",
             "--zmq-ipc-path", str(ipc), "--output-artifact-dir", str(output / "aiperf")]
@@ -494,6 +548,7 @@ async def _prime(plan: AgentReplayPlan, context_length: int | None, load: int) -
     current = _current_slice(plan)
     loop = asyncio.get_running_loop()
     pending: dict[bytes, asyncio.Future] = {}
+    seen: dict[str, bytes] = {}
     # Short paths: AIPerf's Unix sockets live under both (see _run_load_read).
     work = Path(tempfile.mkdtemp(prefix="cacheon-prime-", dir="/tmp"))
     ipc = Path(tempfile.mkdtemp(prefix="cacheon-aiperf-", dir="/tmp"))
@@ -503,7 +558,7 @@ async def _prime(plan: AgentReplayPlan, context_length: int | None, load: int) -
         async def chat(http_request):
             raw = await http_request.read()
             body = json.loads(raw)
-            key = hashlib.sha256(raw).digest()
+            key = seen[http_request.headers["X-Request-ID"]] = hashlib.sha256(raw).digest()
             if key not in _PROMPTS and key not in pending:
                 pending[key] = loop.run_in_executor(pool, _pool_chat_input_ids, body)
             count = body.get("max_tokens", body.get("max_completion_tokens")) or 1
@@ -535,11 +590,13 @@ async def _prime(plan: AgentReplayPlan, context_length: int | None, load: int) -
                 code = await asyncio.wait_for(client.wait(), _PRIME_CLIENT_S)
             if code:
                 raise RuntimeError(f"AIPerf exited {code} priming the replay; see {work / 'aiperf.log'}")
-            if not pending:
+            # A lower load replays a prefix of the top load's sessions, so its bodies are already tokenized.
+            if not seen:
                 raise RuntimeError(f"AIPerf sent no request priming the replay; see {work / 'aiperf.log'}")
+            places = _places(current, work / "aiperf" / "profile_export.jsonl", seen)
             for key, future in pending.items():
                 ids, digest = await future
-                _PROMPTS[key] = (_shared(ids), digest)
+                _PROMPTS[key] = (_shared(ids), digest, places[key])
         finally:
             if client is not None and client.returncode is None:
                 os.killpg(client.pid, signal.SIGKILL)
@@ -558,7 +615,8 @@ async def _run_load_read(session, plan: AgentReplayPlan, load: int, *, tokenizer
     output.mkdir(parents=True, exist_ok=False)
     pool = _slice_pool(current, output, plan.sessions_at(load))
     async with session.exchange() as exchange:
-        bridge = ReplayBridge(session, exchange, tokenizer, output, load)
+        bridge = ReplayBridge(session, exchange, tokenizer, output, load,
+                              plan.sessions_at(load) if plan.pause_order else 0)
         app = web.Application(client_max_size=MAX_BATCH_REQUEST_BYTES)
         app.router.add_post("/v1/chat/completions", bridge.chat)
         runner = web.AppRunner(app, access_log=None, shutdown_timeout=1)

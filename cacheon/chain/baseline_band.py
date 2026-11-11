@@ -103,28 +103,21 @@ def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
     from cacheon.eval.qualification_runner import ResidentSpeedWitness
     from cacheon.eval.service_capacity import attainment, fixed_work_rate
 
-    speed: dict[str, Any] = {"metric": "warm_turn_latency", "lanes": []}
+    speed: dict[str, Any] = {"metric": "fixed_work_rate", "lanes": []}
     try:
         retained = ResidentSpeedWitness.from_dict(witness)
         reads, policy = retained.goodput, retained.resident_policy.goodput
         grade = reads.grade(policy)
-        if policy.error_rate:
-            speed["metric"] = "fixed_work_rate"
         lanes = []
         for role, windows in (("B", reads.incumbent), ("C", reads.candidate)):
-            arm = []
             for index, read in enumerate(windows):
                 work = fixed_work_rate(read, reads.work(read.load))
-                elapsed = fixed_work_rate(read, reads.work(read.load), wall_time=True)
                 # Whole boots: reference boots, then any retained bracket, per arm.
-                arm.append({"role": role, "window": read.window, "load": read.load,
-                            "physical_lane": read.lane, "boot": index // (reads.window_limit * len(reads.loads)),
-                            "warm_turns": work.turns, "request_time_s": work.elapsed_s,
-                            "mean_warm_latency_s": work.elapsed_s / work.turns,
-                            "elapsed_s": elapsed.elapsed_s, "turns_per_second": elapsed.rate,
-                            "attainment": attainment(read, policy.contract),
-                            **_replay_diagnostics(read)})
-            lanes.extend(arm)
+                lanes.append({"role": role, "window": read.window, "load": read.load,
+                              "boot": index // (reads.window_limit * len(reads.loads)),
+                              "warm_turns": work.turns, "elapsed_s": work.elapsed_s, "turns_per_second": work.rate,
+                              "attainment": attainment(read, policy.contract),
+                              **_replay_diagnostics(read)})
         speed.update({
             "lanes": lanes, "speedup": float(grade.settled_speedup),
             "policy_version": retained.resident_policy.version,
@@ -138,11 +131,9 @@ def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
             "grading": {"decision": grade.decision.value, "detail": grade.verdict.detail,
                         "required_speedup": grade.verdict.required,
                         "null_noise": policy.null_noise,
-                        "standard_error": grade.verdict.noise if policy.error_rate else None,
-                        "lower_speedup": (float(grade.settled_speedup) / grade.verdict.required
-                                          if policy.error_rate else None),
-                        "boot_noise": policy.boot_noise if policy.error_rate else None,
-                        "error_rate": policy.error_rate or None,
+                        "standard_error": grade.verdict.noise,
+                        "lower_speedup": float(grade.settled_speedup) / grade.verdict.required,
+                        "boot_noise": policy.boot_noise, "error_rate": policy.error_rate,
                         "attainment_tolerance": policy.attainment_tolerance,
                         "attainment_margin": policy.attainment_margin, "futility_margin": policy.futility_margin,
                         "attainment_pooled": bool(policy.attainment_pooled)},

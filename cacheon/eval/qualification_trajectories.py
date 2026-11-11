@@ -143,7 +143,7 @@ def create_controls(value, reference, candidate, candidate_directory, candidate_
     )
     by_request = {compared[key].request_id: key for key in selection.selected_prompt_digests}
     # bridge.jsonl names each input by digest; its IDs are the ones this evaluator process primed and sent.
-    primed = {digest: ids for ids, digest in _PROMPTS.values()}
+    primed = {digest: ids for ids, digest, _place in _PROMPTS.values()}
     inputs = {}
     with (candidate_directory / "window1" / "bridge.jsonl").open() as stream:
         for line in stream:
