@@ -37,8 +37,8 @@ KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size
         "tokens_per_prompt", "tokenizer_asset", "model_in_ram", "owner", "audit_control_delta_digests", "node"}
 # decode_floors: per-user decode floor per load (tok/s keyed by session count), required with several loads;
 # replay_windows: the scored windows per load, replacing the packet's; audit_row_floor_ppm: the node audit's
-# sealed per-row floor, absent at the 2% default.
-OPTIONAL_KEYS = {"decode_floors", "replay_windows", "audit_row_floor_ppm"}
+# sealed per-row floor, absent at the 2% default; load_margin: the per-load regression margin, off when absent.
+OPTIONAL_KEYS = {"decode_floors", "replay_windows", "audit_row_floor_ppm", "load_margin"}
 NODE_KEYS = {"name", "scheduler_starts", "client_cpus"}
 # engine_cpus: an engine's first GPU -> [DP controller vCPU, frontend vCPU] (oci_cpuset.canonical_cpu_roles).
 OPTIONAL_NODE_KEYS = {"engine_cpus", "lifetime_memory_gib"}
@@ -105,6 +105,8 @@ def load_operator(path: Path) -> dict:
     if (sorted(floors) != (sorted(map(str, loads)) if floors or len(loads) > 1 else [])
             or not all(re.fullmatch(r"[1-9][0-9]*(\.[0-9]*[1-9])?", value) for value in floors.values())):
         raise SystemExit(f"{path}: decode_floors maps every replay load to a canonical decimal tok/s floor")
+    if "load_margin" in operator and (not floors or not re.fullmatch(r"0\.[0-9]*[1-9]", operator["load_margin"])):
+        raise SystemExit(f"{path}: load_margin is a canonical decimal in (0, 1), sealed with decode_floors")
     for lane, cpus in operator["node"]["client_cpus"].items():
         devices = [int(value) for value in lane.split(",")]
         if len(devices) != width or devices != sorted(devices) or not cpus:
@@ -212,8 +214,9 @@ def main() -> None:
     rewrites = [(r'"load": (?:\d+|\[[\d, ]*\])', lambda _: f'"load": {json.dumps(operator["replay_load"])}'),
                 (r'(?P<indent>[ \t]*)"audit_control_delta_digests": \[(?:\s*"[0-9a-f]{64}",)*\s*\]', controls)]
     if "decode_floors" in operator:
-        rewrites.append((r'"decode_floor": "1"(?:, "decode_floors": \{[^{}]*\})?',
-                         lambda _: f'"decode_floor": "1", "decode_floors": {json.dumps(operator["decode_floors"])}'))
+        margin = f', "load_margin": "{operator["load_margin"]}"' if "load_margin" in operator else ""
+        rewrites.append((r'"decode_floor": "1"(?:, "decode_floors": \{[^{}]*\})?(?:, "load_margin": "[0-9.]+")?',
+                         lambda _: f'"decode_floor": "1", "decode_floors": {json.dumps(operator["decode_floors"])}{margin}'))
     if "replay_windows" in operator:
         rewrites.append((r'"windows": \d+', lambda _: f'"windows": {operator["replay_windows"]}'))
     for pattern, value in rewrites:

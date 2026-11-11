@@ -173,7 +173,7 @@
  "cacheon.rebuild": {"all":null,"exceptions":["RebuildError"],"public":["RebuildError","RebuildPlan","RebuildStep","apply_rebuild_plan","parse_rebuild_plan"]},
  "cacheon.receipts": {"all":null,"exceptions":["ReceiptFormatError"],"public":["ReceiptFormatError","capturing","collect","completed","completed_gate","coverage_matrix","failed","flush_calls","identity","invoke","is_invoking","not_selected","record_kernels","require","set_graph_probe","validator_runtime_failure","write"]},
  "cacheon.registry": {"all":null,"exceptions":["VariantRegistrationError"],"public":["Eligibility","KernelImpl","KernelRegistry","REGISTRY","SelectionDecision","SelectionOutcome","VariantCapabilityMatch","VariantRegistrationError","eligibility_domain_is_empty","eligibility_domains_overlap","eligibility_from_metadata"]},
- "cacheon.sandbox": {"all":null,"exceptions":[],"public":["ScanResult","callable_from","load_entry","load_module","scan_compilability","scan_compilability_path","scan_path","scan_source","scan_tree"]},
+ "cacheon.sandbox": {"all":null,"exceptions":[],"public":["ScanResult","callable_from","load_module","scan_compilability","scan_compilability_path","scan_path","scan_source","scan_tree"]},
  "cacheon.seam": {"all":null,"exceptions":[],"public":["activate","load_candidate_bundle","mark_driver"]},
  "cacheon.seams": {"all":null,"exceptions":[],"public":["SEAM_ADAPTERS","SeamAdapter","TARGET_MODULES"]},
  "cacheon.settlement": {"all":["ResidentLaneOrientation","SettlementCandidate","SettlementError","SettlementEvent","SettlementEventType","SettlementEvidence","SettlementPlan","SettlementQualification","SettlementReproductionIdentity","StackTransitionOutput","TargetLineage","TargetLineageNode","plan_settlement"],"exceptions":["SettlementError"]},

@@ -243,12 +243,20 @@ def _boot_term(lifetime: dict[int, list[float]], window_noise: float, boot_noise
             math.fsum(row[1] for row in terms) / count ** 2 + boot_noise ** 2 / 2)
 
 
+def _contrast(stock, terms) -> tuple[float, float]:
+    """Stock's mean log cost minus the candidate's (the log throughput ratio) and its standard error."""
+    return (math.fsum(row[0] for row in stock) / len(stock) - math.fsum(row[0] for row in terms) / len(terms),
+            math.sqrt(math.fsum(row[1] for row in stock) / len(stock) ** 2
+                      + math.fsum(row[1] for row in terms) / len(terms) ** 2))
+
+
 def reference_grade(
     candidate: Sequence[LoadRead], reference: Sequence[LoadRead],
     contract: ServiceContract, expected: dict[int, dict[str, tuple[int, int]]], *,
     window_noise: float, boot_noise: float, error_rate: float, boots: int,
     attainment_tolerance: float, attainment_margin: float, futility_margin: float = 0.0,
     sentinel: Sequence[LoadRead] = (), decode_floors: dict[int, float] | None = None, reference_lane: str = "",
+    load_margin: float = 0.0,
 ) -> ServiceVerdict:
     """Grade candidate engine lifetimes against a retained stock reference campaign on the same lane.
 
@@ -292,11 +300,18 @@ def reference_grade(
         raise ServiceEvidenceError("reference comparison exceeds its sealed boots")
     reference_mean = math.fsum(row[0] for row in stock) / len(stock)
     reference_variance = math.fsum(row[1] for row in stock) / len(stock) ** 2
-    estimate = reference_mean - math.fsum(row[0] for row in terms) / look
-    se = math.sqrt(reference_variance + math.fsum(row[1] for row in terms) / look ** 2)
+    estimate, se = _contrast(stock, terms)
     share = 0.8 if look == boots else 0.1 if look == boots - 1 else 0.05
     z = NormalDist().inv_cdf(1 - error_rate * share)
     ratio, required, lower = math.exp(estimate), math.exp(z * se), math.exp(estimate - z * se)
+    # One-sided per-load guard (owner, 2026-11-11): a load fails only when its ratio is confidently more than the
+    # sealed margin below stock, from the same reads, noise and z; a flat or noisy load and an honest tradeoff pass.
+    regressed = []
+    for load in lifetimes[0][0] if load_margin and look >= 2 else ():
+        e, s = _contrast(*([_boot_term({load: costs[load]}, window_noise, boot_noise) for costs in rows]
+                           for rows in lifetimes[:2]))
+        if (upper := math.exp(e + z * s)) < 1 - load_margin:
+            regressed.append((load, upper))
     a_cand, a_ref = (sum(r.meets(contract) for read in arm for r in read.records)
                      / sum(len(read.records) for read in arm) for arm in (candidate, reference))
     floors = decode_floors or {}
@@ -312,6 +327,10 @@ def reference_grade(
         decision, detail = SpeedStageDecision.FAIL, (
             f"service_contract_not_met: pooled attainment {a_cand:.4f} against the reference's {a_ref:.4f} "
             f"is below the non-inferiority bound (tolerance {attainment_tolerance:.4g}, margin {attainment_margin:.4g})")
+    elif regressed:
+        load, upper = regressed[0]
+        decision, detail = SpeedStageDecision.FAIL, (
+            f"load_regression: load {load} ratio upper bound {upper:.3f} < {1 - load_margin:.4g}")
     elif look < 2 and futility_margin and estimate < math.log1p(-futility_margin):
         decision, detail = SpeedStageDecision.FAIL, "first candidate boot is slower than the sealed futility margin"
     elif look < 2:

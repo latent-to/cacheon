@@ -70,11 +70,13 @@ class GoodputPolicy:
     # Several sealed loads: each load's own per-user decode floor, keyed by its session count (Shiv 2026-11-11: a
     # miner must not win one batch size by slowing users at another). Empty holds every load to the contract's floor.
     decode_floors: tuple[tuple[int, float], ...] = field(default=(), metadata={"wire_optional": True})
+    # A load fails when its throughput ratio's upper bound is below 1 - load_margin (0 = off; owner 2026-11-11).
+    load_margin: float = field(default=0.0, metadata={"wire_optional": True})
 
     def __post_init__(self):
         values = (self.required, self.null_noise, self.attainment_tolerance, self.attainment_margin,
                   self.error_rate, self.boot_noise, self.futility_margin, self.attainment_pooled,
-                  self.decode_floor)
+                  self.decode_floor, self.load_margin)
         floors = self.decode_floors
         if (type(self.contract) is not ServiceContract
             or any(type(v) not in (int, float) or not math.isfinite(v) for v in values)
@@ -82,7 +84,8 @@ class GoodputPolicy:
             or not 0 <= self.null_noise < 1 or not 0 <= self.boot_noise < 1
             or not 0 <= self.error_rate < 0.5
             or (self.error_rate > 0 and self.null_noise == self.boot_noise == 0)
-            or (self.error_rate == 0 and (self.boot_noise or self.futility_margin)) or not 0 <= self.futility_margin < 1
+            or (self.error_rate == 0 and (self.boot_noise or self.futility_margin or self.load_margin))
+            or not 0 <= self.futility_margin < 1 or not 0 <= self.load_margin < 1
             or not 0 <= self.attainment_tolerance <= 1 or not 0 <= self.attainment_margin < 1
             or self.attainment_pooled not in (0, 1) or self.decode_floor not in (0, 1)
             or type(floors) is not tuple or (floors and not self.decode_floor)
@@ -112,7 +115,8 @@ class GoodputPolicy:
         return {"contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
                 **{key: format(getattr(self, key), ".17g") for key in self.__dataclass_fields__
                    if key not in ("contract", "decode_floors") and (self.error_rate or key not in ("error_rate", "boot_noise"))
-                   and (key not in ("futility_margin", "attainment_pooled", "decode_floor") or getattr(self, key))},
+                   and (key not in ("futility_margin", "attainment_pooled", "decode_floor", "load_margin")
+                        or getattr(self, key))},
                 **({"decode_floors": {str(load): format(floor, ".17g") for load, floor in self.decode_floors}}
                    if self.decode_floors else {})}
 
@@ -122,7 +126,7 @@ class GoodputPolicy:
         fields = set(cls.__dataclass_fields__)
         if type(value) is dict and "error_rate" not in value:
             fields -= {"error_rate", "boot_noise"}
-        for optional in ("futility_margin", "attainment_pooled", "decode_floor", "decode_floors"):
+        for optional in ("futility_margin", "attainment_pooled", "decode_floor", "decode_floors", "load_margin"):
             if type(value) is dict and optional not in value:
                 fields -= {optional}
         if (type(value) is not dict or set(value) != fields or type(value["contract"]) is not dict
@@ -213,6 +217,7 @@ class GoodputReadSet:
             boots=self.boots, futility_margin=policy.futility_margin, sentinel=self.incumbent[split:],
             decode_floors=policy.floors(self.loads), attainment_tolerance=policy.attainment_tolerance,
             attainment_margin=policy.attainment_margin, reference_lane=self.reference_lane,
+            load_margin=policy.load_margin,
         )
         if type(result) is not ServiceVerdict or not math.isfinite(result.ratio) or result.ratio <= 0:
             raise ValueError("service scorer returned another policy or result type")

@@ -6,6 +6,7 @@
   "tensor_parallel_size": 8,
   "replay_load": [96, 160, 224],
   "decode_floors": {"96": "135", "160": "115", "224": "90"},
+  "load_margin": "0.01",
   "replay_windows": 1,
   "tokens_per_prompt": 22484,
   "tokenizer_asset": "tokenizer-official",

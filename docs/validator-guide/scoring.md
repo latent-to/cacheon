@@ -72,6 +72,11 @@ One load is exactly the single-load arithmetic above. The goodput policy's
 `decode_floors` maps each load to its own per-user decode floor, checked on
 that load's candidate turns at every look (`service_floor_not_met` names the
 load); without it every load is held to the contract's `decode_floor_tps`.
+An optional `load_margin` fails a candidate from its second boot when one load's
+throughput ratio is confidently below `1 - load_margin`: that load's ratio, from
+the same reads, sealed noise and look z as the speedup, has its upper bound
+under it (`load_regression` names the load). It is one-sided, so a flat or noisy
+load and a smaller tradeoff pass; GLM-5.3-Flash PD seals `0.01`.
 
 The exact thresholds come from a frozen `CalibrationManifest` bound to the
 measured reference, arena, runtime, model, hardware, workload, and verifier.
