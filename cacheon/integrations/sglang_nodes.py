@@ -192,9 +192,7 @@ def _state_rows(
     Only a call that carries the engine's batch can reach the cache pools: the cache
     rows at ``out_cache_loc``. An unrecognized cache layout raises rather than
     leaving written state unchecked. Native recurrent live and checkpoint rows
-    are restored too; speculative and ReplaySSM layouts remain refused: the
-    retired Qwen GDN arena's 21,400-call MTP audit restored and graded none of its
-    replay writes (2026-09-22).
+    are restored too, with MTP verify scratch and KDA ReplaySSM rings (``_recurrent_rows``).
 
     SGLang keeps an FP8 cache in ``uint8`` storage with the real type on the pool.
     Graded as bytes, a near-zero value whose sign flips reads as a jump of 128 (7% of
@@ -208,7 +206,7 @@ def _state_rows(
     )
     if batch is None:
         return []
-    rows = _recurrent_rows(runner.req_to_token_pool, batch, layer)
+    rows = _recurrent_rows(runner, batch, layer)
     if batch.out_cache_loc is None:
         return rows
     rows += _cache_rows(runner.token_to_kv_pool, batch, layer)
@@ -222,16 +220,26 @@ def _state_rows(
     return rows
 
 
-def _recurrent_rows(requests, batch, layer):
-    """The native committed and speculative recurrent rows this forward can write."""
+def _recurrent_rows(runner, batch, layer):
+    """The native committed and speculative recurrent rows this forward can write.
+
+    KDA ReplaySSM verify (GLM-5.3-Flash, layout dumped from a TP2 engine on 2026-11-11) appends drafts to rings
+    keyed by Mamba slot and writes request i's conv windows to verify scratch row i of the physical buffer.
+    ``rawv``/``rawk`` hold the BF16 rounding of ``d``/``k`` and are graded summed with them. Other ReplaySSM
+    layouts, like the retired GDN request rings the 21,400-call Qwen MTP audit never graded (2026-09-22), raise.
+    """
+    requests = runner.req_to_token_pool
     pool = getattr(requests, "mamba_pool", None)
     if pool is None:
         return []
     state = getattr(pool, "mamba_cache", None)
+    replay = getattr(pool, "enable_linear_replayssm_spec", False)
     if (state is None or (getattr(state, "intermediate_ssm", None) is not None
                          and not torch.is_tensor(state.intermediate_ssm))
             or getattr(pool, "enable_linear_replayssm", False)
-            or getattr(pool, "enable_linear_replayssm_spec", False)):
+            or (replay and (not getattr(pool, "replayssm_is_kda", False)
+                            or getattr(pool, "replayssm_request_ring", True)
+                            or state.replayssm_d.shape[:2] != state.temporal.shape[:2]))):
         raise RuntimeError("recurrent state is not audited on this runtime")
     live = requests.translate_mamba_indices(requests.get_mamba_indices(batch.req_pool_indices))
     real = getattr(batch, "_original_batch_size", None)
@@ -251,8 +259,19 @@ def _recurrent_rows(requests, batch, layer):
             for buffer in (state.temporal, *state.conv) for index in layers
             if buffer[index].numel()]
     mode = getattr(batch, "forward_mode", None)
-    if (getattr(state, "intermediate_ssm", None) is not None
-            and mode is not None and mode.is_target_verify()):
+    if mode is None or not mode.is_target_verify():
+        return rows
+    if replay:
+        slots = live.reshape(-1).long()
+        slots = slots[slots >= 0]
+        scratch = runner.attn_backend.linear_attn_backend.verify_intermediate_state_indices[:live.numel()].long()
+        for index in layers:
+            rows.extend((ring[index], 0, slots, ring.dtype) for ring in (
+                state.replayssm_d, state.replayssm_k, state.replayssm_g, state.replayssm_beta))
+            rows.extend((low[index], 0, slots, high[index]) for low, high in (
+                (state.replayssm_rawv, state.replayssm_d), (state.replayssm_rawk, state.replayssm_k)))
+            rows.extend((window[index], 0, scratch, window.dtype) for window in pool._intermediate_conv_window_phys)
+    elif getattr(state, "intermediate_ssm", None) is not None:
         # GDN verify scratch is indexed by batch position, not by a translated
         # request or Mamba slot. The extra pool row is discard-only padding.
         slots = torch.arange(live.numel(), device=live.device)
@@ -295,6 +314,8 @@ def _cache_rows(pool, batch, layer: int | None) -> list[tuple]:
 def _values(buffer: torch.Tensor, dim: int, index: torch.Tensor, held) -> torch.Tensor:
     """The numbers a state row holds at ``index``."""
 
+    if torch.is_tensor(held):  # a rounding residual, graded with the BF16 value it rounds
+        return held.index_select(dim, index).float() + buffer.index_select(dim, index).float()
     return state_values(buffer.index_select(dim, index), held)
 
 

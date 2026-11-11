@@ -9,7 +9,7 @@ engine with the same room and DP rank, as SGLang's PD router does with ``--dp-aw
 one server, whose radix cache holds its context. Every role inherits the session environment, so a
 bundle loads in each and each reports coverage. Untimed roles (the eager audit, the pristine
 reference) run one colocated engine with the prefill role's settings, which size it for the long
-prefills it serves: the audit on the first prefill GPUs and the reference on the decode role's, so
+prefills it serves, plus decode's ReplaySSM speculation: the audit on the first prefill GPUs and the reference on the decode role's, so
 they run at once.
 """
 
@@ -42,8 +42,17 @@ def _role(kwargs: dict[str, Any], env: dict[str, str], role: str) -> tuple[dict[
 
 
 def colocated(kwargs: dict[str, Any], env: dict[str, str]) -> tuple[dict[str, Any], dict[str, str]]:
-    """The one-engine form of a pair for untimed roles; a non-pair config passes through."""
-    return _role(kwargs, env, ROLES[0]) if is_pair(kwargs) else (kwargs, env)
+    """The one-engine form of a pair for untimed roles; a non-pair config passes through.
+
+    It takes the decode role's ReplaySSM speculation, which SGLang refuses on a prefill server, so the audit grades
+    the recurrent writes the served decode makes (a TP2 GLM-5.3-Flash engine booted and served this form, 2026-11-11).
+    """
+    if not is_pair(kwargs):
+        return kwargs, env
+    form, form_env = _role(kwargs, env, ROLES[0])
+    if _role(kwargs, env, ROLES[1])[0].get("enable_linear_replayssm_spec"):
+        form["enable_linear_replayssm_spec"] = True
+    return form, form_env
 
 
 def layout(tp_size: int, kwargs: dict[str, Any]) -> tuple[int, int, int]:

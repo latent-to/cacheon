@@ -18,10 +18,9 @@ layout) on prefill; 128 running requests, 128-row decode graphs, a decode-side r
 and ReplaySSM speculative state (`enable_linear_replayssm_spec`) on decode. The host tier
 held the prefix hit rate at 0.81-0.94 over 300-466 sessions against 0.3-0.7 without it
 (2026-11-11); its 1.4 TB is pinned inside the pair's lifetime, whose memory cap
-`operator.json` seals at 1,792 GiB. SGLang refuses
-ReplaySSM on a prefill server, and the eager audit and pristine reference run the
-prefill role's one-engine form (TP2, on GPUs 0-1 and 4-5), where the recurrent-state
-audit grades the KDA state tensors without it. The replay routes each session to one
+`operator.json` seals at 1,792 GiB. The eager audit and pristine reference run the
+prefill role's one-engine form (TP2, on GPUs 0-1 and 4-5) plus decode's ReplaySSM, which
+SGLang refuses on a prefill server, so the audit grades the KDA rings decode writes. The replay routes each session to one
 prefill server for all its turns, so its context stays in that server's radix cache.
 
 The configuration is TEE-shaped: NVLS, symmetric-memory multicast and RDMA are off,

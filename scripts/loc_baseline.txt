@@ -174,12 +174,15 @@
 # per-arena lifetime memory cap (1.4 TB pinned overran the 1 TiB default), and CuTe DSL indexer logits (1.13-1.52x
 # DeepGEMM at next_n 6): examples +3 (the DSV README drops its duplicate of the results page), scripts +6, docs +1,
 # +3 notes; cacheon -3 (the reward walk's unused report list).
+# The KDA ReplaySSM audit rows (GLM-5.3-Flash decode speculation) replace their refusal and the colocated audit takes
+# decode's ReplaySSM flag: cacheon +30, docs +3, examples -1, +3 notes. Next deletion: the GDN native-MTP verify rows
+# once no GDN arena is planned.
 (root) 1163
 .github 338
-cacheon 92282
+cacheon 92312
 cacheon_kernels 936
 dashboard 4393
-docs 13303
-examples 383
-scripts 4484
+docs 13306
+examples 382
+scripts 4487
 tests 14092

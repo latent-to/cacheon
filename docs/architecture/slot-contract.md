@@ -114,8 +114,11 @@ Truth is the stock node in the running engine, on the same call:
    write: the cache rows at `out_cache_loc` (whole pages where the pool stores
    pages), plus native recurrent convolution and temporal rows for both live
    requests and tracked checkpoints. Native MTP verification also restores and
-   grades its batch-position temporal and convolution scratch rows. ReplaySSM
-   state remains unsupported. A call that moves the batch's layer-boundary
+   grades its batch-position temporal and convolution scratch rows. Under KDA
+   ReplaySSM speculation it grades the draft rings at each live request's
+   Mamba slot (the BF16 rounding residuals summed with the values they round)
+   and the per-request convolution windows; other ReplaySSM layouts are
+   refused. A call that moves the batch's layer-boundary
    residual stream (a decoder layer on SGLang main) also keeps the residual and
    the pending contribution it leaves there;
 3. the arguments stock changed, the state rows and the residual stream are put
