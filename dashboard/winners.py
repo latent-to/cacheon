@@ -10,6 +10,10 @@ from typing import Any
 
 from cacheon.chain.evaluation_order import reward_visibility_sql, reward_comparisons
 
+# Retained attempts' sealed speed policies for this read-only process's lifetime: without them every Winners
+# and Submissions request reopened, hashed and parsed each record-setting PASS's replay artifact (2026-11-09).
+_REWARD_POLICIES: dict = {}
+
 
 def excluded_claims() -> set[str]:
     """Reservations the operator priced at zero in the producer's rule file; empty when none is named."""
@@ -22,7 +26,7 @@ def excluded_claims() -> set[str]:
 
 def qualified_winners(con, *, include_waiting: bool = False) -> list[dict[str, Any]]:
     """Read reward winners, optionally including PASSes awaiting queue resolution."""
-    comparisons, excluded = reward_comparisons(con), excluded_claims()
+    comparisons, excluded = reward_comparisons(con, _REWARD_POLICIES), excluded_claims()
     return [dict(row) | {"reward_eligible": False, "excluded": row["reservation_id"] in excluded}
             | reward_comparison_summary(comparisons.get(row["reservation_id"], {}))
             for row in con.execute("""
@@ -77,7 +81,7 @@ def reward_status(comparisons: dict, reservation_id: str, offer, shares, exclude
 
 def submission_reward_comparison(con, reservation_id: str, offer=None, shares=None) -> dict:
     """Use the same ordered comparison as the weight producer for submission details."""
-    return reward_status(reward_comparisons(con), reservation_id, offer, shares or {}, excluded_claims())
+    return reward_status(reward_comparisons(con, _REWARD_POLICIES), reservation_id, offer, shares or {}, excluded_claims())
 
 
 def result_summary(speed: object) -> dict[str, Any] | None:
@@ -107,7 +111,7 @@ def list_results(con, items: list[dict[str, Any]], roots, offer, shares) -> dict
     """
     from dashboard.forensics import retained_speed
 
-    comparisons, excluded = reward_comparisons(con), excluded_claims()
+    comparisons, excluded = reward_comparisons(con, _REWARD_POLICIES), excluded_claims()
     attempts = {row["reservation_id"]: row["attempt_ref_json"] for row in con.execute(
         "SELECT reservation_id, attempt_ref_json FROM qualification_dispositions WHERE reservation_id IN ("
         + ",".join("?" * len(items)) + ") ORDER BY attempt_index", [item["reservation_id"] for item in items])}
@@ -125,7 +129,7 @@ def reward_bars(con, comparisons=None) -> dict[tuple[str, str], dict[str, Any]]:
     PASS the operator priced at zero is not shown as the result to beat.
     """
     bars: dict[tuple[str, str], dict[str, Any]] = {}
-    comparisons, excluded = reward_comparisons(con) if comparisons is None else comparisons, excluded_claims()
+    comparisons, excluded = reward_comparisons(con, _REWARD_POLICIES) if comparisons is None else comparisons, excluded_claims()
     for row in con.execute("SELECT reservation_id, candidate_json FROM settlement_candidates"):
         comparison = comparisons.get(row["reservation_id"])
         if not comparison or not comparison["reward_eligible"] or row["reservation_id"] in excluded:

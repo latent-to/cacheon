@@ -31,8 +31,11 @@ class Enrichment:
         self.metagraph: dict[str, Any] = {}    # {fetched_at, block, hotkeys:{hk:{...}}, owner_coldkey}
         self._wanted_blocks: set[int] = set()
         self._wanted_extrinsics: set[tuple[int, int]] = set()
-        con = self._cache()
-        con.executescript(
+        # One connection for the process: a connection per lookup cost /api/arena-events up to 1,200
+        # connects per request (2026-11-09). _lock serializes it across request threads and the worker.
+        self._db = sqlite3.connect(cache_db, timeout=10, check_same_thread=False)
+        self._db.row_factory = sqlite3.Row
+        self._db.executescript(
             """
             CREATE TABLE IF NOT EXISTS block_times(
                 block INTEGER PRIMARY KEY, unix_time INTEGER NOT NULL);
@@ -44,31 +47,21 @@ class Enrichment:
                 key TEXT PRIMARY KEY, value TEXT NOT NULL);
             """
         )
-        con.commit()
-        con.close()
         mg = self._kv_get("metagraph")
         if mg:
             self.metagraph = mg
 
-    def _cache(self) -> sqlite3.Connection:
-        con = sqlite3.connect(self.cache_db, timeout=10)
-        con.row_factory = sqlite3.Row
-        return con
-
     def _kv_get(self, key: str) -> Any:
-        con = self._cache()
-        row = con.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
-        con.close()
+        with self._lock:
+            row = self._db.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
         return json.loads(row["value"]) if row else None
 
     def _kv_set(self, key: str, value: Any) -> None:
-        con = self._cache()
-        con.execute(
-            "INSERT INTO kv(key,value) VALUES(?,?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (key, json.dumps(value)))
-        con.commit()
-        con.close()
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO kv(key,value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, json.dumps(value)))
 
     # -- public read side (never blocks on the chain) --
 
@@ -76,13 +69,11 @@ class Enrichment:
         """Return {unix, estimated} for a block; exact if cached, else estimate."""
         if not block:
             return {"unix": None, "estimated": True}
-        con = self._cache()
-        row = con.execute(
-            "SELECT unix_time FROM block_times WHERE block=?", (block,)).fetchone()
-        con.close()
-        if row:
-            return {"unix": int(row["unix_time"]), "estimated": False}
         with self._lock:
+            row = self._db.execute(
+                "SELECT unix_time FROM block_times WHERE block=?", (block,)).fetchone()
+            if row:
+                return {"unix": int(row["unix_time"]), "estimated": False}
             self._wanted_blocks.add(block)
             tip = dict(self.tip)
         if tip.get("block") and tip.get("unix_time"):
@@ -91,14 +82,12 @@ class Enrichment:
         return {"unix": None, "estimated": True}
 
     def extrinsic_signer(self, block: int, ext_index: int) -> dict[str, Any]:
-        con = self._cache()
-        row = con.execute(
-            "SELECT signer, call FROM extrinsic_signers WHERE block=? AND ext_index=?",
-            (block, ext_index)).fetchone()
-        con.close()
-        if row:
-            return {"signer": row["signer"], "call": row["call"]}
         with self._lock:
+            row = self._db.execute(
+                "SELECT signer, call FROM extrinsic_signers WHERE block=? AND ext_index=?",
+                (block, ext_index)).fetchone()
+            if row:
+                return {"signer": row["signer"], "call": row["call"]}
             self._wanted_extrinsics.add((block, ext_index))
         return {"signer": None, "call": None}
 
@@ -154,12 +143,10 @@ class Enrichment:
         ts = self._block_timestamp(block_hash=head)
         if block and ts:
             self.tip = {"block": int(block), "unix_time": int(ts)}
-            con = self._cache()
-            con.execute(
-                "INSERT OR REPLACE INTO block_times(block, unix_time) VALUES(?,?)",
-                (int(block), int(ts)))
-            con.commit()
-            con.close()
+            with self._lock, self._db:
+                self._db.execute(
+                    "INSERT OR REPLACE INTO block_times(block, unix_time) VALUES(?,?)",
+                    (int(block), int(ts)))
 
     def _block_timestamp(self, block_hash: str) -> int | None:
         sub = self._substrate
@@ -185,17 +172,14 @@ class Enrichment:
             address = value.get("address") or ""
             if address:
                 signers.append((block, idx, str(address), name))
-        con = self._cache()
-        if ts:
-            con.execute(
-                "INSERT OR REPLACE INTO block_times(block, unix_time) VALUES(?,?)",
-                (block, ts))
-        for row in signers:
-            con.execute(
+        with self._lock, self._db:
+            if ts:
+                self._db.execute(
+                    "INSERT OR REPLACE INTO block_times(block, unix_time) VALUES(?,?)",
+                    (block, ts))
+            self._db.executemany(
                 "INSERT OR REPLACE INTO extrinsic_signers(block, ext_index, signer, call)"
-                " VALUES(?,?,?,?)", row)
-        con.commit()
-        con.close()
+                " VALUES(?,?,?,?)", signers)
 
     def _drain_extrinsics(self) -> None:
         with self._lock:
