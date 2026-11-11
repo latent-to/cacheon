@@ -9,7 +9,9 @@ components, pools and host tier, then the entry returns a subclass of its runtim
 type. The validator binds those methods onto the existing object, preserving
 the references its components and transfer workers already hold. The
 contract is the runtime cache object's interface, not a particular cache class
-or model. No engine flag differs between the arms.
+or model. No engine flag differs between the arms. An entry that returns None
+leaves that engine's cache stock and unchecked, which is how a bundle serves a
+pair's prefill servers without paying the check on its decode schedulers.
 
 What a cache alone can fake is a hit: a served prefix whose slots do not hold what
 the engine computed for it skips that prefill and returns wrong tokens fast. The
@@ -53,6 +55,7 @@ from cacheon.capabilities import CallDescriptor
 from cacheon.registry import REGISTRY, KernelRegistry
 
 ADDRESS = "tree_cache"
+DECLINED = "declined"  # the routing outcome of an entry that returned None for this engine's cache
 _MODULE = "sglang.srt.mem_cache.registry"
 _STOCK = "_cacheon_stock_factory"
 # (prime, base) pairs below 2**31, so every product of two residues fits in int64.
@@ -526,9 +529,6 @@ def _bind(impl, ctx, stock):
     if (ctx.is_hybrid_swa or ctx.is_hybrid_ssm) and ctx.disable_radix_cache:
         raise RuntimeError(f"{ADDRESS}: this hybrid runtime disables prefix caching")
     base = importlib.import_module("sglang.srt.mem_cache.base_prefix_cache").BasePrefixCache
-    if inspect.isclass(impl.entry):
-        _refuse("entry must accept the runtime cache, not its construction parameters",
-                error=TypeError, phase="prepare")
     if impl.prepare is not None:
         _refuse("a cache entry takes no prepare", error=TypeError, phase="prepare")
     cache = stock(ctx)
@@ -539,6 +539,11 @@ def _bind(impl, ctx, stock):
         _refuse("this engine's cache hands requests over through methods that are not checked", phase="prepare")
     guard = _Guard(ctx)
     cls = _receipts.invoke(ADDRESS, impl.entry, cache, phase="prepare")
+    if cls is None:
+        # A tier bundle lives on the prefill servers; carrying the check on a pair's decode schedulers would
+        # cost it more than it wins. The receipt covers this member once another member serves the address.
+        _receipts.not_selected(ADDRESS, DECLINED, ())
+        return cache
     if not inspect.isclass(cls) or not issubclass(cls, type(cache)):
         _refuse("entry must return a subclass of the runtime cache's type",
                 error=TypeError, phase="prepare")

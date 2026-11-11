@@ -268,6 +268,9 @@ and evicts the validator's KV memory. It must preserve the runtime object's
 interfaces and state guarantees; returning a subclass is not correctness proof.
 The choice is made once, at engine start, with an empty call descriptor: an op declaring
 dtypes, architectures or eligibility never matches, and the run fails as `candidate_never_executed`.
+A factory that returns `None` leaves that engine's cache stock and unchecked; its
+`not_selected` receipt (outcome `declined`) covers that scheduler in the execution
+gate once another scheduler serves the address.
 
 The content checks run only around a candidate's cache. Stock's cache is trusted
 and runs unchecked: checking it cost the DeepSeek-V4.1 PD decode schedulers 18% of

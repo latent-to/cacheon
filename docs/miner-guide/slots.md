@@ -85,11 +85,19 @@ other cache methods. It inherits the runtime cache interface instead of naming a
 particular SGLang cache class. The identity implementation establishes binding,
 not a speed win.
 
+The factory runs once in every scheduler of every engine. Returning `None` leaves
+that engine's cache stock and unchecked, so a bundle that works on the host tier
+of a prefill/decode pair's prefill servers does not carry the content check on the
+decode schedulers. Decide from the cache object, for example whether it has a host
+tier, not from the engine's role name: the untimed audit runs one engine with the
+prefill servers' settings. At least one engine must be served; a bundle that
+declines everywhere fails as `candidate_never_executed`.
+
 A cache bundle is judged as the incumbent kernels with the candidate cache against
 the incumbent kernels with the incumbent cache, which is stock SGLang's until a
 cache is commissioned. The cache runs outside CUDA graphs, so it needs no captured
-execution. The same content check runs on both arms: the KV behind every prefix
-the cache serves is checked against what the engine computed for it, whichever
+execution. The content check runs around a candidate's cache only: the KV behind
+every prefix it serves is checked against what the engine computed for it, whichever
 slot or host tier the bytes came through. Serving other bytes, keeping pages
 across a flush, moving a request's own slots, claiming more tokens than the key, or
 serving or protecting a length that is not whole pages stops the engine as the

@@ -190,7 +190,8 @@ Scheduler ranks can write process-local seam receipts:
 - `active` — the sealed tree loaded and registered slots;
 - `load_failed` — activation failed or registered nothing;
 - `not_selected` — a candidate is registered for this slot but the routing
-  decision sent the call to stock, with the field-level reason;
+  decision sent the call to stock, with the field-level reason, or a cache
+  factory returned `None` for this engine (outcome `declined`);
 - `completed` — the candidate produced the model-facing output;
 - `failed` — the candidate raised after selection; the exception still takes the
   engine down.

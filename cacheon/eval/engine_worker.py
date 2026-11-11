@@ -357,6 +357,7 @@ def _require_execution_completion(
 
     from cacheon import receipts
     from cacheon.eval.resident_execution_evidence import eager_slots
+    from cacheon.integrations.sglang_cache import DECLINED
 
     completed = receipts.collect(receipt_dir, "completed")
     coverage = dict(
@@ -374,6 +375,15 @@ def _require_execution_completion(
         row for row in completed
         if row.get("captured") is True or row.get("slot") in eager or row.get("pid") in eager_members
     ]
+    # A cache entry may leave one engine's cache stock (``sglang_cache._bind``). That member is covered by its
+    # refusal only where another member served the address: declined everywhere is a candidate that never ran.
+    served = eager & {row.get("slot") for row in completed}
+    declined = [
+        row for row in receipts.collect(receipt_dir, "not_selected")
+        if row.get("slot") in served
+        and any(reason.get("outcome") == DECLINED for reason in row.get("reasons") or ())
+    ]
+    completed, captured = completed + declined, captured + declined
     passed, detail = receipts.completed_gate(
         captured if require_captured else completed, **coverage
     )
