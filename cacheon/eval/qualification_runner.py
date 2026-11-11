@@ -240,6 +240,43 @@ class HiddenJudgeBinding:
             "hidden_task_policy_digest": self.hidden_task_policy_digest,
         })
 
+# HiddenJudgeReceipt and hidden_judge_output_digest are the sealed packet's contract:
+# its numeric_answer_judge.py builds them, and build_prompt_authority imports it.
+# Deleting them with the replay judge call path broke commissioning step 3 (2026-11-11).
+@dataclass(frozen=True)
+class HiddenJudgeReceipt:
+    binding_digest: str
+    prompt_digest: str
+    output_ids_digest: str
+    task_digests: tuple[str, ...]
+    passed: tuple[bool, ...]
+
+    def __post_init__(self) -> None:
+        for field in ("binding_digest", "prompt_digest", "output_ids_digest"):
+            object.__setattr__(self, field, require_sha256_hex(getattr(self, field), field=field))
+        tasks, results = tuple(self.task_digests), tuple(self.passed)
+        if (
+            tasks != tuple(sorted(set(tasks)))
+            or any(require_sha256_hex(row, field="hidden task") != row for row in tasks)
+            or len(results) != len(tasks)
+            or any(type(row) is not bool for row in results)
+        ):
+            raise QualificationRunnerError("hidden judge receipt is malformed")
+        object.__setattr__(self, "task_digests", tasks)
+        object.__setattr__(self, "passed", results)
+
+def hidden_judge_output_digest(prompt_digest: str, output_ids: tuple[int, ...]) -> str:
+    """Bind one hidden-judge answer to the exact sealed rollout tokens."""
+
+    prompt = require_sha256_hex(prompt_digest, field="hidden judge prompt")
+    ids = tuple(output_ids)
+    if any(type(token) is not int or token < 0 for token in ids):
+        raise QualificationRunnerError("hidden judge output IDs are malformed")
+    return canonical_digest(
+        "cacheon.qualification.hidden-judge-output",
+        {"output_ids": list(ids), "prompt_digest": prompt},
+    )
+
 @dataclass(frozen=True)
 class CandidateQualificationAuthority:
     selected_delta_digest: str
@@ -2374,12 +2411,12 @@ def run_causal_qualification(
 __all__ = [
     "AuditWitness", "CandidateQualificationAuthority", "CandidateQualificationReport",
     "CausalQualificationInput", "CohortQualificationAttempt", "EntropyProvider",
-    "HiddenJudge", "HiddenJudgeBinding",
+    "HiddenJudge", "HiddenJudgeBinding", "HiddenJudgeReceipt",
     "QualificationRunnerError", "QualificationStageExit",
     "QualificationTimingWitness",
     "ReferenceExecutionWitness", "SpeedEvidencePolicy",
     "SpeedStageDisposition",
-    "ResidentSpeedWitness",
+    "ResidentSpeedWitness", "hidden_judge_output_digest",
     "publish_causal_qualification", "qualification_authority_digest",
     "publish_qualification_stage_exit", "reopen_causal_qualification",
     "reopen_qualification_stage_exit", "run_causal_qualification",

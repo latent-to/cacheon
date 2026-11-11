@@ -179,13 +179,14 @@
 # via pd_engine.untimed_ranks: cacheon +6. Pooled DSA index rows and tails (+10) cost the GDN native-MTP rows (-8).
 # Stock keeps hardware dispatch on stub-native ops (IndexerKPool) and `check` refuses a pass stock refused calls in
 # (+14), paid by five callerless definitions (-75): cacheon -61. The node audit's row floor becomes a sealed per-arena
-# policy value (GLM-5.3-Flash 15%): docs +12, examples +6, scripts +8, paid by ten callerless definitions: cacheon -212.
+# policy value (GLM-5.3-Flash 15%): docs +12, examples +6, scripts +8, paid by ten callerless definitions: cacheon -212;
+# the packet judge's HiddenJudgeReceipt and hidden_judge_output_digest come back (+37) for commissioning step 3.
 (root) 1163
 .github 338
-cacheon 92047
+cacheon 92084
 cacheon_kernels 936
 dashboard 4393
 docs 13317
 examples 386
-scripts 4496
+scripts 4497
 tests 14092
