@@ -177,12 +177,14 @@
 # The KDA ReplaySSM audit rows (GLM-5.3-Flash decode speculation) replace their refusal and the colocated audit takes
 # decode's ReplaySSM flag: cacheon +30, docs +3, examples -1, +3 notes. Next deletion: the GDN native-MTP verify rows
 # once no GDN arena is planned.
+# `cacheon check` expected a pair's top-level tp_size of members where its one-engine form boots the prefill role's;
+# pd_engine.untimed_ranks now owns that count for check and the audit policy: cacheon +6, +2 notes.
 (root) 1163
 .github 338
-cacheon 92312
+cacheon 92318
 cacheon_kernels 936
 dashboard 4393
 docs 13306
 examples 380
-scripts 4487
+scripts 4489
 tests 14092

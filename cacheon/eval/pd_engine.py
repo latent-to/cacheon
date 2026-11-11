@@ -64,6 +64,11 @@ def layout(tp_size: int, kwargs: dict[str, Any]) -> tuple[int, int, int]:
             int(_role({**tp, **kwargs}, {}, ROLES[1])[0]["tp_size"]))
 
 
+def untimed_ranks(tp_size: int, kwargs: dict[str, Any]) -> int:
+    """Scheduler ranks of the one-engine form (``colocated``): a pair's prefill TP, else ``tp_size``."""
+    return layout(tp_size, kwargs)[1] or tp_size
+
+
 def untimed_gpus(tp_size: int, kwargs: dict[str, Any]) -> tuple[slice, slice]:
     """Lane GPUs of a pair's one-engine form: the eager audit's (the first prefill server's), pristine T's (as many
     from the first decode GPU), so they run at once."""

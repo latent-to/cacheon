@@ -184,7 +184,7 @@ def _engine(config: dict, bundle: str, requests: list[dict], root: Path,
         for request in requests:
             engine.generate(**request)
         members = receipts.require(str(receipt_dir), "active", context="miner check")
-        count = int(config.get("tp_size", 1))
+        count = int(options.get("tp_size", 1))  # the form booted above, a pair's prefill role
         slots = _active_execution_members(members, expected_member_count=count)
         _require_execution_completion(
             str(receipt_dir), active_receipts=members, expected_slots=slots,
@@ -254,7 +254,9 @@ def check(args: argparse.Namespace) -> int:
             "seed": args.seed,
         }, indent=2) + "\n")
         slots = sorted({op.slot for op in manifest.ops})
-        ranks = int(config.get("tp_size", 1))
+        from cacheon.eval import pd_engine
+
+        ranks = pd_engine.untimed_ranks(int(config.get("tp_size", 1)), config)
         for phase in ("audit", "graph"):
             folder = root / phase
             folder.mkdir()

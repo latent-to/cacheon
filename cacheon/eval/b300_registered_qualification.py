@@ -464,8 +464,7 @@ class B300RegisteredQualificationFactory:
             inputs.policy.audit_sample_rate_ppm,
             inputs.policy.audit_minimum_calls,
             tuple(sorted(candidate.reservation.target_members)),
-            # The audit runs a pair's one-engine form: the prefill role's ranks.
-            pd_engine.layout(config.tp_size, config.engine_kwargs)[1] or config.tp_size,
+            pd_engine.untimed_ranks(config.tp_size, config.engine_kwargs),
         )
         audit_authority = ResidentAuditExecutionAuthority.derive(
             prepared_candidate.launch,
