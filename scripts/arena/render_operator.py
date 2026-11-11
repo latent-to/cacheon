@@ -213,10 +213,10 @@ def main() -> None:
                                         for digest in operator["audit_control_delta_digests"]), f'{match["indent"]}]'))
     rewrites = [(r'"load": (?:\d+|\[[\d, ]*\])', lambda _: f'"load": {json.dumps(operator["replay_load"])}'),
                 (r'(?P<indent>[ \t]*)"audit_control_delta_digests": \[(?:\s*"[0-9a-f]{64}",)*\s*\]', controls)]
-    if "decode_floors" in operator:
-        margin = f', "load_margin": "{operator["load_margin"]}"' if "load_margin" in operator else ""
-        rewrites.append((r'"decode_floor": "1"(?:, "decode_floors": \{[^{}]*\})?(?:, "load_margin": "[0-9.]+")?',
-                         lambda _: f'"decode_floor": "1", "decode_floors": {json.dumps(operator["decode_floors"])}{margin}'))
+    if "decode_floors" in operator:  # keywords of the packet's GOODPUT_POLICY = GoodputPolicy(..., decode_floor=1.0)
+        floors = ", ".join(f"({load}, {operator['decode_floors'][load]})" for load in sorted(operator["decode_floors"], key=int))
+        margin = f', load_margin={operator["load_margin"]}' if "load_margin" in operator else ""
+        rewrites.append((r"decode_floor=1\.0\)", lambda _: f"decode_floor=1.0, decode_floors=({floors},){margin})"))
     if "replay_windows" in operator:
         rewrites.append((r'"windows": \d+', lambda _: f'"windows": {operator["replay_windows"]}'))
     for pattern, value in rewrites:
