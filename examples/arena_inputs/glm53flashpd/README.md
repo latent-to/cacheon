@@ -42,15 +42,14 @@ tuning one batch size: a gain at one load is diluted by the other two, and a los
 per-user speed at any load fails it. The high load saturates prefill, so it rewards
 prefill and time-to-first-token gains.
 
-The sealed slice is the DeepSeek PD packet's 247-session, 16,000-token-output pool, so
-the high load is at most 247 sessions. Stock's session ramps (2026-11-11) peaked at 256
+The sealed slice is the DeepSeek PD packet's 247-session pool (b318b740; its largest
+recorded turn output, `tokens_per_prompt`, is 22,484), so the high load is at most 247 sessions. Stock's session ramps (2026-11-11) peaked at 256
 sessions and saturated prefill near 200-220, so the loads are 96, 160 and 224 sessions
 with floors 135, 115 and 90 tokens/s: placeholders, set low, to recalibrate from the
 commissioned pair's stock reference. Stock must hold each floor at its load, or the
 reference campaign refuses the commission as mis-sealed before any candidate runs. The `node` block
 (scheduler pin starts, client CPU set and, with DP 1 everywhere, no `engine_cpus`),
-`tokens_per_prompt` and `model_profile_key` are also placeholders for the commissioned
-node and slice.
+and `model_profile_key` are also placeholders for the commissioned node.
 
 ## Development check
 

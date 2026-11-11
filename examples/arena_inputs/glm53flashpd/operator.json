@@ -7,7 +7,7 @@
   "replay_load": [96, 160, 224],
   "decode_floors": {"96": "135", "160": "115", "224": "90"},
   "replay_windows": 1,
-  "tokens_per_prompt": 16000,
+  "tokens_per_prompt": 22484,
   "tokenizer_asset": "tokenizer-official",
   "model_in_ram": true,
   "owner": "glm53flashpd-node",

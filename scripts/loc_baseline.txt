@@ -183,6 +183,6 @@ cacheon 92312
 cacheon_kernels 936
 dashboard 4393
 docs 13306
-examples 381
+examples 380
 scripts 4487
 tests 14092
