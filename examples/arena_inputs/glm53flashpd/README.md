@@ -45,8 +45,8 @@ prefill and time-to-first-token gains.
 The sealed slice is the DeepSeek PD packet's 247-session pool (b318b740; its largest
 recorded turn output, `tokens_per_prompt`, is 22,484), so the high load is at most 247 sessions. Stock's session ramps (2026-11-11) peaked at 256
 sessions and saturated prefill near 200-220, so the loads are 96, 160 and 224 sessions
-with floors 135, 115 and 90 tokens/s: placeholders, set low, to recalibrate from the
-commissioned pair's stock reference. Stock must hold each floor at its load, or the
+with floors 130, 100 and 90 tokens/s, 10-18% under stock's rig decode medians (143.8, 113.0, 110.5 on 2026-11-11)
+for production-path overhead, to recalibrate from the commissioned pair's stock reference. Stock must hold each floor at its load, or the
 reference campaign refuses the commission as mis-sealed before any candidate runs. The `node` block
 (scheduler pin starts, client CPU set and, with DP 1 everywhere, no `engine_cpus`),
 and `model_profile_key` are also placeholders for the commissioned node.
