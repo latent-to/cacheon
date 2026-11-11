@@ -215,7 +215,10 @@ resident speed executors are quiescent and the required audit stage completes. T
 
 The controller then regrades raw evidence under the frozen metric policy. Candidate C
 does not choose prompts, support tokens, thresholds, or the hidden judge. The incumbent
-engine is also untrusted and is never substituted for T.
+engine is also untrusted and is never substituted for T. The baseline and control
+rollouts T scores beside the candidate's are the stored stock pair: a commission whose
+incumbent declares any entry is refused, so a bundle that stacks crowned pieces is still
+graded against stock and drift cannot compound.
 
 ## Calibration
 

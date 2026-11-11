@@ -181,12 +181,13 @@
 # (+14), paid by five callerless definitions (-75): cacheon -61. The node audit's row floor becomes a sealed per-arena
 # policy value (GLM-5.3-Flash 15%): docs +12, examples +6, scripts +8, paid by ten callerless definitions: cacheon -212;
 # the packet judge's HiddenJudgeReceipt and hidden_judge_output_digest come back (+37) for commissioning step 3.
+# Commission refuses a non-stock incumbent (docs +4), paid by the uncalled batch_request wrapper: cacheon -18.
 (root) 1163
 .github 338
-cacheon 92084
+cacheon 92066
 cacheon_kernels 936
 dashboard 4393
-docs 13317
+docs 13321
 examples 386
-scripts 4497
+scripts 4498
 tests 14092

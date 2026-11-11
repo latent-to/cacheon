@@ -294,6 +294,9 @@ def compose_commissioned_qualifications(
         ) from None
 
     _require_replay_quality(policy, session_block)
+    # T grades against the baseline's stored rollouts; stock keeps stacked wins from compounding drift (owner, 2026-11-11).
+    if capabilities.incumbent_entries:
+        raise B300QualificationCommissionError("replay quality is graded against stock: the incumbent declares entries")
 
     executor = b300_deployment._build_executor(
         inputs.root / "qualification-lane-a",

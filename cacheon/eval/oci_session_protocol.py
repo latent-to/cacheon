@@ -833,27 +833,6 @@ request_id schema session_id temperature top_logprobs_num type
 """.split())
 
 
-def batch_request(
-    *,
-    session_id: str,
-    launch_digest: str,
-    request_id: str,
-    nonce: str,
-    batch_index: int,
-    prompts: Sequence[str],
-    max_new_tokens: int,
-    top_logprobs_num: int,
-    temperature: float,
-    expected_prompt_tokens: int | None = None,
-    measure_phase_latency: bool = False,
-) -> dict[str, object]:
-    return BatchRequest(
-        session_id, launch_digest, request_id, nonce, batch_index, tuple(prompts),
-        max_new_tokens, top_logprobs_num, temperature, expected_prompt_tokens,
-        measure_phase_latency,
-    ).to_dict()
-
-
 def validate_batch_request(message: object) -> BatchRequest:
     from cacheon.eval.phase_latency import parse_batch_request
     return parse_batch_request(message, fields=_BATCH_REQUEST_FIELDS)
