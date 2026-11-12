@@ -29,7 +29,7 @@ from cacheon.eval.crossover_runtime import (
 )
 from cacheon.audit_gate import reason as _audit_reason
 from cacheon.eval.engine_launch import EngineLaunchSpec, TrustedLaunchBinding
-from cacheon.eval.pd_engine import untimed_ranks
+from cacheon.eval.pd_engine import is_pair, untimed_ranks
 from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence, reopen_evidence
 from cacheon.eval.device_state import DeviceStateReceipt
 from cacheon.eval.marginal_runtime import PreparedMarginalRuntime
@@ -1723,6 +1723,7 @@ def _validate_reference_execution(
         "session_plan_digest": witness.plan_digest,
     })
     pre, post = witness.device_receipts
+    config = expected.reference_engine_config
     if (
         (witness.launch_digest, witness.runtime_identity_digest,
          witness.runtime_preflight_receipt_sha256, witness.arena_model_receipt_digest,
@@ -1734,8 +1735,10 @@ def _validate_reference_execution(
             expected.pristine_binding.native_build_spec.digest, plan_digest, session_digest,
             expected_requests)
         or pre[2] != post[2] or pre[1] >= post[1] or pre[4:7] != post[4:7] or pre[6] != expected.expected_device_policy_digest
-        or len(pre[4]) not in {expected.pristine_launch.hardware.visible_gpu_count,  # a pair's T: its decode GPUs
-                               expected.pristine_launch.hardware.tp_size}
+        # A pair's T boots the one-engine form on as many GPUs from the first decode GPU (pd_engine.untimed_gpus):
+        # 2 on GLM's 2xTP2 + TP4 pair, where the lane's tp_size voided a twin PASS (2026-11-12).
+        or len(pre[4]) != (untimed_ranks(config.tp_size, config.engine_kwargs) if is_pair(config.engine_kwargs)
+                           else expected.pristine_launch.hardware.visible_gpu_count)
         or float(pre[7]) < attempt.entropy_observed_monotonic_s
         or float(pre[8]) > float(post[7])
         or float(post[8]) > attempt.teardown_after_t.observed_monotonic_s
