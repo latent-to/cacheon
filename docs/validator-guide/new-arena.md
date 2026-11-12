@@ -170,7 +170,16 @@ render still produces the bytes that commissioned it.
 
 On the validator VM, from a task directory that holds the retained artifacts,
 with the replay inputs archive (`replay-inputs-<slug>.tar`: the sealed workload
-slice and the tokenizer) placed beside the rendered `launch_stage.py`:
+slice and the tokenizer) placed beside the rendered `launch_stage.py`. The
+archive unpacks into the pod's `assets/` directory and must hold
+`workload/manifest.json` with the slice directory it names beside it, plus
+`tokenizer-<asset>/`; the commission's replay-tokenizer preflight loads that
+manifest and checks its digest against the packet's `slice_digest`. The
+`--known-hosts` file holds exactly one line, the pod's active ed25519 key:
+
+```bash
+ssh-keyscan -p <port> -t ed25519 <pod> > known_hosts
+```
 
 ```bash
 python3 -B scripts/arena/launch_node.py --operator /path/to/operator-dsv41pd \

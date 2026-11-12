@@ -29,6 +29,7 @@ from cacheon.eval.crossover_runtime import (
 )
 from cacheon.audit_gate import reason as _audit_reason
 from cacheon.eval.engine_launch import EngineLaunchSpec, TrustedLaunchBinding
+from cacheon.eval.pd_engine import untimed_ranks
 from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence, reopen_evidence
 from cacheon.eval.device_state import DeviceStateReceipt
 from cacheon.eval.marginal_runtime import PreparedMarginalRuntime
@@ -360,7 +361,10 @@ class CausalQualificationInput:
             len(audit_policies) != len(candidates)
             or any(type(row) is not SlotAuditPolicy for row in audit_policies)
             or any(
-                row.expected_member_count != prepared.session_plan.engine_config.tp_size
+                row.expected_member_count != untimed_ranks(
+                    prepared.session_plan.engine_config.tp_size,
+                    prepared.session_plan.engine_config.engine_kwargs,
+                )
                 for row, prepared in zip(
                     audit_policies, self.prepared.candidates, strict=True
                 )
