@@ -352,16 +352,17 @@ def test_resident_extension_preserves_legacy_settlement_bytes_and_digests() -> N
     # Epoch 2026-09-19 retired both reduce-owning targets and the conflicts table; added forward_pass.
     # Epoch 2026-09-28 gives tree_cache its own prefix_cache target, retaining model contributions.
     # Epoch 2026-09-29 retires every op-slot target; forward_pass and prefix_cache remain.
+    # Epoch 2026-11-12 adds the scheduler target with the queue_order address.
     # Historical records are unaffected: they embed their own catalog snapshot.
     catalog = default_target_catalog()
     candidate = _candidate(_stack(catalog), _ref(catalog, FORWARD, "a"), catalog, label="a")
     assert "resident_lane_orientation" not in candidate.primary.to_dict()
     assert "resident_lane_orientation" not in candidate.reproduction.to_dict()
     assert candidate.primary.digest == (
-        "6abf3dc1bd7dbd46f93d3f0430bc48f9a11d6ba1050472e02a851da0365aa8e4"
+        "f535d207db2d2023d76b35469016a99b5d040237b71656b9a2675e3218cece0f"
     )
     assert candidate.digest == (
-        "33c8d23a54b77ba7a60de9959cebf250ebd72dc0d50e96f7041efc2a98fcb62d"
+        "56c42de412926d7f2b856823a0ae01b4f76ffccbf83fe0b42edea922461fc0cb"
     )
 
 

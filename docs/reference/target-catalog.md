@@ -26,6 +26,7 @@ integration, and releases; a target ID alone cannot reopen authority.
 |---|---|---|
 | `forward_pass` | `logits_processor`, `model` | The modules of the served model a bundle names |
 | `prefix_cache` | `tree_cache` | The scheduler's prefix cache object |
+| `scheduler` | `queue_order` | A decision of the scheduler: the order of its waiting queue |
 
 `forward_pass` is the node target. Its roots are the two top-level modules SGLang
 gives every causal LM, so it carries no model or arena identity. A bundle
@@ -43,6 +44,12 @@ runtime-object contract across models. It is a separate stack entry, so replacin
 a cache contribution preserves the incumbent `forward_pass` contribution. A new
 cache version replaces the previous cache version in full; the validator does not
 merge their source or combine their policies automatically.
+
+`scheduler` owns the scheduler's decisions, one address per question. Its first
+address is `queue_order`, the [order of the waiting queue](../architecture/slot-contract.md#the-queue-order).
+A decision has no output to compare with stock: every answer in the legal set
+yields the same tokens. The target is closed on an arena until the arena's prompt
+registers it.
 
 The two targets have disjoint roots, so they never compete for the same live
 region: a transition replaces its own stack entry and leaves the other

@@ -365,7 +365,7 @@ def test_claim_parks_a_closed_target_and_replays_a_duplicate_fail(tmp_path, monk
 
     materialized, ready_path, ready = e2e.commission(root, e2e.PROFILES["h100-tp1"])
     sealed = e2e.seal_authority(root, materialized, ready_path, ready)
-    assert sealed.manifest["closed_targets"] == ["prefix_cache"]  # the prompt registers forward_pass only
+    assert sealed.manifest["closed_targets"] == ["prefix_cache", "scheduler"]  # the prompt registers forward_pass only
     heartbeat = e2e.private(root / "spool" / "state") / "heartbeat.json"
     with _dispatcher_heartbeat(sealed.registration, heartbeat, lambda: None):
         supervisor = supervisors(root)

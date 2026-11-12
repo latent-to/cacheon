@@ -659,6 +659,7 @@ class TargetCatalog:
 FORWARD_PASS_TARGET = "forward_pass"
 FORWARD_PASS_ROOTS = ("logits_processor", "model")
 PREFIX_CACHE_TARGET = "prefix_cache"
+SCHEDULER_TARGET = "scheduler"
 
 
 def _node_contract(slot_id: str, **fields: object) -> TargetContractRef:
@@ -693,6 +694,17 @@ def default_target_catalog() -> TargetCatalog:
             correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="1"),
             tolerances=(),
         ),
+        # A scheduler decision has no output to compare: every legal answer yields the same tokens.
+        SCHEDULER_TARGET: _node_contract(
+            SCHEDULER_TARGET, prepare=None,
+            input_abi_id="scheduler.queue-view.input.v1",
+            output_abi_id="scheduler.queue-permutation.output.v1",
+            reference_id="scheduler.legal-set.reference.v1",
+            verification_profile_id="scheduler.permutation.verify.v1",
+            binding_family_id="sglang.schedule-policy.v1",
+            correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="1"),
+            tolerances=(),
+        ),
     }
     return TargetCatalog(
         TargetSpec(
@@ -701,5 +713,6 @@ def default_target_catalog() -> TargetCatalog:
             contract_ref=contracts[target], node_roots=roots,
         )
         for target, roots in ((FORWARD_PASS_TARGET, FORWARD_PASS_ROOTS),
-                              (PREFIX_CACHE_TARGET, ("tree_cache",)))
+                              (PREFIX_CACHE_TARGET, ("tree_cache",)),
+                              (SCHEDULER_TARGET, ("queue_order",)))
     )
