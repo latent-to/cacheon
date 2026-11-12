@@ -186,12 +186,13 @@
 # Pause-order replay arrival (sealed setting, operator key): cacheon +18, docs +10, scripts +5 after deleting the
 # replay plan's fixed-value flags, the summed-latency rate, the opening-text session key, the test-only
 # SettlementCandidate.from_reproductions and the dashboard's paired-lane views (dashboard -20, tests -12): tree +1.
+# Merge of the arena branch's sealed helper vCPUs (4a0775e8): docs +1, examples +3, scripts +6.
 (root) 1163
 .github 338
 cacheon 92069
 cacheon_kernels 936
 dashboard 4373
-docs 13331
-examples 387
-scripts 4507
+docs 13332
+examples 390
+scripts 4514
 tests 14080
