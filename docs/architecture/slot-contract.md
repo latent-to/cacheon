@@ -350,10 +350,16 @@ unit to the address's audit receipt.
 
 Normal target submissions cannot request arbitrary engine-wide setup or framework mutation. Cross-cutting proposals are not submittable; dependency patches are refused, and native builds use the validator-shipped, policy-constrained build step. Successful work should be resolved into a registered target or reviewed product source without relabeling changed selected payload bytes under old evidence.
 
-With MTP enabled, contributions still optimize the registered target computation.
-The validator owns the draft model, speculative schedule, sampling and acceptance
-rules, and request batching. A contribution may not change those controls or
-manipulate draft proposals or acceptance decisions to manufacture throughput.
+With MTP enabled, the drafter's layer is a node address too, under the
+checkpoint's own name for it, `model.layers.<num_hidden_layers>` (for
+GLM-5.3-Flash, `model.layers.45.mlp` is the draft layer's MoE). No target layer
+carries that index, so those slots bind only on the draft worker, where the
+layer loads as `model.decoder`, and a wildcard such as `model.layers.*.mlp`
+still names target layers alone. Verification stays
+exact, so a draft node changes only how many proposals are accepted, and the
+speed score counts that. The validator owns the speculative schedule, sampling
+and acceptance rules, and request batching. A contribution may not change those
+controls or manipulate acceptance decisions to manufacture throughput.
 
 This keeps experimentation possible without widening every ordinary submission's authority.
 

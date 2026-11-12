@@ -742,17 +742,25 @@ def make_node_dispatcher(
     return dispatched
 
 
-def bind(runner, registry: KernelRegistry = REGISTRY) -> list[str]:
-    """Bind every registered node slot to the served model; return the bound names."""
+def bind(runner, registry: KernelRegistry = REGISTRY, *, draft: bool = False) -> list[str]:
+    """Bind every registered node slot to the served model; return the bound names.
+
+    The MTP drafter is addressed by the checkpoint's own name for its layer,
+    ``model.layers.<num_hidden_layers>``, which no target layer carries; the drafter loads that
+    layer as ``model.decoder``. Those slots bind only on the draft worker, the rest only on the
+    target, so wildcard slots such as ``model.layers.*.mlp`` keep naming target layers alone.
+    """
 
     # Every path, each module once per slot, and one module two slots reach is an overlap:
     # the DeepSeek-V4.1 fork registers each decoder layer's successor as its ``_next_layer``
     # child (upstream #42245), and the deduplicating listing named 37 of 40 layers only
     # through that chain, so ``model.layers.*`` bound 3 of 40 (B300, 2026-10-12 and 10-15).
     named = dict(runner.model.named_modules(remove_duplicate=False))
+    config = runner.model_config.hf_config
+    layer = f"model.layers.{getattr(config, 'text_config', config).num_hidden_layers}."
     bound: dict[str, str] = {}
-    for slot in sorted(s for s in registry.slots() if s != _CACHE):
-        pattern = node_pattern(slot)
+    for slot in sorted(s for s in registry.slots() if s != _CACHE and s.startswith(layer) == draft):
+        pattern = node_pattern("model.decoder." + slot.removeprefix(layer) if draft else slot)
         names = [name for name in named if pattern.match(name)]
         names = [n for i, n in enumerate(names) if all(named[m] is not named[n] for m in names[:i])]
         error = None
@@ -777,7 +785,8 @@ def bind(runner, registry: KernelRegistry = REGISTRY) -> list[str]:
     for name, slot in bound.items():
         module = named[name]
         module.forward = make_node_dispatcher(
-            slot, module, module.forward, runner, seals[name], registry=registry, node_name=name
+            slot, module, module.forward, runner, seals[name], registry=registry,
+            node_name=layer + name.removeprefix("model.decoder.") if draft else name,
         )
     for name in bound:
         seals[name].extend(_seal(named[name]))
@@ -795,9 +804,10 @@ def install(registry: KernelRegistry = REGISTRY) -> None:
 
     def load_model(self, *args, **kwargs):
         result = load(self, *args, **kwargs)
-        # Node addresses belong to the target model, not its speculative drafter.
-        if not self.is_draft_worker:
-            bind(self, registry)
+        # Shiv opened the MTP drafter as a target on 2026-11-12: its BF16 routed experts were the
+        # largest unquantized decode item (~6.5% of a GLM-5.3-Flash verify cycle). Verification
+        # stays exact, so a draft node moves acceptance only.
+        bind(self, registry, draft=bool(self.is_draft_worker))
         return result
 
     setattr(runner, _STOCK_LOAD, load)
