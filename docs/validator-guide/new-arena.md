@@ -114,6 +114,7 @@ the pod transport. One directory holds them:
 | `replay_load` | the sealed replay session concurrency: one count, or an ascending list (low, mid, high) a PD pair replays in every lifetime, highest first, and scores as a geometric mean |
 | `decode_floors` | required with several loads, else optional: each load's per-user decode floor in tokens/s, keyed by the load as a string, as canonical decimals; written into the packet's goodput policy |
 | `load_margin` | optional, with `decode_floors`: a canonical decimal in (0, 1); a load whose throughput-ratio upper bound is below 1 minus it fails the candidate; written into the packet's goodput policy |
+| `steady_span` | optional, with `decode_floors`: a canonical decimal in (0, 1); each load is scored in seconds per warm turn until its active sessions fall below this share of the load, so the drain tail of the longest sessions does not set the window; written into the packet's goodput policy. A stock reference imports into a recommissioned pair across a change of this key or of `decode_floors` |
 | `replay_windows` | optional: the scored windows per load, replacing the packet's |
 | `replay_warm_windows` | optional: the untimed windows before the scored ones, 0 to 2, replacing the packet's; time one stock lifetime on the node before sealing, since each window lasts as long as the slice's longest session at the model's per-user speed |
 | `tokens_per_prompt` | the largest recorded output budget of one turn in the sessions the replay serves; the commission refuses any other value |

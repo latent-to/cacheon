@@ -72,11 +72,14 @@ class GoodputPolicy:
     decode_floors: tuple[tuple[int, float], ...] = field(default=(), metadata={"wire_optional": True})
     # A load fails when its throughput ratio's upper bound is below 1 - load_margin (0 = off; owner 2026-11-11).
     load_margin: float = field(default=0.0, metadata={"wire_optional": True})
+    # Each load scores warm turns per second until active sessions fall below this share of the load, so the drain
+    # tail of one long session no longer sets the window (0 = whole fixed-work span; owner 2026-11-12).
+    steady_span: float = field(default=0.0, metadata={"wire_optional": True})
 
     def __post_init__(self):
         values = (self.required, self.null_noise, self.attainment_tolerance, self.attainment_margin,
                   self.error_rate, self.boot_noise, self.futility_margin, self.attainment_pooled,
-                  self.decode_floor, self.load_margin)
+                  self.decode_floor, self.load_margin, self.steady_span)
         floors = self.decode_floors
         if (type(self.contract) is not ServiceContract
             or any(type(v) not in (int, float) or not math.isfinite(v) for v in values)
@@ -85,7 +88,7 @@ class GoodputPolicy:
             or not 0 <= self.error_rate < 0.5
             or (self.error_rate > 0 and self.null_noise == self.boot_noise == 0)
             or (self.error_rate == 0 and (self.boot_noise or self.futility_margin or self.load_margin))
-            or not 0 <= self.futility_margin < 1 or not 0 <= self.load_margin < 1
+            or not 0 <= self.futility_margin < 1 or not 0 <= self.load_margin < 1 or not 0 <= self.steady_span < 1
             or not 0 <= self.attainment_tolerance <= 1 or not 0 <= self.attainment_margin < 1
             or self.attainment_pooled not in (0, 1) or self.decode_floor not in (0, 1)
             or type(floors) is not tuple or (floors and not self.decode_floor)
@@ -115,7 +118,7 @@ class GoodputPolicy:
         return {"contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
                 **{key: format(getattr(self, key), ".17g") for key in self.__dataclass_fields__
                    if key not in ("contract", "decode_floors") and (self.error_rate or key not in ("error_rate", "boot_noise"))
-                   and (key not in ("futility_margin", "attainment_pooled", "decode_floor", "load_margin")
+                   and (key not in ("futility_margin", "attainment_pooled", "decode_floor", "load_margin", "steady_span")
                         or getattr(self, key))},
                 **({"decode_floors": {str(load): format(floor, ".17g") for load, floor in self.decode_floors}}
                    if self.decode_floors else {})}
@@ -126,7 +129,8 @@ class GoodputPolicy:
         fields = set(cls.__dataclass_fields__)
         if type(value) is dict and "error_rate" not in value:
             fields -= {"error_rate", "boot_noise"}
-        for optional in ("futility_margin", "attainment_pooled", "decode_floor", "decode_floors", "load_margin"):
+        for optional in ("futility_margin", "attainment_pooled", "decode_floor", "decode_floors", "load_margin",
+                         "steady_span"):
             if type(value) is dict and optional not in value:
                 fields -= {optional}
         if (type(value) is not dict or set(value) != fields or type(value["contract"]) is not dict
@@ -217,7 +221,7 @@ class GoodputReadSet:
             boots=self.boots, futility_margin=policy.futility_margin, sentinel=self.incumbent[split:],
             decode_floors=policy.floors(self.loads), attainment_tolerance=policy.attainment_tolerance,
             attainment_margin=policy.attainment_margin, reference_lane=self.reference_lane,
-            load_margin=policy.load_margin,
+            load_margin=policy.load_margin, steady_span=policy.steady_span,
         )
         if type(result) is not ServiceVerdict or not math.isfinite(result.ratio) or result.ratio <= 0:
             raise ValueError("service scorer returned another policy or result type")
@@ -333,6 +337,9 @@ def _reference_arm(plan, origin):
     for policy in (old, new):
         policy.pop("calibration_digest")
         policy.pop("calibration_context_digest")
+        # Floors and the window's scored span only grade the retained records; the stock measurement is unchanged.
+        policy["goodput"] = {key: value for key, value in policy["goodput"].items()
+                             if key not in ("decode_floors", "steady_span")}
     if old != new:
         raise CrossoverRuntimeError("stock reference import changed its scoring policy")
     arm = restore_speed_arm(plan.baseline, row["arm"])

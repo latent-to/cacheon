@@ -38,8 +38,10 @@ KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size
 # decode_floors: per-user decode floor per load (tok/s keyed by session count), required with several loads;
 # replay_windows: the scored windows per load, replacing the packet's; audit_row_floor_ppm: the node audit's
 # sealed per-row floor, absent at the 2% default; load_margin: the per-load regression margin, off when absent;
-# replay_warm_windows: the untimed windows before the scored ones (0-2), replacing the packet's.
-OPTIONAL_KEYS = {"decode_floors", "replay_windows", "audit_row_floor_ppm", "load_margin", "replay_warm_windows"}
+# replay_warm_windows: the untimed windows before the scored ones (0-2), replacing the packet's; steady_span: score
+# each load until active sessions fall below this share of it, sealed with decode_floors.
+OPTIONAL_KEYS = {"decode_floors", "replay_windows", "audit_row_floor_ppm", "load_margin", "replay_warm_windows",
+                 "steady_span"}
 NODE_KEYS = {"name", "scheduler_starts", "helper_starts", "client_cpus"}
 # engine_cpus: an engine's first GPU -> [DP controller vCPU, frontend vCPU] (oci_cpuset.canonical_cpu_roles).
 OPTIONAL_NODE_KEYS = {"engine_cpus", "lifetime_memory_gib"}
@@ -110,6 +112,8 @@ def load_operator(path: Path) -> dict:
         raise SystemExit(f"{path}: replay_warm_windows is 0, 1 or 2")
     if "load_margin" in operator and (not floors or not re.fullmatch(r"0\.[0-9]*[1-9]", operator["load_margin"])):
         raise SystemExit(f"{path}: load_margin is a canonical decimal in (0, 1), sealed with decode_floors")
+    if "steady_span" in operator and (not floors or not re.fullmatch(r"0\.[0-9]*[1-9]", operator["steady_span"])):
+        raise SystemExit(f"{path}: steady_span is a canonical decimal in (0, 1), sealed with decode_floors")
     starts, helpers = operator["node"]["scheduler_starts"], operator["node"]["helper_starts"]
     if len(helpers) != len(starts) or not all(type(c) is int for c in (*starts, *helpers)):
         raise SystemExit(f"{path}: helper_starts names one helper vCPU per scheduler start, in GPU order")
@@ -223,6 +227,7 @@ def main() -> None:
     if "decode_floors" in operator:  # keywords of the packet's GOODPUT_POLICY = GoodputPolicy(..., decode_floor=1.0)
         floors = ", ".join(f"({load}, {operator['decode_floors'][load]})" for load in sorted(operator["decode_floors"], key=int))
         margin = f', load_margin={operator["load_margin"]}' if "load_margin" in operator else ""
+        margin += f', steady_span={operator["steady_span"]}' if "steady_span" in operator else ""
         rewrites.append((r"decode_floor=1\.0\)", lambda _: f"decode_floor=1.0, decode_floors=({floors},){margin})"))
     if "replay_windows" in operator:
         rewrites.append((r'"windows": \d+', lambda _: f'"windows": {operator["replay_windows"]}'))

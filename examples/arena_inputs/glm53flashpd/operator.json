@@ -7,6 +7,7 @@
   "replay_load": [96, 160, 224],
   "decode_floors": {"96": "85", "160": "82", "224": "80"},
   "load_margin": "0.01",
+  "steady_span": "0.5",
   "replay_windows": 1,
   "replay_warm_windows": 0,
   "tokens_per_prompt": 22484,

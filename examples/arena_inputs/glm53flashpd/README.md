@@ -39,7 +39,11 @@ the first sessions of the pool in proportion to its concurrency. On the commissi
 third, so the seeded engine needs no warm-up, while the packet's two warm windows had
 cost 23 of the lifetime's 58 minutes. A window lasts as long as the slice's longest
 session at this model's per-user decode speed: 690 s at 224 sessions, 535 s at 160 and
-338 s at 96. Each load also holds the candidate's pooled
+338 s at 96. A load is scored in seconds per warm turn only until its active sessions fall
+below half the load after the last session start (`steady_span` 0.5), so the drain tail of
+the few longest sessions does not set the cost: over four stock lifetimes of the
+commissioned pair the per-boot spread of the geometric mean fell from 1.45% (whole span)
+to 0.58%. Each load also holds the candidate's pooled
 per-user decode median to its own floor (`decode_floors`). A candidate cannot win by
 tuning one batch size: a gain at one load is diluted by the other two, and a loss in
 per-user speed at any load fails it. The high load saturates prefill, so it rewards

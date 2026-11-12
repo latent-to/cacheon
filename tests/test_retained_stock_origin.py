@@ -51,3 +51,12 @@ def test_import_rejects_another_reference_or_candidate_lane():
     bracket = replace(imported.incumbent[0], lane="original")
     with pytest.raises(ValueError, match="whole lifetimes"):
         replace(imported, incumbent=(*imported.incumbent, bracket))
+
+
+def test_steady_span_policy_round_trips_and_grades_the_same_complete_work():
+    policy = GoodputPolicy(ServiceContract(1.0, 0.001, 0.8), 1.0, 0.0003,
+                           0.0, 0.0, 0.01, 0.0001, steady_span=0.5)
+    assert GoodputPolicy.from_dict(policy.to_dict()) == policy
+    assert "steady_span" not in replace(policy, steady_span=0.0).to_dict()
+    reads = _reads("original")
+    assert reads.grade(policy) == reads.grade(replace(policy, steady_span=0.0))
