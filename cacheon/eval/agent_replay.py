@@ -108,7 +108,8 @@ class AgentReplayPlan:
             "contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
             "client": "aiperf-0.13.0", "scenario": None, "ignore_trace_delays": True,
             "cache_bust_identity": "sealed-slice-digest",
-            "cache_boundary": "flush_device_and_host_before_each_load",
+            "cache_boundary": ("flush_device_and_host_before_each_load" if len(self.loads) == 1
+                               else "flush_device_and_host_before_top_load_windows"),
         }
 
 
@@ -621,7 +622,7 @@ async def _run_load_read(session, plan: AgentReplayPlan, load: int, *, tokenizer
 
 
 async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None) -> tuple[LoadRead, ...]:
-    """Execute the sealed windows of each load, highest first, flushing cache before each window's read.
+    """Execute the sealed windows of each load, highest first, flushing cache before each top-load window's read.
 
     The warm windows replay once, at the top load, each into its own retained directory; their reads never reach
     the session's evidence or the grader. Every window is a fresh read of its load's fixed work, so the sealed
@@ -636,10 +637,14 @@ async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None) -> tuple
         await flush_cache(session)
         await _run_load_read(session, replace(plan, window=warm, output_directory=plan.output_directory / f"warm{warm}"),
                              top, tokenizer=tokenizer)
+    # A lower load replays the first sessions of the top load's pool, so it keeps their prefixes in the device and
+    # host tiers: flushing before it made each lower load cold-prefill the same sessions again, 375 of 533 s at 160
+    # and 196 of 337 s at 96 on GLM-5.3-Flash PD, whose HiCache holds them (2026-11-12). Both arms run the same rule.
     for load in plan.loads:
         directory = plan.output_directory / ("" if load == top else f"load{load}")
         for window in range(1, plan.windows + 1):
-            await flush_cache(session)
+            if load == top:
+                await flush_cache(session)
             read_plan = replace(plan, window=window, output_directory=directory / f"window{window}")
             read = await _run_load_read(session, read_plan, load, tokenizer=tokenizer)
             session.replay_reads.append(read)
