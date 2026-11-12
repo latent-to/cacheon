@@ -494,6 +494,9 @@ async def _prime(plan: AgentReplayPlan, context_length: int | None, load: int) -
     current = _current_slice(plan)
     loop = asyncio.get_running_loop()
     pending: dict[bytes, asyncio.Future] = {}
+    # A lower load replays the first sessions of the higher load's pool, so its bodies are all primed already and
+    # `pending` stays empty; the guard counts requests received (GLM-5.3-Flash PD, three loads, 2026-11-12).
+    received = 0
     # Short paths: AIPerf's Unix sockets live under both (see _run_load_read).
     work = Path(tempfile.mkdtemp(prefix="cacheon-prime-", dir="/tmp"))
     ipc = Path(tempfile.mkdtemp(prefix="cacheon-aiperf-", dir="/tmp"))
@@ -501,6 +504,8 @@ async def _prime(plan: AgentReplayPlan, context_length: int | None, load: int) -
                              initializer=_load_pool_tokenizer, initargs=(str(plan.tokenizer_path),)) as pool:
 
         async def chat(http_request):
+            nonlocal received
+            received += 1
             raw = await http_request.read()
             body = json.loads(raw)
             key = hashlib.sha256(raw).digest()
@@ -535,7 +540,7 @@ async def _prime(plan: AgentReplayPlan, context_length: int | None, load: int) -
                 code = await asyncio.wait_for(client.wait(), _PRIME_CLIENT_S)
             if code:
                 raise RuntimeError(f"AIPerf exited {code} priming the replay; see {work / 'aiperf.log'}")
-            if not pending:
+            if not received:
                 raise RuntimeError(f"AIPerf sent no request priming the replay; see {work / 'aiperf.log'}")
             for key, future in pending.items():
                 ids, digest = await future
