@@ -39,7 +39,7 @@ KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size
 # replay_windows: the scored windows per load, replacing the packet's; audit_row_floor_ppm: the node audit's
 # sealed per-row floor, absent at the 2% default; load_margin: the per-load regression margin, off when absent.
 OPTIONAL_KEYS = {"decode_floors", "replay_windows", "audit_row_floor_ppm", "load_margin"}
-NODE_KEYS = {"name", "scheduler_starts", "client_cpus"}
+NODE_KEYS = {"name", "scheduler_starts", "helper_starts", "client_cpus"}
 # engine_cpus: an engine's first GPU -> [DP controller vCPU, frontend vCPU] (oci_cpuset.canonical_cpu_roles).
 OPTIONAL_NODE_KEYS = {"engine_cpus", "lifetime_memory_gib"}
 PACKET = ("cacheon_b300_qualification_adapter.py", "finalize-authority.py", "numeric_answer_judge.py",
@@ -107,6 +107,9 @@ def load_operator(path: Path) -> dict:
         raise SystemExit(f"{path}: decode_floors maps every replay load to a canonical decimal tok/s floor")
     if "load_margin" in operator and (not floors or not re.fullmatch(r"0\.[0-9]*[1-9]", operator["load_margin"])):
         raise SystemExit(f"{path}: load_margin is a canonical decimal in (0, 1), sealed with decode_floors")
+    starts, helpers = operator["node"]["scheduler_starts"], operator["node"]["helper_starts"]
+    if len(helpers) != len(starts) or not all(type(c) is int for c in (*starts, *helpers)):
+        raise SystemExit(f"{path}: helper_starts names one helper vCPU per scheduler start, in GPU order")
     for lane, cpus in operator["node"]["client_cpus"].items():
         devices = [int(value) for value in lane.split(",")]
         if len(devices) != width or devices != sorted(devices) or not cpus:
@@ -129,6 +132,7 @@ def values(operator: dict, arena_inputs: str) -> dict[str, str]:
         "TOKENIZER_ASSET": operator["tokenizer_asset"],
         "OWNER": operator["owner"], "RAM_MODEL_ARGS": " '--ram-model'," if operator["model_in_ram"] else "",
         "SCHEDULER_STARTS": json.dumps(operator["node"]["scheduler_starts"]),
+        "HELPER_STARTS": json.dumps(operator["node"]["helper_starts"]),
         "NODE_NAME": operator["node"]["name"], "CLIENT_SETS": repr(operator["node"]["client_cpus"]),
         "ENGINE_CPUS": repr(operator["node"].get("engine_cpus")),
         "LIFETIME_MEMORY": repr(operator["node"]["lifetime_memory_gib"] << 30
