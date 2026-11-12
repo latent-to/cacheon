@@ -48,9 +48,10 @@ prefill and time-to-first-token gains.
 The sealed slice is the DeepSeek PD packet's 247-session pool (b318b740; its largest
 recorded turn output, `tokens_per_prompt`, is 22,484), so the high load is at most 247 sessions. Stock's session ramps (2026-11-11) peaked at 256
 sessions and saturated prefill near 200-220, so the loads are 96, 160 and 224 sessions
-with floors 130, 100 and 90 tokens/s, 10-18% under stock's rig decode medians (143.8, 113.0, 110.5 on 2026-11-11)
-for production-path overhead, to recalibrate from the commissioned pair's stock reference. Stock must hold each floor at its load, or the
-reference campaign refuses the commission as mis-sealed before any candidate runs. The `node` block is the
+with floors 85, 82 and 80 tokens/s, about 10% under the commissioned pair's stock reference (pooled decode medians
+95.2, 91.3 and 89.2 over four boots, 2026-11-12). The production replay's first-turn cold wave keeps decode near its
+128-request cap at every load, so these sit well under the 11-11 rig medians (143.8, 113.0, 110.5). Stock must hold each
+floor at its load; the check runs when a candidate is graded, so a mis-sealed floor fails every candidate. The `node` block is the
 commissioned B300 pod's pin table (2026-11-12): eight fast scheduler vCPUs, each GPU's helper on the next
 physical core (this host numbers SMT siblings adjacently), the remaining eight fast vCPUs as the client set, and no
 `engine_cpus` with DP 1 everywhere.
