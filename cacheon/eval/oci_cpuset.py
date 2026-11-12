@@ -198,6 +198,13 @@ def verify_cpu_plan(exclusive: dict[str, list[int]], shared: dict[str, list[int]
         for cpu in cpus:
             if owner.setdefault(cpu, name) != name or len(set(cpus)) != len(cpus):
                 raise RuntimeError(f"vCPU {cpu} is named twice in the pin table")
+    # A slow tier reads slow every window; one window on a busy host read 0.50x (B300 pod, 2026-11-12).
+    for _ in range(2):
+        slow = [cpu for name in fast for cpu in groups[name] if rate[cpu] < _FAST * top]
+        if not slow:
+            break
+        for cpu, again in zip(slow, _run(slow)[0]):
+            rate[cpu] = max(rate[cpu], again)
     problems = [f"{name} vCPU {cpu} runs at {rate[cpu] / top:.2f}x the fastest vCPU"
                 for name in fast for cpu in groups[name] if rate[cpu] < _FAST * top]
     pairs = [(a, b) for i, a in enumerate(named) for b in named[i + 1:]
