@@ -187,12 +187,15 @@
 # replay plan's fixed-value flags, the summed-latency rate, the opening-text session key, the test-only
 # SettlementCandidate.from_reproductions and the dashboard's paired-lane views (dashboard -20, tests -12): tree +1.
 # Merge of the arena branch's sealed helper vCPUs (4a0775e8): docs +1, examples +3, scripts +6.
+# Queue-order address, the scheduler target's first (new seam row, adapter, catalog row, contract page):
+# cacheon +107, docs +46, tests +1, scripts +3. No deletion was available in this change; the next one is the
+# per-target bundle resolution that multi-target submissions replace.
 (root) 1163
 .github 338
-cacheon 92069
+cacheon 92176
 cacheon_kernels 936
 dashboard 4373
-docs 13332
+docs 13378
 examples 390
-scripts 4514
-tests 14080
+scripts 4517
+tests 14081

@@ -48,6 +48,7 @@ The registered rows are:
 |---|---|---|
 | `scheduler_gate` | `run_scheduler_process` | Positive scheduler-role candidate-load gate; not a slot |
 | `nodes` | `ModelRunner.load_model` | Every registered [node address](slot-contract.md#node-addresses); binds the named modules of the served model once the weights are loaded |
+| `order` | `SchedulePolicy.calc_priority` | The [queue order](slot-contract.md#the-queue-order); asks the bundle for the order of the waiting queue after stock has ordered it and holds the answer to a permutation |
 | `cache` | `create_tree_cache` | The [prefix cache](slot-contract.md#the-prefix-cache); passes the initialized runtime object to the bundle's factory and checks the KV behind its served prefixes |
 
 `nodes` serves all candidate model code and `cache` the one scheduler object a

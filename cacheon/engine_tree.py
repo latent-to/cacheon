@@ -867,7 +867,7 @@ def _inspect_contribution(
 ) -> InspectedContribution:
     """Inspect one registered contribution source without executing it."""
 
-    from cacheon.integrations.sglang_cache import ADDRESS, admit
+    from cacheon.seams import SCHEDULER_ADDRESSES, admit
     from cacheon.registry import eligibility_from_metadata
     from cacheon.target_catalog import TargetCatalog
 
@@ -919,7 +919,7 @@ def _inspect_contribution(
         _module_name("cacheon_validation", relative)
 
     for op in manifest.ops:
-        if op.slot.split(".")[0] == ADDRESS:
+        if op.slot.split(".")[0] in SCHEDULER_ADDRESSES:
             source = _logical_path(op.source, field="python source")
             admit(_parse_python(root, source)[1], op.slot, op.entry, error=EngineTreeError)
 

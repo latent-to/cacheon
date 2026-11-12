@@ -40,7 +40,6 @@ sessions (2026-10-27), so a cache candidate carries the check in its own arm.
 
 from __future__ import annotations
 
-import ast
 import functools
 import importlib
 import inspect
@@ -76,22 +75,6 @@ _VERDICTS = {
     _ROW: "left a request row that disagrees with the request's prefix",
     _STATE: "served or changed unrecorded sliding-window, recurrent or request-held state",
 }
-
-
-def admit(tree: ast.Module, slot: str, entry: str, *, error: type[Exception]) -> None:
-    """Check the factory declaration without importing the miner into intake."""
-
-    if slot != ADDRESS:
-        raise error(f"{slot!r}: the prefix cache {ADDRESS!r} has no sub-addresses")
-    factory = next((node for node in tree.body
-                    if isinstance(node, ast.FunctionDef) and node.name == entry), None)
-    if factory is None:
-        raise error(f"{ADDRESS} entry {entry!r} must be a function accepting the runtime cache")
-    args = factory.args
-    positional = len(args.posonlyargs) + len(args.args)
-    if (positional - len(args.defaults) > 1 or (positional < 1 and args.vararg is None)
-            or any(default is None for default in args.kw_defaults)):
-        raise error(f"{ADDRESS} entry {entry!r} must be callable with only the runtime cache")
 
 
 def _refuse(message: str, *, error: type[Exception] = RuntimeError, phase: str = "entry") -> NoReturn:

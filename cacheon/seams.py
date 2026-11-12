@@ -12,7 +12,8 @@ the canary all pick it up.
 No row names an operation of the model. Model code is served by the one ``nodes``
 row, which binds whatever modules a bundle named; the per-operation rows it replaced
 each pinned one sglang method and churned on every ``PINNED_SGLANG`` bump. The
-``cache`` row serves the one scheduler object a bundle may replace, the prefix cache.
+``cache`` and ``order`` rows serve the scheduler: its prefix cache object and the
+order of its waiting queue.
 
 Import-light on purpose (stdlib only): the ``.pth`` bootstrap imports this at
 interpreter startup, before — and without — importing torch or sglang.
@@ -53,7 +54,34 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
     # preserving the pool and transfer-worker references created by that backend.
     SeamAdapter("cache", "sglang.srt.mem_cache.registry",
                 "sglang_cache", "create_tree_cache"),
+    # Ask the candidate for the order of the waiting queue after stock has ordered it; the
+    # answer is held to a permutation and applied by stock's admission.
+    SeamAdapter("order", "sglang.srt.managers.schedule_policy",
+                "sglang_order", "SchedulePolicy.calc_priority"),
 )
+
+# Addresses that name a scheduler object or question instead of a module of the served model.
+# The node binder skips them and SGLang serves them outside its CUDA graph.
+SCHEDULER_ADDRESSES = ("queue_order", "tree_cache")
+
+
+def admit(tree, slot: str, entry: str, *, error: type[Exception]) -> None:
+    """Check a scheduler address's entry in a parsed source, without importing the miner into intake."""
+
+    import ast
+
+    address = slot.split(".")[0]
+    if slot != address:
+        raise error(f"{slot!r}: the scheduler address {address!r} has no sub-addresses")
+    factory = next((node for node in tree.body
+                    if isinstance(node, ast.FunctionDef) and node.name == entry), None)
+    if factory is None:
+        raise error(f"{address} entry {entry!r} must be a function of one argument")
+    args = factory.args
+    positional = len(args.posonlyargs) + len(args.args)
+    if (positional - len(args.defaults) > 1 or (positional < 1 and args.vararg is None)
+            or any(default is None for default in args.kw_defaults)):
+        raise error(f"{address} entry {entry!r} must be callable with one argument")
 
 # The modules whose import should trigger seam installation (consumed by bootstrap).
 TARGET_MODULES = frozenset(a.target_module for a in SEAM_ADAPTERS)

@@ -19,6 +19,7 @@ that every model contains or admits each address:
 | `model.layers.*.self_attn.q_b_proj` | Matching attention projection modules |
 | `model` | Whole decoder stack, only where the arena can grade it |
 | `tree_cache` | The scheduler's runtime cache object (see below) |
+| `queue_order` | The order in which the scheduler admits its waiting requests ([contract](../architecture/slot-contract.md#the-queue-order)); `entry(view)` returns a permutation of the queue positions, target `scheduler` |
 
 `*` matches exactly one segment. The binder refuses addresses that match no
 module and parent/child claims that overlap. Binding succeeds only when the

@@ -87,6 +87,7 @@ and the supporting surfaces below:
 | `run_scheduler_process` | Scheduler-only candidate load gate | Process roles, spawn path, rank identity |
 | `ModelRunner.load_model` | Node binder: replaces the `forward` of named modules once weights load | Module tree, call arguments, capture order, engine-state layout |
 | `create_tree_cache` | Prefix-cache binder and content check | Cache construction, handoff methods, KV pool and host-tier layout |
+| `SchedulePolicy.calc_priority` | Queue-order address: the candidate reorders stock's answer | Call arguments, whether the queue is returned or sorted in place, the request fields the view reads |
 | `BaseFusedOp.forward_native` | The node audit's honest twin | Native reference paths and the twin's measured noise |
 | `Engine.generate` logprob API | Reference scoring and quality observation | Request, logprob, and streaming schema |
 | `ServerArgs` fields | Deterministic engine launch policy | Model, graph, memory, seed, backend, and logging controls |

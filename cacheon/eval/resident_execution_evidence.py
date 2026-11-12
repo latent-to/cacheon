@@ -138,9 +138,9 @@ class RankExecution:
 
 
 def eager_slots() -> frozenset[str]:
-    """Registered slots SGLang serves outside its CUDA graph: the scheduler's prefix cache."""
+    """Registered slots SGLang serves outside its CUDA graph: the scheduler's cache and queue order."""
 
-    from cacheon.integrations.sglang_cache import ADDRESS
+    from cacheon.seams import SCHEDULER_ADDRESSES
 
-    return frozenset({ADDRESS})
+    return frozenset(SCHEDULER_ADDRESSES)
 
