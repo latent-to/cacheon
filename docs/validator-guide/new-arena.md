@@ -123,6 +123,7 @@ the pod transport. One directory holds them:
 | `audit_row_floor_ppm` | optional: the node audit's per-row floor in ppm, absent at the 20000 (2%) default and at most 400000; set from `cacheon check --audit-row-floor-ppm` runs in which an honest lossy control passes and the wrong control fails |
 | `node.name` | the host class whose measured scheduler positions follow |
 | `node.scheduler_starts` | one measured-fast vCPU start per GPU of the host, in GPU order |
+| `node.helper_starts` | the measured-fast helper vCPU per GPU, in GPU order, on a different physical core from its scheduler |
 | `node.client_cpus` | the validator client core set per lane, keyed by the lane's device list |
 | `node.engine_cpus` | optional: per engine (each prefill server and the decode engine of a pair), keyed by its first GPU, the data-parallel controller's vCPU and the frontend's vCPU; an engine with DP 1 runs no controller |
 | `node.lifetime_memory_gib` | optional: the host memory cap of one engine lifetime's container in GiB (default 1024), sealed into the runtime resource policy; a host KV tier (`hicache_size`, per rank) is pinned inside it |
