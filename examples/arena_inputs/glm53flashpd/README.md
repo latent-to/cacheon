@@ -48,8 +48,8 @@ sessions and saturated prefill near 200-220, so the loads are 96, 160 and 224 se
 with floors 130, 100 and 90 tokens/s, 10-18% under stock's rig decode medians (143.8, 113.0, 110.5 on 2026-11-11)
 for production-path overhead, to recalibrate from the commissioned pair's stock reference. Stock must hold each floor at its load, or the
 reference campaign refuses the commission as mis-sealed before any candidate runs. The `node` block is the
-commissioned Nebius B300 VM's pin table (2026-11-12): eight fast scheduler vCPUs, each GPU's helper on the next
-physical core (this VM numbers SMT siblings adjacently), the remaining eight fast vCPUs as the client set, and no
+commissioned B300 pod's pin table (2026-11-12): eight fast scheduler vCPUs, each GPU's helper on the next
+physical core (this host numbers SMT siblings adjacently), the remaining eight fast vCPUs as the client set, and no
 `engine_cpus` with DP 1 everywhere.
 
 The node audit's row floor is 15% (`audit_row_floor_ppm` 150000), not the 2% default: this

@@ -17,12 +17,12 @@
     "4c253998e53d898caaebbff3bc7aeca2ab687f3d3eec507cc9257defc474d184"
   ],
   "node": {
-    "name": "8-GPU Nebius B300 VM",
-    "scheduler_starts": [56, 90, 40, 84, 174, 128, 170, 152],
-    "helper_starts": [58, 92, 42, 86, 176, 130, 172, 154],
+    "name": "8-GPU B300 pod",
+    "scheduler_starts": [68, 86, 46, 50, 166, 150, 146, 180],
+    "helper_starts": [70, 88, 48, 52, 168, 152, 148, 182],
     "lifetime_memory_gib": 1792,
     "client_cpus": {
-      "0,1,2,3,4,5,6,7": [32, 48, 64, 66, 82, 94, 162, 168]
+      "0,1,2,3,4,5,6,7": [38, 64, 76, 78, 82, 90, 140, 164]
     }
   }
 }
