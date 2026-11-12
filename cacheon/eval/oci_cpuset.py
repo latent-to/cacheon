@@ -204,9 +204,18 @@ def verify_cpu_plan(exclusive: dict[str, list[int]], shared: dict[str, list[int]
              if owner[a] in exclusive or owner[b] in exclusive or owner[a] != owner[b]]
     together = {}
     if pairs:
-        first, second = _run([a for a, _ in pairs], [b for _, b in pairs])
-        for (a, b), ra, rb in zip(pairs, first, second):
-            together[(a, b)] = min(ra / rate[a], rb / rate[b])
+        # A shared core reads ~0.74x every time; one 50 ms window on a busy host can read 0.79-0.84x across sockets
+        # (B300 pod, 2026-11-12: 5 of 8 commissions failed on a different cross-core pair each), so a flagged pair
+        # keeps its best of three windows.
+        flagged = pairs
+        for _ in range(3):
+            first, second = _run([a for a, _ in flagged], [b for _, b in flagged])
+            for pair, ra, rb in zip(flagged, first, second):
+                together[pair] = max(together.get(pair, 0.0), min(ra / rate[pair[0]], rb / rate[pair[1]]))
+            flagged = [pair for pair in flagged if together[pair] < _SHARED]
+            if not flagged:
+                break
+        for a, b in pairs:
             if together[(a, b)] < _SHARED:
                 problems.append(f"{owner[a]} vCPU {a} and {owner[b]} vCPU {b} share a core "
                                 f"({together[(a, b)]:.2f}x when both run)")
