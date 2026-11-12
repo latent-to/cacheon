@@ -37,8 +37,9 @@ KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size
         "tokens_per_prompt", "tokenizer_asset", "model_in_ram", "owner", "audit_control_delta_digests", "node"}
 # decode_floors: per-user decode floor per load (tok/s keyed by session count), required with several loads;
 # replay_windows: the scored windows per load, replacing the packet's; audit_row_floor_ppm: the node audit's
-# sealed per-row floor, absent at the 2% default; load_margin: the per-load regression margin, off when absent.
-OPTIONAL_KEYS = {"decode_floors", "replay_windows", "audit_row_floor_ppm", "load_margin"}
+# sealed per-row floor, absent at the 2% default; load_margin: the per-load regression margin, off when absent;
+# replay_warm_windows: the untimed windows before the scored ones (0-2), replacing the packet's.
+OPTIONAL_KEYS = {"decode_floors", "replay_windows", "audit_row_floor_ppm", "load_margin", "replay_warm_windows"}
 NODE_KEYS = {"name", "scheduler_starts", "helper_starts", "client_cpus"}
 # engine_cpus: an engine's first GPU -> [DP controller vCPU, frontend vCPU] (oci_cpuset.canonical_cpu_roles).
 OPTIONAL_NODE_KEYS = {"engine_cpus", "lifetime_memory_gib"}
@@ -105,6 +106,8 @@ def load_operator(path: Path) -> dict:
     if (sorted(floors) != (sorted(map(str, loads)) if floors or len(loads) > 1 else [])
             or not all(re.fullmatch(r"[1-9][0-9]*(\.[0-9]*[1-9])?", value) for value in floors.values())):
         raise SystemExit(f"{path}: decode_floors maps every replay load to a canonical decimal tok/s floor")
+    if operator.get("replay_warm_windows", 0) not in (0, 1, 2) or type(operator.get("replay_warm_windows", 0)) is not int:
+        raise SystemExit(f"{path}: replay_warm_windows is 0, 1 or 2")
     if "load_margin" in operator and (not floors or not re.fullmatch(r"0\.[0-9]*[1-9]", operator["load_margin"])):
         raise SystemExit(f"{path}: load_margin is a canonical decimal in (0, 1), sealed with decode_floors")
     starts, helpers = operator["node"]["scheduler_starts"], operator["node"]["helper_starts"]
@@ -223,6 +226,11 @@ def main() -> None:
         rewrites.append((r"decode_floor=1\.0\)", lambda _: f"decode_floor=1.0, decode_floors=({floors},){margin})"))
     if "replay_windows" in operator:
         rewrites.append((r'"windows": \d+', lambda _: f'"windows": {operator["replay_windows"]}'))
+    # The commission refuses a zero count, so no warm windows drops the packet's key.
+    if "replay_warm_windows" in operator:
+        warm = operator["replay_warm_windows"]
+        rewrites.append((r'\n[ \t]*"warm_windows": \d+,' if not warm else r'"warm_windows": \d+',
+                         (lambda _: "") if not warm else (lambda _: f'"warm_windows": {warm}')))
     for pattern, value in rewrites:
         text, count = re.subn(pattern, value, text)
         if count != 1:

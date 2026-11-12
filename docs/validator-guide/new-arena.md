@@ -114,7 +114,8 @@ the pod transport. One directory holds them:
 | `replay_load` | the sealed replay session concurrency: one count, or an ascending list (low, mid, high) a PD pair replays in every lifetime, highest first, and scores as a geometric mean |
 | `decode_floors` | required with several loads, else optional: each load's per-user decode floor in tokens/s, keyed by the load as a string, as canonical decimals; written into the packet's goodput policy |
 | `load_margin` | optional, with `decode_floors`: a canonical decimal in (0, 1); a load whose throughput-ratio upper bound is below 1 minus it fails the candidate; written into the packet's goodput policy |
-| `replay_windows` | optional: the scored windows per load, replacing the packet's (one keeps a three-load lifetime within a one-load lifetime's replay time) |
+| `replay_windows` | optional: the scored windows per load, replacing the packet's |
+| `replay_warm_windows` | optional: the untimed windows before the scored ones, 0 to 2, replacing the packet's; time one stock lifetime on the node before sealing, since each window lasts as long as the slice's longest session at the model's per-user speed |
 | `tokens_per_prompt` | the largest recorded output budget of one turn in the sessions the replay serves; the commission refuses any other value |
 | `tokenizer_asset` | the tokenizer directory name inside the replay inputs archive |
 | `model_in_ram` | whether the checkpoint is served from a RAM mount or from its storage path |

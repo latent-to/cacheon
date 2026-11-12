@@ -32,11 +32,14 @@ measured under confidential computing.
 Speed policy 21 replays the sealed agent-trace pool in a closed loop at three session
 concurrencies in each engine lifetime, low, mid and high (`replay_load` in
 `operator.json`), and scores the geometric mean of the three served-throughput ratios
-against the retained stock reference. One warm window at the high load precedes one
-scored window per load (`replay_windows`), highest first; a lower load replays the
-first sessions of the pool in proportion to its concurrency, so the three windows
-together replay less work than the three whole-pool windows of a one-load lifetime and
-the bundle's wall clock does not grow. Each load also holds the candidate's pooled
+against the retained stock reference. One scored window per load (`replay_windows`)
+runs highest first, with no warm window (`replay_warm_windows` 0); a lower load replays
+the first sessions of the pool in proportion to its concurrency. On the commissioned pod
+(2026-11-12) a stock lifetime's first 224-session window ran 691 s against 690 s for its
+third, so the seeded engine needs no warm-up, while the packet's two warm windows had
+cost 23 of the lifetime's 58 minutes. A window lasts as long as the slice's longest
+session at this model's per-user decode speed: 690 s at 224 sessions, 535 s at 160 and
+338 s at 96. Each load also holds the candidate's pooled
 per-user decode median to its own floor (`decode_floors`). A candidate cannot win by
 tuning one batch size: a gain at one load is diluted by the other two, and a loss in
 per-user speed at any load fails it. The high load saturates prefill, so it rewards
