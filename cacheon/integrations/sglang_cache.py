@@ -537,13 +537,13 @@ def _bind(impl, ctx, stock):
                 phase="prepare")
     if hasattr(cache, "cache_finished_req") or hasattr(cache, "insert_req"):
         _refuse("this engine's cache hands requests over through methods that are not checked", phase="prepare")
-    guard = _Guard(ctx)
     cls = _receipts.invoke(ADDRESS, impl.entry, cache, phase="prepare")
     if cls is None:
-        # A tier bundle lives on the prefill servers; carrying the check on a pair's decode schedulers would
-        # cost it more than it wins. The receipt covers this member once another member serves the address.
+        # A tier bundle lives on the prefill servers: the check would cost its decode schedulers more than it wins.
+        # Declined before the guard exists: decode's replayed recurrent state has no check to build (2026-11-12).
         _receipts.not_selected(ADDRESS, DECLINED, ())
         return cache
+    guard = _Guard(ctx)
     if not inspect.isclass(cls) or not issubclass(cls, type(cache)):
         _refuse("entry must return a subclass of the runtime cache's type",
                 error=TypeError, phase="prepare")
