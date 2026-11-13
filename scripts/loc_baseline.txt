@@ -188,12 +188,14 @@
 # examples +13, scripts +29, tests +9. The branch stays net -3,234 lines against main (retired arenas deleted).
 # File ceilings: qualification_runner.py 2430 (the T check; still 24 under main), oci_outer_session.py 906
 # (12e0a9c7 sizes a pair's audit members by its one-engine form).
+# Live dashboard patches folded in for the GLM cutover: closed-arena submissions_open and the fork SGLang overlay,
+# less the dead OKC selector entry (no /okc route in this tree): dashboard +18.
 (root) 1163
 .github 338
 cacheon 92193
 cacheon_kernels 936
-dashboard 4402
+dashboard 4420
 docs 13345
 examples 400
-scripts 4536
+scripts 4538
 tests 14101
