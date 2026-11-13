@@ -516,20 +516,25 @@ def _native_forward(module):
 
 @contextmanager
 def _native(module):
-    """Use native paths, except on ops whose pinned native forward is a raising stub.
+    """Use native paths, except on ops whose pinned native forward is a raising stub or cannot read its weights.
 
     The DSA Indexer has none, and GLM-5.3-Flash's IndexerKPool inherits the
     MultiPlatformOp stub; their children and surrounding ops still take native paths.
     Forcing the Indexer stub refused 6,048 references in the first full GLM
     layer-bundle audit (B300, 2026-09-20); forcing IndexerKPool's refused stock on
-    every DSA layer, so only KDA layers were graded (G3, 2026-11-11).
+    every DSA layer, so only KDA layers were graded (G3, 2026-11-11). Unquantized
+    experts on FlashInfer's TRT-LLM runner hold its BF16 block layout, which the native
+    per-expert ``F.linear`` cannot read: GLM-5.3-Flash's draft layer refused every
+    reference, so each claim on it ended NO_DECISION (miner repro, 2026-11-13).
     """
 
     stubs = [getattr(getattr(sys.modules.get(name), cls, None), "forward_native", None)
              for name, cls in (("sglang.srt.layers.attention.dsa.dsa_indexer", "Indexer"),
                                ("sglang.srt.layers.utils.multi_platform", "MultiPlatformOp"))]
+    blocked = getattr(sys.modules.get("sglang.srt.layers.quantization.unquant"), "UnquantizedFusedMoEMethod", ())
     sites = [m for m in module.modules()
-             if "_forward_method" in vars(m) and type(m).forward_native not in stubs]
+             if "_forward_method" in vars(m) and type(m).forward_native not in stubs
+             and not (isinstance(m, blocked) and getattr(m, "use_flashinfer_trtllm_moe", False))]
     saved = [m._forward_method for m in sites]
     for m in sites:
         m._forward_method = _native_forward(m)
