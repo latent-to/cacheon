@@ -41,7 +41,7 @@ KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size
 # replay_warm_windows: the untimed windows before the scored ones (0-2), replacing the packet's; steady_span: score
 # each load until active sessions fall below this share of it, sealed with decode_floors.
 OPTIONAL_KEYS = {"decode_floors", "replay_windows", "audit_row_floor_ppm", "load_margin", "replay_warm_windows",
-                 "steady_span"}
+                 "steady_span", "quality"}
 NODE_KEYS = {"name", "scheduler_starts", "helper_starts", "client_cpus"}
 # engine_cpus: an engine's first GPU -> [DP controller vCPU, frontend vCPU] (oci_cpuset.canonical_cpu_roles).
 OPTIONAL_NODE_KEYS = {"engine_cpus", "lifetime_memory_gib"}
@@ -132,10 +132,13 @@ def load_operator(path: Path) -> dict:
 
 def values(operator: dict, arena_inputs: str) -> dict[str, str]:
     width = operator["tensor_parallel_size"]
+    quality = operator.get("quality", {})
     return {
         "ARENA_ID": operator["arena_id"], "ARENA_INPUTS": arena_inputs, "SLUG": operator["slug"],
         "MODEL_PROFILE_KEY": operator["model_profile_key"], "TP": str(width),
         "TOKENS_PER_PROMPT": str(operator["tokens_per_prompt"]),
+        "QUALITY_PROMPTS": str(quality.get("select_count", 8)),
+        "NLL_TAIL_THRESHOLD": quality.get("nll_tail_threshold", "0.35"),
         "TOKENIZER_ASSET": operator["tokenizer_asset"],
         "OWNER": operator["owner"], "RAM_MODEL_ARGS": " '--ram-model'," if operator["model_in_ram"] else "",
         "SCHEDULER_STARTS": json.dumps(operator["node"]["scheduler_starts"]),
@@ -184,12 +187,36 @@ def archive(output: Path, root: Path, members: list[Path]) -> None:
     output.chmod(0o600)
 
 
+def render_quality(packet: Path, policy: dict, receipt: Path) -> None:
+    """Replace the retained synthetic calibration with the measured controls consumed by this commission."""
+    import pprint
+
+    controls = json.loads(receipt.read_bytes())
+    if controls["policy"] != policy or not 1 < policy["select_count"] <= 4096:
+        raise SystemExit("quality controls differ from the operator policy")
+    adapter = packet / "cacheon_b300_qualification_adapter.py"
+    text = adapter.read_text()
+    begin = text.index("def _threshold(context):")
+    end = text.index("def _seal_calibration_from_durable()", begin)
+    loader = (TEMPLATES / "quality_controls.py.tmpl").read_text().replace(
+        "@CONTROL_RECEIPT@", pprint.pformat(controls, sort_dicts=True))
+    text = text[:begin] + loader + "\n\n" + text[end:]
+    before = '"source": "bootstrap-calibration-seed"'
+    if text.count(before) != 1:
+        raise SystemExit("unrecognized calibration provenance in the retained adapter")
+    text = text.replace(before, '"source": "measured-teacher-controls", "controls": QUALITY_CONTROLS')
+    text = text.replace("sealed from the settled bootstrap calibration", "sealed from measured teacher controls and the stock speed")
+    check(adapter.name, text)
+    adapter.write_text(text)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arena", required=True, help="directory name under examples/arena_inputs")
     parser.add_argument("--retained-inputs", required=True, type=Path,
                         help="packet/, model-receipts/ and pod-remote-worker-service.py of this arena")
     parser.add_argument("--out", required=True, type=Path, help="new task directory layout to write")
+    parser.add_argument("--quality-controls", type=Path, help="receipt from seal_quality_controls.py")
     args = parser.parse_args()
     os.umask(0o077)
     arena = ROOT / "examples" / "arena_inputs" / args.arena
@@ -197,6 +224,8 @@ def main() -> None:
     fill = values(operator, args.arena)
     slug = operator["slug"]
     retained = args.retained_inputs.resolve(strict=True)
+    if ("quality" in operator) != (args.quality_controls is not None):
+        raise SystemExit("an arena declaring quality metrics requires its measured quality controls")
     (receipt,) = sorted((retained / "model-receipts").glob("model-provision-sha256-*.json"))
     json.loads(receipt.read_bytes())
     out = args.out
@@ -213,6 +242,8 @@ def main() -> None:
     for name in PACKET:
         target = f"commission-inputs/packet/{name}"
         copy(retained / "packet" / name, inputs / target, MODES.get(target, 0o644))
+    if args.quality_controls:
+        render_quality(inputs / "commission-inputs/packet", operator["quality"], args.quality_controls)
     capabilities = inputs / "commission-inputs/packet/qualification_capabilities.py"
     text = capabilities.read_text()
     # The registered audit controls are the arena's own bundles (a wrong control for this model's node address):

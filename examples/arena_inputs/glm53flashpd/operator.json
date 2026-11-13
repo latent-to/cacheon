@@ -10,6 +10,16 @@
   "steady_span": "0.5",
   "replay_windows": 1,
   "replay_warm_windows": 0,
+  "quality": {
+    "algorithm_id": "teacher-familywise-v1",
+    "familywise_z": "2",
+    "select_count": 32,
+    "nll_tail_threshold": "5",
+    "limits": {
+      "mean_nll": {"stock_envelope": "0.15", "candidate_delta": "0.08"},
+      "tail_excess_nll": {"stock_envelope": "0.015", "candidate_delta": "0.01"}
+    }
+  },
   "tokens_per_prompt": 22484,
   "tokenizer_asset": "tokenizer-official",
   "model_in_ram": true,

@@ -118,6 +118,7 @@ the pod transport. One directory holds them:
 | `replay_windows` | optional: the scored windows per load, replacing the packet's |
 | `replay_warm_windows` | optional: the untimed windows before the scored ones, 0 to 2, replacing the packet's; time one stock lifetime on the node before sealing, since each window lasts as long as the slice's longest session at the model's per-user speed |
 | `tokens_per_prompt` | the largest recorded output budget of one turn in the sessions the replay serves; the commission refuses any other value |
+| `quality` | optional teacher policy with a selected turn count, severity threshold, paired metric limits and stock drift limits; the operator render requires the measured control receipt |
 | `tokenizer_asset` | the tokenizer directory name inside the replay inputs archive |
 | `model_in_ram` | whether the checkpoint is served from a RAM mount or from its storage path |
 | `owner` | the dispatcher owner name of the commissioned pair |
@@ -145,6 +146,23 @@ what intake computes for it: with the control bundle on disk,
 from `cacheon.engine_tree` and `cacheon.target_catalog`; the render writes the
 list into the sealed policy of the packet's fixed capabilities, replacing the
 previous arena's controls as it replaces the replay load.
+
+For an arena declaring `quality`, build its control receipt from keyed token logprobs.
+The baseline, independent stock, faithful optimization and damaged control must
+cover the same prompts and token budgets. Fit and validation panels have disjoint
+prompt IDs. The supplied speed witness contributes only its stored stock boots.
+The command exits if either panel fails to distinguish the controls.
+
+```bash
+PYTHONPATH=. python scripts/arena/seal_quality_controls.py \
+  --operator examples/arena_inputs/glm53flashpd/operator.json --baseline stock.json \
+  --stock stock-repeat.json --positive faithful.json --negative damaged.json \
+  --speed-witness qualification-attempt.json --out quality-controls.json
+```
+
+Pass `--quality-controls quality-controls.json` to `scripts/arena/render_operator.py`.
+The derived manifest binds the measured observations to the new commission. Verify the
+controls on the commissioned workload and run its off-chain twin before connecting it.
 
 ## 4. Render and review
 

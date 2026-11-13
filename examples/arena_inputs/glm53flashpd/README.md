@@ -65,6 +65,22 @@ model's honest twin is bitwise, FP8 block-scaled projections sit at 6-13% row er
 0 and the wrong control at 50% (pod, 2026-11-11). It holds once `cacheon check
 --audit-row-floor-ppm 150000` passes the validator-built FP8 control and fails the wrong one.
 
+## Replay quality
+
+The GLM quality policy selects 32 replay turns before seeing their teacher scores. Each arm
+has the same input and output budget on a selected turn. Pristine T scores each arm's own
+completion. The two metrics are mean negative log-likelihood and mean excess loss above
+5 nats, calculated as `sum(max(0, token_nll - 5)) / token_count` on each turn.
+The candidate limits on the mean paired increases are 0.08 and 0.01 nats per token,
+respectively. Positive excesses retain their magnitude. The separate stock drift
+limits are 0.15 and 0.015. Each bound uses the variation across the paired turns.
+
+The candidate passes quality when both upper bounds clear their limits, fails on a
+lower bound above its limit and receives `NO_DECISION` on overlap. Invalid stock controls
+also yield `NO_DECISION`. The two stored stock pairs supply baseline and control.
+The commissioned prompt count is fixed for all entrants. An older qualification
+reopens with its original thresholds and prompt selection.
+
 ## Development check
 
 `cacheon check` runs the pair's one-engine form on two GPUs: the shared options with

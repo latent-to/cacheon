@@ -1930,7 +1930,7 @@ def reopen_causal_qualification(
             raw = report.raw_quality_binding
             quality = score_reference_quality(
                 reopen_reference_quality_evidence(root, report.raw_quality_artifact,
-                                                  expected_binding=raw),
+                                                  expected_binding=raw, calibration=calibration),
                 calibration=calibration, expected_context=expected.calibration_context,
             )
             speed = report.speed_witness
@@ -2314,7 +2314,7 @@ def run_causal_qualification(
         quality_evidence = reopen_reference_quality_evidence(
             value.evidence_root,
             raw_ref,
-            expected_binding=raw.binding,
+            expected_binding=raw.binding, calibration=calibration,
         )
         quality = score_reference_quality(
             quality_evidence,

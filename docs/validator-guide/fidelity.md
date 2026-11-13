@@ -237,7 +237,10 @@ stale, incomplete, or context-mismatched calibration is not usable for a crown.
 ## Quality decisions
 
 The registered policy can grade metrics such as argmax disagreement, support coverage,
-teacher NLL, KL-derived measures, tail rate, and task score. Exact metrics depend on the
+teacher NLL, KL-derived measures, tail rate, excess loss and task score. For
+`tail_excess_nll`, each turn contributes the sum of token loss above the sealed
+tail threshold divided by the total tokens in that turn. The grader compares
+the paired turn values across selected prompts. Exact metrics depend on the
 frozen arena calibration; documentation must not present one universal threshold as the
 Cacheon quality contract.
 

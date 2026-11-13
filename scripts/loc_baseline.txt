@@ -190,12 +190,14 @@
 # (12e0a9c7 sizes a pair's audit members by its one-engine form).
 # Live dashboard patches folded in for the GLM cutover: closed-arena submissions_open and the fork SGLang overlay,
 # less the dead OKC selector entry (no /okc route in this tree): dashboard +18.
+# Measured GLM teacher controls replace synthetic control observations in this operator render. Document the
+# quality metrics, sealed sample count and command, and exercise severity and historical evidence reopening.
 (root) 1163
 .github 338
-cacheon 92193
+cacheon 92206
 cacheon_kernels 936
 dashboard 4420
-docs 13345
-examples 400
-scripts 4538
-tests 14101
+docs 13366
+examples 426
+scripts 4714
+tests 14133

@@ -47,6 +47,7 @@ _METRIC_DIRECTIONS = {
     "argmax_rate": "lower",
     "coverage_dev": "lower",
     "mean_nll": "lower",
+    "tail_excess_nll": "lower",
     "tail_rate": "lower",
     "task_score": "higher",
     "topk_kl": "lower",
@@ -184,11 +185,7 @@ class MetricCalibration:
             "stock_envelope",
             _decimal(self.stock_envelope, field=f"{self.name} stock_envelope"),
         )
-        object.__setattr__(
-            self,
-            "candidate_delta",
-            _decimal(self.candidate_delta, field=f"{self.name} candidate_delta"),
-        )
+        object.__setattr__(self, "candidate_delta", _decimal(self.candidate_delta, field=f"{self.name} candidate_delta"))
         if self.absolute_floor is not None:
             object.__setattr__(
                 self,
