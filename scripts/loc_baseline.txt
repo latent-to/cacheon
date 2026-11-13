@@ -183,12 +183,17 @@
 # the packet judge's HiddenJudgeReceipt and hidden_judge_output_digest come back (+37) for commissioning step 3.
 # Commission refuses a non-stock incumbent (docs +4), paid by the uncalled batch_request wrapper: cacheon -18.
 # Sealed one-sided per-load regression guard (load_margin): cacheon +17 after the uncalled sandbox.load_entry, docs +6.
+# GLM-5.3-Flash PD go-live: steady-span load scoring and its import exemption, the pair T GPU-count fix, the twin
+# payment bar, the dashboard per-load view and the commissioned pin tables: cacheon +110, dashboard +9, docs +18,
+# examples +13, scripts +29, tests +9. The branch stays net -3,234 lines against main (retired arenas deleted).
+# File ceilings: qualification_runner.py 2430 (the T check; still 24 under main), oci_outer_session.py 906
+# (12e0a9c7 sizes a pair's audit members by its one-engine form).
 (root) 1163
 .github 338
-cacheon 92083
+cacheon 92193
 cacheon_kernels 936
-dashboard 4393
-docs 13327
-examples 387
-scripts 4502
-tests 14092
+dashboard 4402
+docs 13345
+examples 400
+scripts 4536
+tests 14101
