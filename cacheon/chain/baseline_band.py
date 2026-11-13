@@ -11,6 +11,7 @@ retired) is not rendered: its raw lane ratio was never the credited gain.
 from __future__ import annotations
 
 import json
+import math
 import statistics
 from pathlib import Path
 from typing import Any
@@ -135,7 +136,8 @@ def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
             "windows": len(reads.candidate if reads.boots else reads.incumbent) // len(reads.loads),
             "window_limit": reads.window_limit, "reference_boots": reads.reference_boots,
             "contract": asdict(policy.contract),
-            "grading": {"decision": grade.decision.value, "detail": grade.verdict.detail,
+            "per_load": _per_load(reads, policy),
+            "grading": {"steady_span": policy.steady_span or None,"decision": grade.decision.value, "detail": grade.verdict.detail,
                         "required_speedup": grade.verdict.required,
                         "null_noise": policy.null_noise,
                         "standard_error": grade.verdict.noise if policy.error_rate else None,
@@ -150,6 +152,33 @@ def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
     except (RuntimeError, ValueError, KeyError, TypeError, AttributeError) as exc:
         speed["grading_error"] = str(exc)
     return speed
+
+
+def _per_load(reads, policy) -> list[dict[str, Any]]:
+    """Each load's stock and candidate cost as the scorer computes it, their ratio and decode medians.
+
+    A boot's per-window cost under a sealed steady span is seconds per warm turn, not the whole fixed-work span the
+    window table shows; on a GLM-5.3-Flash PD twin the two disagreed by up to 1.6 points at one load (2026-11-12)."""
+    from cacheon.eval.service_capacity import decode_p50, fixed_work_rate, steady_span_cost
+
+    if not reads.reference_boots or not reads.candidate:
+        return []
+    stock = reads.incumbent[:reads.reference_boots * reads.window_limit * len(reads.loads)]
+    floors = policy.floors(reads.loads)
+
+    def cost(read):
+        work = reads.work(read.load)
+        return (steady_span_cost(read, work, policy.steady_span) if policy.steady_span
+                else fixed_work_rate(read, work, wall_time=True).elapsed_s)
+
+    rows = []
+    for load in reads.loads:
+        base, cand = ([read for read in arm if read.load == load] for arm in (stock, reads.candidate))
+        logs = [sum(math.log(cost(read)) for read in arm) / len(arm) for arm in (base, cand)]
+        rows.append({"load": load, "stock_cost": math.exp(logs[0]), "candidate_cost": math.exp(logs[1]),
+                     "gain": math.exp(logs[0] - logs[1]), "stock_decode_tps": decode_p50(base),
+                     "candidate_decode_tps": decode_p50(cand), "decode_floor_tps": floors.get(load)})
+    return rows
 
 
 def _replay_diagnostics(read) -> dict[str, Any]:

@@ -58,6 +58,12 @@ function replayPerformance(speed, title) {
       ${grade.futility_margin ? `A run whose first ${reference ? "boot" : "lane orientation"} reads more than ${metricNumber(grade.futility_margin * 100, 2)}% slower than the baseline stops there.` : ""}</p>
     <div class="metrics-table">${reference ? table(["Engine boot", "Same work (s)", "Decode (tok/s)", "First token (s)", "In service level (%)"], rows)
       : table(["Pass", "Gain", fastest ? "Mean turn (s)" : "Same work (s)", "Decode (tok/s)", "First token (s)", "In service level (%)"], rows)}</div>
+    ${(speed.per_load || []).length ? `<div class="metrics-table">${table(["Load", grade.steady_span ? "Scored s per warm turn" : "Scored same work (s)",
+      "Gain", "Decode median tok/s (floor)"], speed.per_load.map((row) => `<tr><td>${metricNumber(row.load, 0)} sessions</td>
+      <td>${sideBySide(row.stock_cost, row.candidate_cost, grade.steady_span ? 4 : 1)}</td><td><b>${metricGain(row.gain)}</b></td>
+      <td>${sideBySide(row.stock_decode_tps, row.candidate_decode_tps, 1, "more")}${row.decode_floor_tps == null ? "" : ` (${metricNumber(row.decode_floor_tps, 0)})`}</td></tr>`))}</div>
+    <p class="metric-note">The measured gain is the geometric mean of the per-load gains.${grade.steady_span
+      ? ` Each load is scored until fewer than ${metricNumber(grade.steady_span * 100, 0)}% of its sessions are still active after the last one starts, so the drain of the longest sessions does not set the time.` : ""}</p>` : ""}
     <p class="metric-note">${reference ? "One engine at a time owns the whole lane. The stock reference is retained across candidates, and its stored answers supply the quality check after a PASS."
         : "Every pair reads baseline → candidate. Each pass runs the two at the same moment on two lanes."} Timing starts at the first warm release; the opening cold-prefill round is excluded.
       ${fastest ? "The score divides the baseline’s fastest pass by the candidate’s fastest pass; those two readings are in bold."

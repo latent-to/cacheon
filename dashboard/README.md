@@ -173,7 +173,10 @@ Each qualification attempt also has a **Performance** section:
 - **Agent replay:** the measured and required gain, then one row per pass. A
   pass pairs the baseline and the candidate that ran at the same moment: gain,
   time for the same work, decode tok/s pooled over the arm, mean and p95
-  first-token time, and service attainment.
+  first-token time, and service attainment. A retained-reference grade adds one
+  row per load: stock and candidate cost as the scorer computes it (seconds per
+  warm turn under a sealed steady span), that load's gain, and the pooled decode
+  median against the load's floor.
 - A retained batch-cell attempt (speed policies 8–15) shows that its
   measurements are unavailable; its stored lane rates are not rendered.
 
