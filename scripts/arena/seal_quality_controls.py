@@ -18,7 +18,9 @@ def _read(path, threshold):
         nll = [-token[0] for token in row["tok"]]
         if key in prompts or not nll or any(not math.isfinite(x) or x < 0 for x in nll):
             raise ValueError(f"{path}: malformed teacher control")
-        prompts[key] = (len(nll), statistics.mean(nll), statistics.mean(max(0, x - threshold) for x in nll))
+        prompts[key] = {"tokens": len(nll), "mean_nll": statistics.mean(nll),
+                        "tail_excess_nll": statistics.mean(max(0, x - threshold) for x in nll),
+                        "tail_rate": statistics.mean(x > threshold for x in nll)}
     return prompts, hashlib.sha256(raw).hexdigest()
 
 
@@ -61,7 +63,7 @@ def measure(files, policy, speed_witness):
 
     inputs = {arm: _read(path, float(policy["nll_tail_threshold"])) for arm, path in files.items()}
     reference = inputs["baseline"][0]
-    if any(set(arm) != set(reference) or any(arm[k][0] != reference[k][0] for k in reference)
+    if any(set(arm) != set(reference) or any(arm[k]["tokens"] != reference[k]["tokens"] for k in reference)
            for arm, _ in inputs.values()):
         raise ValueError("quality controls differ in prompt membership or token budget")
     # Split on the prompt identity, shared across all model arms. The selection precedes reading any outcome.
@@ -69,7 +71,6 @@ def measure(files, policy, speed_witness):
     size = policy["select_count"]
     if len(order) < size * 2:
         raise ValueError("quality controls need separate fitting and validation panels of the commissioned size")
-    metrics = ("mean_nll", "tail_excess_nll")
     z = float(policy["familywise_z"])
     stock_sha, speed_noise = _stock_speed_noise(speed_witness)
     observed, validation = [], {}
@@ -79,8 +80,8 @@ def measure(files, policy, speed_witness):
         checks = []
         for offset in (0, size):
             bounds = {}
-            for index, name in enumerate(metrics, 1):
-                deltas = [values[key][index] - reference[key][index] for key in order[offset:offset + size]]
+            for name in policy["limits"]:
+                deltas = [values[key][name] - reference[key][name] for key in order[offset:offset + size]]
                 scored = list(map(abs, deltas)) if arm == "stock" else deltas
                 low, high = _interval(scored, z)
                 limit = float(policy["limits"][name]["stock_envelope" if arm == "stock" else "candidate_delta"])
