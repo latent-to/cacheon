@@ -3,8 +3,8 @@
 A stock reference campaign is measured once per lane identity and retained; each candidate reads whole
 lifetimes against it, and a PASS takes its quality controls from it (Shiv deleted the post-PASS stock bracket
 2026-11-05: 25.5 node-minutes, no PD verdict changed). Stock and candidate are read only as the first two engine
-lifetimes of their own evaluator process, so the reference is two stock pairs (version 21; version 20's
-four-lifetime references stay readable).
+lifetimes of their own evaluator process. Version 22 retains one stock pair and version 21 retains two.
+Version 20's four-lifetime references stay readable.
 """
 
 from __future__ import annotations
@@ -183,7 +183,7 @@ class GoodputReadSet:
         order = [(load, window) for load in self.loads for window in range(1, self.window_limit + 1)]
         size = len(order)
         if (type(self.boots) is not int or type(self.reference_boots) is not int or self.orientations
-            or not 2 <= self.boots <= CANDIDATE_BOOTS or self.reference_boots != REFERENCE_BOOTS
+            or self.boots != CANDIDATE_BOOTS or self.reference_boots not in (CANDIDATE_BOOTS, REFERENCE_BOOTS)
             or len(self.incumbent) not in (self.reference_boots * size, (self.reference_boots + 1) * size)
             or len(self.candidate) % size or len(self.candidate) > self.boots * size
             or any((read.load, read.window) != order[index % size] for reads in (self.incumbent, self.candidate)
@@ -301,11 +301,12 @@ def _boot(executor, arm, lane, model_mount, *, prefix, deadline, tokenizer):
 
 
 def _reference_pointer(plan, evidence_root) -> Path:
+    boots = plan.policy.reference_boots
     identity = canonical_digest(REFERENCE_SCHEMA, {
-        "boots": REFERENCE_BOOTS, "lane": plan.baseline_lane_digest, "launch": plan.baseline.launch.digest,
+        "boots": boots, "lane": plan.baseline_lane_digest, "launch": plan.baseline.launch.digest,
         "runtime": plan.baseline.binding.runtime_preflight_receipt.sha256,
         "workload": marginal_workload_digest(plan.baseline.session_plan),
-        **({"pair_boots": CANDIDATE_BOOTS, "pair_processes": REFERENCE_BOOTS // CANDIDATE_BOOTS}
+        **({"pair_boots": CANDIDATE_BOOTS, "pair_processes": boots // CANDIDATE_BOOTS}
            if plan.policy.version >= 21 else {}),
     })
     # A dot name can never be an evidence domain directory.
@@ -356,13 +357,14 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
     again on this lane, never borrowed from another lane, image, launch or workload. A missing reference
     measures one stock pair as the first lifetimes of this evaluator process, as every candidate pair
     is read, then ends the qualification without a candidate read (infrastructure, never a candidate
-    FAIL); the second such pair completes the reference.
+    FAIL). The sealed policy determines how many pairs complete the reference.
     """
     from cacheon.eval.crossover_runtime import _lane_digest
     from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence, reopen_evidence
     from cacheon.eval.oci_backend import EngineExecutionEvidence
 
     codec = ContinuationCodec((EngineExecutionEvidence,))
+    boots = plan.policy.reference_boots
     pointer = _reference_pointer(plan, evidence_root)
     first = pointer.with_name(f"{pointer.stem}.first-pair.json")
     lane = _lane_digest(executor, plan.baseline)
@@ -388,9 +390,9 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
         tokenizer = _tokenizer(plan)
         measured = tuple(_boot(executor, plan.baseline, lane, model_mount, prefix="incumbent", deadline=deadline,
                                tokenizer=tokenizer)[0] for _ in range(CANDIDATE_BOOTS))
-        executions = (reopen(first) if first.exists() else ()) + measured
-        target = pointer if len(executions) == REFERENCE_BOOTS else first
-    if (len(executions) != (CANDIDATE_BOOTS if target == first else REFERENCE_BOOTS)
+        executions = (reopen(first) if boots > CANDIDATE_BOOTS and first.exists() else ()) + measured
+        target = pointer if len(executions) == boots else first
+    if (len(executions) != (CANDIDATE_BOOTS if target == first else boots)
             or any(type(row) is not EngineExecutionEvidence for row in executions)):
         raise CrossoverRuntimeError("stock reference lacks its sealed lifetimes")
     reference_arm = _reference_arm(plan, getattr(executions, "origin", ""))
@@ -401,7 +403,7 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
             "identity": pointer.stem, "executions": [codec.encode(row) for row in executions],
         }), domain=REFERENCE_DOMAIN, media_type="application/json", schema=REFERENCE_SCHEMA,
             max_bytes=_REFERENCE_BYTES)
-        if target == pointer:
+        if target == pointer and boots > CANDIDATE_BOOTS:
             # Before the pointer exists, so a reference retired later never lends its first pair.
             first.rename(first.with_name(f"{first.stem}.merged-{time.time_ns()}.json"))
         target.parent.mkdir(mode=0o700, exist_ok=True)
@@ -450,7 +452,7 @@ def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root
                            deadline=deadline, tokenizer=tokenizer))
         reads = GoodputReadSet(stock, tuple(read for row in boots for read in row[0].session.replay_reads),
                                window_limit=replay.windows, boots=CANDIDATE_BOOTS, **_work(replay),
-                               reference_boots=REFERENCE_BOOTS, payment_bar=payment_bar,
+                               reference_boots=plan.policy.reference_boots, payment_bar=payment_bar,
                                reference_lane=stock[0].lane if getattr(reference, "origin", "") else "")
         grade = reads.grade(plan.policy.goodput)
         if grade.decision is not SpeedStageDecision.NO_DECISION:
@@ -477,8 +479,9 @@ def regrade_reference_speed(evidence, plan):
 
     replay = plan.candidate.session_plan.replay
     lane = _expected_lane_digest(plan.candidate)
-    reference = evidence.prior_executions[:REFERENCE_BOOTS]
-    candidates = (*evidence.prior_executions[REFERENCE_BOOTS:], evidence.candidate_execution)
+    boots = plan.policy.reference_boots
+    reference = evidence.prior_executions[:boots]
+    candidates = (*evidence.prior_executions[boots:], evidence.candidate_execution)
     bracket = evidence.baseline_execution
     reference_arm = _reference_arm(plan, evidence.reference_origin)
     quiet = (evidence.candidate_quiescence, *((evidence.baseline_quiescence,) if bracket else ()))
@@ -486,7 +489,7 @@ def regrade_reference_speed(evidence, plan):
         or evidence.selected_delta_digest != plan.selected_delta_digest
         or evidence.workload_digest != marginal_workload_digest(plan.baseline.session_plan)
         or (evidence.baseline_lane_digest, evidence.candidate_lane_digest) != (lane, lane)
-        or len(reference) != REFERENCE_BOOTS or len(candidates) > CANDIDATE_BOOTS
+        or len(reference) != boots or len(candidates) > CANDIDATE_BOOTS
         or (bracket is None) != (evidence.baseline_quiescence == evidence.candidate_quiescence)
         or any(row.namespace_digest != plan.candidate.executor_namespace_digest
                or (row.container_ids, row.lease_records, row.resource_entries) != ((), (), ()) for row in quiet)):
@@ -506,7 +509,7 @@ def regrade_reference_speed(evidence, plan):
     stock = tuple(read for row in reference for read in row.session.replay_reads)
     rebuilt = GoodputReadSet(stock + (bracket.session.replay_reads if bracket else ()),
                              tuple(read for row in candidates for read in row.session.replay_reads),
-                             window_limit=replay.windows, boots=CANDIDATE_BOOTS, reference_boots=REFERENCE_BOOTS, **_work(replay),
+                             window_limit=replay.windows, boots=CANDIDATE_BOOTS, reference_boots=boots, **_work(replay),
                              payment_bar=evidence.goodput.payment_bar,
                              reference_lane=stock[0].lane if evidence.reference_origin else "")
     if rebuilt != evidence.goodput:

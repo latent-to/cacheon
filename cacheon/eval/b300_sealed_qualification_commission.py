@@ -348,10 +348,12 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
     _commission_int(session.get("warmup_count"), "warmup_count", minimum=0)
     _commission_int(session.get("conditioning_count"), "conditioning_count", minimum=0)
     _commission_decimal(session.get("temperature"), "temperature")
-    if set(speed) != _COMMISSION_SPEED_FIELDS:
+    if set(speed) - {"version"} != _COMMISSION_SPEED_FIELDS:
         raise B300RegisteredQualificationError(
             "sealed qualification resident-speed block is not closed"
         )
+    if "version" in speed and _commission_int(speed["version"], "resident speed version", minimum=21) not in (21, 22):
+        raise B300RegisteredQualificationError("unsupported commissioned resident speed version")
     from cacheon.eval.goodput_runtime import GoodputPolicy
     replay = session["replay"]
     if type(replay) is not dict or set(replay) - {"max_work_seconds", "warm_windows"} != {

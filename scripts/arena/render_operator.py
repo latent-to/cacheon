@@ -41,7 +41,7 @@ KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size
 # replay_warm_windows: the untimed windows before the scored ones (0-2), replacing the packet's; steady_span: score
 # each load until active sessions fall below this share of it, sealed with decode_floors.
 OPTIONAL_KEYS = {"decode_floors", "replay_windows", "audit_row_floor_ppm", "load_margin", "replay_warm_windows",
-                 "steady_span", "quality"}
+                 "steady_span", "quality", "speed_policy_version"}
 NODE_KEYS = {"name", "scheduler_starts", "helper_starts", "client_cpus"}
 # engine_cpus: an engine's first GPU -> [DP controller vCPU, frontend vCPU] (oci_cpuset.canonical_cpu_roles).
 OPTIONAL_NODE_KEYS = {"engine_cpus", "lifetime_memory_gib"}
@@ -114,6 +114,8 @@ def load_operator(path: Path) -> dict:
         raise SystemExit(f"{path}: load_margin is a canonical decimal in (0, 1), sealed with decode_floors")
     if "steady_span" in operator and (not floors or not re.fullmatch(r"0\.[0-9]*[1-9]", operator["steady_span"])):
         raise SystemExit(f"{path}: steady_span is a canonical decimal in (0, 1), sealed with decode_floors")
+    if "speed_policy_version" in operator and (type(operator["speed_policy_version"]) is not int or operator["speed_policy_version"] not in (21, 22)):
+        raise SystemExit(f"{path}: speed_policy_version must be 21 or 22")
     starts, helpers = operator["node"]["scheduler_starts"], operator["node"]["helper_starts"]
     if len(helpers) != len(starts) or not all(type(c) is int for c in (*starts, *helpers)):
         raise SystemExit(f"{path}: helper_starts names one helper vCPU per scheduler start, in GPU order")
@@ -138,6 +140,7 @@ def values(operator: dict, arena_inputs: str) -> dict[str, str]:
         "MODEL_PROFILE_KEY": operator["model_profile_key"], "TP": str(width),
         "TOKENS_PER_PROMPT": str(operator["tokens_per_prompt"]),
         "QUALITY_PROMPTS": str(quality.get("select_count", 8)),
+        "SPEED_VERSION_FIELD": (f'\n    "version": {operator["speed_policy_version"]},' if "speed_policy_version" in operator else ""),
         "NLL_TAIL_THRESHOLD": quality.get("nll_tail_threshold", "0.35"),
         "TOKENIZER_ASSET": operator["tokenizer_asset"],
         "OWNER": operator["owner"], "RAM_MODEL_ARGS": " '--ram-model'," if operator["model_in_ram"] else "",

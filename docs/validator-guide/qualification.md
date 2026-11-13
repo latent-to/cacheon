@@ -44,10 +44,11 @@ Retained attempts identify the speed policy that created them:
 
 | Version | Timed reads | Purpose |
 |---|---|---|
+| v22 | Up to two candidate boots against one fresh pair of stock boots on the same physical lane | GLM-5.3-Flash PD uses both stock reads for speed and the two separately booted stock engines for quality |
 | v21 | Up to two fresh prefill/decode pair boots of N windows per sealed load against a retained stock reference of two pairs on one lane | New commissions: log mean elapsed serving cost per boot with statistical eligibility and per-load decode floors |
 | v20 | The same, against a four-boot reference measured in one evaluator process | Retained evidence of the DeepSeek-V4.1-Flash PD arena (2026-10-28): regrades and settles from its retained reads |
 
-Both are described in [Finite agent replay](#finite-agent-replay).
+See [Finite agent replay](#finite-agent-replay).
 
 Versions 16–19 (paired windows on two lanes, then one engine per node) served
 retired arenas, versions 8–15 measured batch cells, and versions 1–7 preceded
@@ -109,15 +110,15 @@ store under the commissioned root that later boots of the same tree reuse.
 
 1. **Stock reference.** The first qualification that finds no current reference
    for the stock identity (lane digest, stock launch digest, runtime preflight
-   SHA-256, workload digest, boot schedule) measures four fresh stock boots as
-   two pairs, each the first two engine lifetimes of
+   SHA-256, workload digest, boot schedule) measures one fresh stock pair under v22
+   or two fresh pairs under v21. Each pair occupies the first two engine lifetimes of
    its own evaluator process, the position every candidate pair holds: replay
    rates fall with each lifetime one evaluator process runs and recover in the
    next qualification's process, not after idle GPUs
    ([measurement](../results/deepseek-v41-flash-pd.md#reference-position)). A
    qualification that measures a stock pair retains it and ends `NO_DECISION`
-   (infrastructure, never a candidate FAIL) without reading its candidate; the
-   next such qualification completes the reference. Policy 20 retains its
+   (infrastructure, never a candidate FAIL) without reading its candidate. With v22
+   the pair completes the reference. With v21 the next pair completes it. Policy 20 retains its
    historical consecutive reference campaign. The producer
    publishes them to the evidence store (domain
    `cacheon.qualification.stock-reference`, schema

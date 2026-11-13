@@ -29,7 +29,7 @@ measured under confidential computing.
 
 ## Speed policy
 
-Speed policy 21 replays the sealed agent-trace pool in a closed loop at three session
+Speed policy 22 replays the sealed agent-trace pool in a closed loop at three session
 concurrencies in each engine lifetime, low, mid and high (`replay_load` in
 `operator.json`), and scores the geometric mean of the three served-throughput ratios
 against the retained stock reference. One scored window per load (`replay_windows`)
@@ -57,8 +57,9 @@ with floors 85, 82 and 80 tokens/s, about 10% under the commissioned pair's stoc
 128-request cap at every load, so these sit well under the 11-11 rig medians (143.8, 113.0, 110.5). Stock must hold each
 floor at its load. The `node` block uses the replacement B300 pod's measured pin table (2026-11-13).
 Each GPU has a fast scheduler vCPU and a helper on a separate physical core. The client uses eight more fast
-vCPUs. DP 1 requires no `engine_cpus`. A replacement with different physical GPUs measures its own four stock
-boots before scoring a candidate.
+vCPUs. DP 1 requires no `engine_cpus`. A replacement measures one fresh stock pair on its physical
+GPUs before scoring candidates. The operator seals this schedule with `speed_policy_version: 22`.
+The speed scorer uses both stock boots in its uncertainty estimate.
 
 The node audit's row floor is 15% (`audit_row_floor_ppm` 150000), not the 2% default: this
 model's honest twin is bitwise, FP8 block-scaled projections sit at 6-13% row error at layer
@@ -77,7 +78,7 @@ limits are 0.15 and 0.015. Each bound uses the variation across the paired turns
 
 The candidate passes quality when both upper bounds clear their limits, fails on a
 lower bound above its limit and receives `NO_DECISION` on overlap. Invalid stock controls
-also yield `NO_DECISION`. The two stored stock pairs supply baseline and control.
+also yield `NO_DECISION`. The first stock boot supplies the baseline and the second supplies the control.
 The commissioned prompt count is fixed for all entrants. An older qualification
 reopens with its original thresholds and prompt selection.
 

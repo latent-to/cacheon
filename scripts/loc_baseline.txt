@@ -194,10 +194,10 @@
 # quality metrics, sealed sample count and command, and exercise severity and historical evidence reopening.
 (root) 1163
 .github 338
-cacheon 92206
+cacheon 92217
 cacheon_kernels 936
 dashboard 4420
-docs 13366
-examples 426
-scripts 4714
-tests 14133
+docs 13367
+examples 428
+scripts 4717
+tests 14146

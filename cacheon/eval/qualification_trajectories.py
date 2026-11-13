@@ -92,15 +92,16 @@ def _source_rows(replay, directory: Path, batches):
     return result
 
 
-# Since 2026-11-05 no stock engine boots after a PASS: the first lifetime of each stored stock pair (separate
-# evaluator processes) holds the stock rollout and its independent control.
-_STORED = slice(0, 3, 2)
+def _stock_pair(executions, count):
+    # Since 2026-11-05 no stock engine boots after a PASS. Four-boot policies use the first lifetime
+    # from each fresh process. A single-pair policy uses its two separately booted stock engines.
+    return executions[0], executions[count // 2]
 
 
 def stock_rollouts(evidence):
     """The stock rollout and control lifetimes: a retained bracket for both, else the two stored ones."""
     bracket = evidence.baseline_execution
-    return (bracket, bracket) if bracket is not None else evidence.prior_executions[_STORED]
+    return (bracket, bracket) if bracket is not None else _stock_pair(evidence.prior_executions, evidence.policy.reference_boots)
 
 
 def _timed_rows(execution, arm, replay):
@@ -130,7 +131,7 @@ def create_controls(value, reference, candidate, candidate_directory, candidate_
     pool = prompt_pool(replay)
     arm = _reference_arm(plan, getattr(reference, "origin", ""))
     compared = _source_rows(replay, candidate_directory, candidate.session.batches)
-    lifetimes = reference[_STORED]
+    lifetimes = _stock_pair(reference, plan.policy.reference_boots)
     stock, control = (_matched(_timed_rows(row, arm, replay), compared, pool) for row in lifetimes)
     pairs = tuple((key, stock[key].batch_index, compared[key].batch_index) for key in sorted(compared))
     entropy = entropy_provider(value.commitment, candidate_quiescence)

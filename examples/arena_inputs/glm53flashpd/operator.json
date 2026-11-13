@@ -9,6 +9,7 @@
   "load_margin": "0.01",
   "steady_span": "0.5",
   "replay_windows": 1,
+  "speed_policy_version": 22,
   "replay_warm_windows": 0,
   "quality": {
     "algorithm_id": "teacher-familywise-v1",

@@ -670,7 +670,7 @@ class ResidentSpeedWitness:
         ):
             raise QualificationRunnerError("resident speed wall time is invalid")
         rates = tuple(self.rates)
-        if rates or type(self.goodput) is not GoodputReadSet:
+        if rates or type(self.goodput) is not GoodputReadSet or self.goodput.reference_boots != self.resident_policy.reference_boots:
             raise QualificationRunnerError("resident speed witness read order differs")
         object.__setattr__(self, "rates", rates)
         expected = _resident_speed_projection_digest(**{

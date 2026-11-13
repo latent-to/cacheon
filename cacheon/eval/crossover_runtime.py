@@ -18,7 +18,7 @@ from typing import Callable
 from cacheon.eval import pd_engine
 from cacheon.eval.resident_speed_policy import ResidentSpeedPolicy
 from cacheon.eval.goodput_runtime import (
-    REFERENCE_BOOTS, GoodputPolicy as GoodputPolicy, GoodputReadSet, regrade_reference_speed,
+    GoodputPolicy as GoodputPolicy, GoodputReadSet, regrade_reference_speed,
 )
 from cacheon.eval.reference_protocol import ReferencePromptInput
 from cacheon.eval.qualification import SelectionEntropyReceipt
@@ -312,9 +312,9 @@ class ResidentCrossoverEvidence:
 
     def __post_init__(self) -> None:
         if (type(self.policy) is not ResidentSpeedPolicy or self.replay_windows
-            or len(self.prior_executions) < REFERENCE_BOOTS
+            or len(self.prior_executions) < self.policy.reference_boots
             or any(type(v) is not EngineExecutionEvidence for v in self.prior_executions)
-            or type(self.goodput) is not GoodputReadSet or not self.goodput.boots):
+            or type(self.goodput) is not GoodputReadSet or self.goodput.reference_boots != self.policy.reference_boots):
             raise CrossoverRuntimeError("speed evidence lacks its stock reference lifetimes")
         for field in (
             "plan_digest",
@@ -474,7 +474,7 @@ class ResidentMarginalLifecycleEvidence:
     def timed_session_ids(self) -> frozenset[str]:
         return frozenset(
             row.session.session_id
-            for row in (*self.crossover.prior_executions[REFERENCE_BOOTS:], self.crossover.candidate_execution,
+            for row in (*self.crossover.prior_executions[self.crossover.policy.reference_boots:], self.crossover.candidate_execution,
                         *((self.crossover.baseline_execution,) if self.crossover.baseline_execution else ()))
         )
 
