@@ -361,6 +361,11 @@ speed score counts that. The validator owns the speculative schedule, sampling
 and acceptance rules, and request batching. A contribution may not change those
 controls or manipulate acceptance decisions to manufacture throughput.
 
+For an explicit MTP-layer claim, the timed candidate and its eager audit mount
+the commissioned controller's node adapter read-only in the pinned engine image.
+The runtime command binds the adapter's SHA-256. Stock and target-only trees
+use the image's installed adapter, preserving the retained stock measurement.
+
 This keeps experimentation possible without widening every ordinary submission's authority.
 
 ## Failure behavior by phase

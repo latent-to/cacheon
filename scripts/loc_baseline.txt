@@ -193,12 +193,13 @@
 # Measured GLM teacher controls replace synthetic control observations in this operator render. Document the
 # quality metrics, sealed sample count and command, and exercise severity and historical evidence reopening.
 # Audit twin keeps TRT-LLM BF16 experts fused so the GLM draft node audits: cacheon +5 (sglang_nodes.py has no dead code).
+# Explicit MTP claims mount the commissioned adapter. The shared file-mount helper replaces the inline worker mount.
 (root) 1163
 .github 338
-cacheon 92222
+cacheon 92255
 cacheon_kernels 936
 dashboard 4420
-docs 13367
+docs 13372
 examples 428
-scripts 4718
-tests 14146
+scripts 4719
+tests 14178

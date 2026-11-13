@@ -17,7 +17,7 @@ cacheon/eval/b300_qualification_deployment.py 918
 cacheon/eval/calibration.py 905
 cacheon/eval/device_state.py 1475
 cacheon/eval/native_artifact.py 1209
-cacheon/eval/oci_backend.py 1707
+cacheon/eval/oci_backend.py 1695
 cacheon/eval/oci_outer_session.py 906
 cacheon/eval/oci_process.py 1685
 cacheon/eval/oci_session_protocol.py 1122
