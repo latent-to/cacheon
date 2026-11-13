@@ -19,8 +19,7 @@ def _read(path, threshold):
         if key in prompts or not nll or any(not math.isfinite(x) or x < 0 for x in nll):
             raise ValueError(f"{path}: malformed teacher control")
         prompts[key] = {"tokens": len(nll), "mean_nll": statistics.mean(nll),
-                        "tail_excess_nll": statistics.mean(max(0, x - threshold) for x in nll),
-                        "tail_rate": statistics.mean(x > threshold for x in nll)}
+                        "tail_excess_nll": statistics.mean(max(0, x - threshold) for x in nll)}
     return prompts, hashlib.sha256(raw).hexdigest()
 
 

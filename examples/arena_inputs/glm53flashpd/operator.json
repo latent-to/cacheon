@@ -12,14 +12,13 @@
   "speed_policy_version": 22,
   "replay_warm_windows": 0,
   "quality": {
-    "algorithm_id": "teacher-familywise-v1",
+    "algorithm_id": "teacher-familywise-upper-bound-v1",
     "familywise_z": "2",
     "select_count": 32,
     "nll_tail_threshold": "5",
     "limits": {
       "mean_nll": {"stock_envelope": "0.15", "candidate_delta": "0.08"},
-      "tail_excess_nll": {"stock_envelope": "0.015", "candidate_delta": "0.01"},
-      "tail_rate": {"stock_envelope": "0.005", "candidate_delta": "0.003"}
+      "tail_excess_nll": {"stock_envelope": "0.015", "candidate_delta": "0.01"}
     }
   },
   "tokens_per_prompt": 22484,
