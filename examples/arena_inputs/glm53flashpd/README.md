@@ -55,10 +55,10 @@ sessions and saturated prefill near 200-220, so the loads are 96, 160 and 224 se
 with floors 85, 82 and 80 tokens/s, about 10% under the commissioned pair's stock reference (pooled decode medians
 95.2, 91.3 and 89.2 over four boots, 2026-11-12). The production replay's first-turn cold wave keeps decode near its
 128-request cap at every load, so these sit well under the 11-11 rig medians (143.8, 113.0, 110.5). Stock must hold each
-floor at its load; the check runs when a candidate is graded, so a mis-sealed floor fails every candidate. The `node` block is the
-commissioned B300 pod's pin table (2026-11-12): eight fast scheduler vCPUs, each GPU's helper on the next
-physical core (this host numbers SMT siblings adjacently), the remaining eight fast vCPUs as the client set, and no
-`engine_cpus` with DP 1 everywhere.
+floor at its load. The `node` block uses the replacement B300 pod's measured pin table (2026-11-13).
+Each GPU has a fast scheduler vCPU and a helper on a separate physical core. The client uses eight more fast
+vCPUs. DP 1 requires no `engine_cpus`. A replacement with different physical GPUs measures its own four stock
+boots before scoring a candidate.
 
 The node audit's row floor is 15% (`audit_row_floor_ppm` 150000), not the 2% default: this
 model's honest twin is bitwise, FP8 block-scaled projections sit at 6-13% row error at layer
