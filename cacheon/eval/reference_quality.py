@@ -11,7 +11,7 @@ import math
 import statistics
 import struct
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field as dc_field, fields, is_dataclass
 from decimal import Decimal, ROUND_FLOOR, ROUND_HALF_EVEN, localcontext
 from enum import Enum
 from pathlib import Path
@@ -144,7 +144,7 @@ class TeacherNLLEvidence(_Record):
     nll_sum: str
     nll_max: str
     tail_count: int
-    tail_excess_sum: str | None = field(default=None, metadata={"wire_optional": True})
+    tail_excess_sum: str | None = dc_field(default=None, metadata={"wire_optional": True})
     def __post_init__(self) -> None:
         object.__setattr__(self, "token_count", _integer(self.token_count, "token_count", 1, _MAX_TOKENS))
         object.__setattr__(self, "nll_sum", _decimal(self.nll_sum, "nll_sum"))
