@@ -277,9 +277,16 @@ normal grader, evidence import and settlement still consume the completed result
 
 ### Interrupted replay controllers
 
-Continuation is stage-level. The speed stage commits once, complete, after the
-selected quality controls and normal engine teardown; a speed stage
-interrupted before that commit reruns whole. There are no per-window replay
+Continuation is stage-level, with one record inside the speed stage. A first
+candidate lifetime that leaves the stage undecided is retained as `speed_first`
+before the second boots, bound to the speed plan digest, the host clock domain
+(boot ID and time namespace) and the session IDs of the stock lifetimes it was
+graded against. A retry on the same worker reopens it, regrades it from its raw
+session, and boots only the second lifetime, as the first lifetime of its own
+evaluator process; a changed plan, host clock or reference is a HOLD. The record
+never enters a relay checkpoint, so a replacement worker measures both lifetimes.
+The speed stage itself commits once, complete, after the selected quality
+controls and normal engine teardown. There are no per-window replay
 checkpoints. The retained stock reference is not part of the stage: a replacement
 reuses it only when its lane, launch, runtime, workload and boot-count identity
 matches, and otherwise measures its own. Acknowledged execution of completed

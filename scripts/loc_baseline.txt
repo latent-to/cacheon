@@ -195,12 +195,13 @@
 # Audit twin keeps TRT-LLM BF16 experts fused so the GLM draft node audits: cacheon +5 (sglang_nodes.py has no dead code).
 # Explicit MTP claims mount the commissioned adapter. The shared file-mount helper replaces the inline worker mount.
 # Every replay AIPerf run (prime and timed windows) drops its unread default collectors; a reaped one cost two qualifications: cacheon +3.
+# A retry reopens an undecided first candidate lifetime (speed_first) and boots only the second: cacheon +74, docs +7.
 (root) 1163
 .github 338
-cacheon 92258
+cacheon 92332
 cacheon_kernels 936
 dashboard 4420
-docs 13372
+docs 13379
 examples 428
-scripts 4720
+scripts 4721
 tests 14178

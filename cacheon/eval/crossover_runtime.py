@@ -490,6 +490,7 @@ def run_resident_crossover_speed(
     clock: Callable[[], float] = time.monotonic,
     quality_control=None,
     payment_bar: str = "",
+    continuation=None,
 ) -> ResidentCrossoverEvidence:
     """Run the exact production speed stage for one candidate."""
 
@@ -504,6 +505,7 @@ def run_resident_crossover_speed(
     return run_reference_speed(
         plan, executor=executor, model_mount=model_mount, reference=reference, evidence_root=evidence_root,
         deadline=deadline, clock=clock, quality_control=quality_control, payment_bar=payment_bar,
+        continuation=continuation,
     )
 
 

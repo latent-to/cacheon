@@ -35,7 +35,7 @@ from cacheon.stack_identity import (
 
 
 RECORD_SCHEMA = "cacheon.eval.qualification-continuation-record.v2"
-_STAGES = ("speed", "audit_armed", "audit_completed", "t_armed", "quality", "final", "recovery")
+_STAGES = ("speed_first", "speed", "audit_armed", "audit_completed", "t_armed", "quality", "final", "recovery")
 
 
 def _decimal(value: object, where: str) -> str:
@@ -310,6 +310,46 @@ class QualificationContinuation:
         return record["payload"]
 
     # -- speed ---------------------------------------------------------------
+
+    def record_speed_first(
+        self, plan_digest: str, clock_domain: str, reference: tuple[str, ...], started: float,
+        execution: EngineExecutionEvidence, quiescence: OCIQuiescenceReceipt,
+    ) -> None:
+        """Retain an undecided first candidate lifetime so a retry on this host boots only the second.
+
+        The paired-lane form of this record left with that design (d75b24b5, 2026-10-25); after it a
+        crash in a second lifetime cost the first one again. It grants no verdict: the stage regrades
+        the lifetime from its raw session against the same stock lifetimes, named by session ID.
+        """
+        if (type(clock_domain) is not str or not clock_domain or type(reference) is not tuple or not reference
+            or any(type(row) is not str or not row for row in reference)
+            or type(execution) is not EngineExecutionEvidence or type(quiescence) is not OCIQuiescenceReceipt):
+            raise QualificationContinuationError("first speed lifetime lacks its closed engine session")
+        self._record("speed_first", {
+            "plan_digest": require_sha256_hex(plan_digest, field="speed plan digest"),
+            "clock_domain": clock_domain, "reference": list(reference),
+            "started": _decimal(started, "speed stage start"),
+            "execution": self._codec.encode(execution), "quiescence": self._codec.encode(quiescence),
+        })
+
+    def load_speed_first(self, plan_digest: str, clock_domain: str, reference: tuple[str, ...]):
+        """Reopen the retained first lifetime on its plan, host clock and stock lifetimes; any change is a HOLD."""
+        payload = self._load("speed_first")
+        if payload is None:
+            return None
+        if (type(payload) is not dict
+            or set(payload) != {"plan_digest", "clock_domain", "reference", "started", "execution", "quiescence"}
+            or payload["plan_digest"] != plan_digest or payload["clock_domain"] != clock_domain
+            or payload["reference"] != list(reference)):
+            raise QualificationContinuationError("first speed lifetime changed its plan, host clock or stock reference")
+        try:
+            execution = self._codec.decode(payload["execution"])
+            quiescence = self._codec.decode(payload["quiescence"])
+        except (ContinuationCodecError, TypeError) as exc:
+            raise QualificationContinuationError(f"first speed lifetime is malformed: {exc}") from None
+        if type(execution) is not EngineExecutionEvidence or type(quiescence) is not OCIQuiescenceReceipt:
+            raise QualificationContinuationError("first speed lifetime lacks its closed engine session")
+        return _decimal_value(payload["started"], "speed stage start"), execution, quiescence
 
     def record_resident_speed(self, crossover: ResidentCrossoverEvidence) -> None:
         if type(crossover) is not ResidentCrossoverEvidence:

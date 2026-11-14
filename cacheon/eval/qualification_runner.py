@@ -2187,7 +2187,7 @@ def run_causal_qualification(
                 model_mount=value.model_mount,
                 reference=reference,
                 evidence_root=value.evidence_root,
-                deadline=float(deadline), payment_bar=payment_bar,
+                deadline=float(deadline), payment_bar=payment_bar, continuation=continuation,
                 quality_control=lambda stock, candidate, candidate_dir, quiescence:
                     create_controls(value, stock, candidate, candidate_dir, quiescence, entropy_provider),
             )

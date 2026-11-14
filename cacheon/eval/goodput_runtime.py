@@ -3,7 +3,8 @@
 A stock reference campaign is measured once per lane identity and retained; each candidate reads whole
 lifetimes against it, and a PASS takes its quality controls from it (Shiv deleted the post-PASS stock bracket
 2026-11-05: 25.5 node-minutes, no PD verdict changed). Stock and candidate are read only as the first two engine
-lifetimes of their own evaluator process. Version 22 retains one stock pair and version 21 retains two.
+lifetimes of their own evaluator process; a retry that reopens a retained first candidate lifetime reads the second
+in a new process. Version 22 retains one stock pair and version 21 retains two.
 Version 20's four-lifetime references stay readable.
 """
 
@@ -432,31 +433,62 @@ def _work(replay):
 
 
 def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root, deadline, clock,
-                        quality_control, payment_bar=""):
-    """Read whole candidate lifetimes against the reference; a PASS draws its quality controls from it."""
+                        quality_control, payment_bar="", continuation=None):
+    """Read whole candidate lifetimes against the reference; a PASS draws its quality controls from it.
+
+    An undecided first lifetime is retained in the continuation. A retry on the same host clock reopens it and
+    boots only the second lifetime, as the first of its own evaluator process: ``gc.freeze`` gives each lifetime
+    the first one's heap, and the GLM PD stock pair 88ad50ad read its second lifetime 0.6% faster over its three
+    loads, not slower (2026-11-14).
+    """
     from cacheon.eval.crossover_runtime import ResidentCrossoverEvidence, _lane_digest
+    from cacheon.eval.qualification_continuation import QualificationContinuationError
+    from cacheon.eval.qualification_worker_checkpoint import _clock_domain
 
     if not callable(quality_control):
         raise ValueError("the quality producer must be installed before engine launch")
     tokenizer = _tokenizer(plan)
-    started = float(clock())
-    deadline = min(deadline, started + plan.policy.max_stage_seconds)
-    if not math.isfinite(deadline) or deadline <= started:
-        raise ValueError("goodput stage has no remaining execution budget")
     lane = _lane_digest(executor, plan.candidate)
     replay = plan.candidate.session_plan.replay
     stock = tuple(read for row in reference for read in row.session.replay_reads)
+    sessions = tuple(row.session.session_id for row in reference)
+    domain = None if continuation is None else _clock_domain()
+    retained = None if continuation is None else continuation.load_speed_first(plan.digest, domain, sessions)
     boots = []
-    for _ in range(CANDIDATE_BOOTS):
-        boots.append(_boot(executor, plan.candidate, lane, model_mount, prefix="candidate",
-                           deadline=deadline, tokenizer=tokenizer))
+    if retained is None:
+        started = float(clock())
+    else:
+        started, execution, quiet = retained
+        _validate_replay_sessions([(execution.session.replay_reads, execution, plan.candidate, ())], replay)
+        if (quiet.namespace_digest != plan.candidate.executor_namespace_digest
+                or (quiet.container_ids, quiet.lease_records, quiet.resource_entries) != ((), (), ())
+                or not started <= execution.session.ready_completed_at <= execution.session.session_completed_at
+                <= quiet.observed_monotonic_s <= float(clock())):
+            raise QualificationContinuationError("retained first speed lifetime left its stage clock")
+        boots.append((execution, quiet, None))
+    deadline = min(deadline, started + plan.policy.max_stage_seconds)
+    if not math.isfinite(deadline) or deadline <= float(clock()):
+        if retained is not None:
+            raise QualificationContinuationError("retained first speed lifetime has no remaining stage budget")
+        raise ValueError("goodput stage has no remaining execution budget")
+
+    def graded():
         reads = GoodputReadSet(stock, tuple(read for row in boots for read in row[0].session.replay_reads),
                                window_limit=replay.windows, boots=CANDIDATE_BOOTS, **_work(replay),
                                reference_boots=plan.policy.reference_boots, payment_bar=payment_bar,
                                reference_lane=stock[0].lane if getattr(reference, "origin", "") else "")
-        grade = reads.grade(plan.policy.goodput)
+        return reads, reads.grade(plan.policy.goodput)
+
+    if boots and graded()[1].decision is not SpeedStageDecision.NO_DECISION:
+        raise QualificationContinuationError("retained first speed lifetime no longer leaves its stage undecided")
+    while len(boots) < CANDIDATE_BOOTS:
+        boots.append(_boot(executor, plan.candidate, lane, model_mount, prefix="candidate",
+                           deadline=deadline, tokenizer=tokenizer))
+        reads, grade = graded()
         if grade.decision is not SpeedStageDecision.NO_DECISION:
             break
+        if continuation is not None and len(boots) == 1:
+            continuation.record_speed_first(plan.digest, domain, sessions, started, *boots[0][:2])
     candidate, candidate_quiet, candidate_directory = boots[-1]
     pairs, controls, entropy = ((), (), None)
     if grade.decision is SpeedStageDecision.PASS:
