@@ -466,6 +466,9 @@ def _aiperf_argv(plan: AgentReplayPlan, current: SliceManifest, output: Path, po
             "--concurrency", str(load), "--dataset-sampling-strategy", "sequential",
             "--cache-bust", "first_turn_prefix", "--ignore-trace-delays", "--use-server-token-count",
             "--random-seed", str(current.rules["seed"]), "--ui", "none",
+            # AIPerf 0.13.0 collectors are on by default and unread; one missing two heartbeats exits 1 after the work
+            # completed and cost the whole qualification (GLM PD prime 2026-11-13 19:22Z, timed window 11-14 06:26Z).
+            "--no-server-metrics", "--no-gpu-telemetry",
             "--zmq-ipc-path", str(ipc), "--output-artifact-dir", str(output / "aiperf")]
     if context is not None:
         argv.extend(("--max-context-length", str(context)))
