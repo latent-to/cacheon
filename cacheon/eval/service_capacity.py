@@ -285,7 +285,7 @@ def reference_grade(
     window_noise: float, boot_noise: float, error_rate: float, boots: int,
     attainment_tolerance: float, attainment_margin: float, futility_margin: float = 0.0,
     sentinel: Sequence[LoadRead] = (), decode_floors: dict[int, float] | None = None, reference_lane: str = "",
-    load_margin: float = 0.0, steady_span: float = 0.0,
+    load_margin: float = 0.0, steady_span: float = 0.0, futility_bar: float = 1.0,
 ) -> ServiceVerdict:
     """Grade candidate engine lifetimes against a retained stock reference campaign on the same lane.
 
@@ -293,7 +293,11 @@ def reference_grade(
     against those reads; window correlation between concurrent lanes cancelled only 4-8% of window
     variance (149 retained evaluations, 2026-10-24). The reference variance is shared and never
     divides by the candidate's boot count. Looks fall at candidate boot boundaries under v17's
-    alpha-spending table: the first boot can only end the stage on the sealed futility margin. A lifetime
+    alpha-spending table: the first boot can only end the stage on the sealed futility margin, measured from
+    ``futility_bar`` (stock at 1; the request's payment bar when the policy seals ``bar_futility``: a row whose
+    first lifetime reads more than the margin below the bar would need its second to read twice that margin
+    faster to be paid; the two lifetimes of GLM PD's six retained candidate pairs differed by at most 1.07%,
+    2026-11-14). A lifetime
     that replays several sealed loads scores the geometric mean of their throughput ratios (``_boot_term``),
     so no single batch size carries the verdict.
 
@@ -362,6 +366,10 @@ def reference_grade(
             f"load_regression: load {load} ratio upper bound {upper:.3f} < {1 - load_margin:.4g}")
     elif look < 2 and futility_margin and estimate < math.log1p(-futility_margin):
         decision, detail = SpeedStageDecision.FAIL, "first candidate boot is slower than the sealed futility margin"
+    elif look < 2 and futility_margin and estimate < math.log(futility_bar) + math.log1p(-futility_margin):
+        decision, detail = SpeedStageDecision.FAIL, (
+            f"below_payment_bar: first candidate boot {ratio:.4f} is more than the sealed futility margin "
+            f"{futility_margin:.4g} below the payment bar {futility_bar:.6g}")
     elif look < 2:
         decision, detail = SpeedStageDecision.NO_DECISION, "two candidate boots are required"
     elif lower > 1:

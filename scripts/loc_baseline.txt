@@ -196,12 +196,13 @@
 # Explicit MTP claims mount the commissioned adapter. The shared file-mount helper replaces the inline worker mount.
 # Every replay AIPerf run (prime and timed windows) drops its unread default collectors; a reaped one cost two qualifications: cacheon +3.
 # A retry reopens an undecided first candidate lifetime (speed_first) and boots only the second: cacheon +74, docs +7.
+# Sealed first-lifetime payment-bar futility (bar_futility): cacheon +14, docs +6, examples +3, scripts +5, tests +6.
 (root) 1163
 .github 338
-cacheon 92332
+cacheon 92346
 cacheon_kernels 936
 dashboard 4420
-docs 13379
-examples 428
-scripts 4721
-tests 14178
+docs 13385
+examples 431
+scripts 4726
+tests 14184

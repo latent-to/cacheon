@@ -59,7 +59,9 @@ floor at its load. The `node` block uses the replacement B300 pod's measured pin
 Each GPU has a fast scheduler vCPU and a helper on a separate physical core. The client uses eight more fast
 vCPUs. DP 1 requires no `engine_cpus`. A replacement measures one fresh stock pair on its physical
 GPUs before scoring candidates. The operator seals this schedule with `speed_policy_version: 22`.
-The speed scorer uses both stock boots in its uncertainty estimate.
+The speed scorer uses both stock boots in its uncertainty estimate. A first candidate lifetime reading more than
+1.5% below the payment bar ends the stage as `below_payment_bar` (`bar_futility`): the two lifetimes of the six
+candidate pairs retained by 2026-11-14 differed by at most 1.07%, against the 3% such a row would need.
 
 The node audit's row floor is 15% (`audit_row_floor_ppm` 150000), not the 2% default: this
 model's honest twin is bitwise, FP8 block-scaled projections sit at 6-13% row error at layer

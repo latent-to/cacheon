@@ -39,9 +39,10 @@ KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size
 # replay_windows: the scored windows per load, replacing the packet's; audit_row_floor_ppm: the node audit's
 # sealed per-row floor, absent at the 2% default; load_margin: the per-load regression margin, off when absent;
 # replay_warm_windows: the untimed windows before the scored ones (0-2), replacing the packet's; steady_span: score
-# each load until active sessions fall below this share of it, sealed with decode_floors.
+# each load until active sessions fall below this share of it, sealed with decode_floors; bar_futility: true ends a
+# stage whose first lifetime reads more than the packet's futility margin below the payment bar.
 OPTIONAL_KEYS = {"decode_floors", "replay_windows", "audit_row_floor_ppm", "load_margin", "replay_warm_windows",
-                 "steady_span", "quality", "speed_policy_version"}
+                 "steady_span", "quality", "speed_policy_version", "bar_futility"}
 NODE_KEYS = {"name", "scheduler_starts", "helper_starts", "client_cpus"}
 # engine_cpus: an engine's first GPU -> [DP controller vCPU, frontend vCPU] (oci_cpuset.canonical_cpu_roles).
 OPTIONAL_NODE_KEYS = {"engine_cpus", "lifetime_memory_gib"}
@@ -114,6 +115,8 @@ def load_operator(path: Path) -> dict:
         raise SystemExit(f"{path}: load_margin is a canonical decimal in (0, 1), sealed with decode_floors")
     if "steady_span" in operator and (not floors or not re.fullmatch(r"0\.[0-9]*[1-9]", operator["steady_span"])):
         raise SystemExit(f"{path}: steady_span is a canonical decimal in (0, 1), sealed with decode_floors")
+    if "bar_futility" in operator and (not floors or operator["bar_futility"] is not True):
+        raise SystemExit(f"{path}: bar_futility is true, sealed with decode_floors")
     if "speed_policy_version" in operator and (type(operator["speed_policy_version"]) is not int or operator["speed_policy_version"] not in (21, 22)):
         raise SystemExit(f"{path}: speed_policy_version must be 21 or 22")
     starts, helpers = operator["node"]["scheduler_starts"], operator["node"]["helper_starts"]
@@ -262,6 +265,7 @@ def main() -> None:
         floors = ", ".join(f"({load}, {operator['decode_floors'][load]})" for load in sorted(operator["decode_floors"], key=int))
         margin = f', load_margin={operator["load_margin"]}' if "load_margin" in operator else ""
         margin += f', steady_span={operator["steady_span"]}' if "steady_span" in operator else ""
+        margin += ", bar_futility=1.0" if "bar_futility" in operator else ""
         rewrites.append((r"decode_floor=1\.0\)", lambda _: f"decode_floor=1.0, decode_floors=({floors},){margin})"))
     if "replay_windows" in operator:
         rewrites.append((r'"windows": \d+', lambda _: f'"windows": {operator["replay_windows"]}'))

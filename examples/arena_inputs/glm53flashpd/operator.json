@@ -8,6 +8,7 @@
   "decode_floors": {"96": "85", "160": "82", "224": "80"},
   "load_margin": "0.01",
   "steady_span": "0.5",
+  "bar_futility": true,
   "replay_windows": 1,
   "speed_policy_version": 22,
   "replay_warm_windows": 0,

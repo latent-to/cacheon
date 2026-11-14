@@ -104,7 +104,9 @@ gain did not clear that bound by the last sealed boot, and the candidate was not
 measurably slower either — an ordinary competitive miss, not a regression.
 `candidate_slower` means the estimate fell below the mirrored bound. A first
 candidate boot that reads slower than the arena's sealed futility margin fails
-without the second boot, and its detail names that margin. A candidate
+without the second boot, and its detail names that margin. Where the arena seals
+`bar_futility`, a first boot reading more than that margin below the payment bar
+also fails without the second, as `below_payment_bar`. A candidate
 that clears the speed bound but misses service attainment fails with
 `service_contract_not_met`. On a policy-20 arena, a candidate whose median per-user
 decode rate falls below the sealed floor fails with `service_floor_not_met`, however

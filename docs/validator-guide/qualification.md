@@ -799,7 +799,10 @@ V20 and V21 seal `required=1`, `error_rate=0.125`, per-window log-cost standard
 deviation `null_noise`, per-boot standard deviation `boot_noise`, and
 `attainment_pooled=1` and `decode_floor=1`. An optional `futility_margin` fails a stage whose first
 candidate boot reads more than that fraction slower than the reference, without
-booting the second. At the final look, the candidate's service attainment over
+booting the second. With `bar_futility=1` the margin is measured from the request's
+payment bar instead: a first boot reading below `payment_bar × (1 - futility_margin)`
+fails as `below_payment_bar`, since its second boot would have to read twice the
+margin faster for the pair to be paid. At the final look, the candidate's service attainment over
 all its turns less the reference's over all its turns, less `attainment_margin`,
 must be at least minus `attainment_tolerance`; one window's attainment over a few
 hundred turns can move by more than the band between windows of a single engine.

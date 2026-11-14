@@ -298,3 +298,9 @@ def test_statistical_records_pay_one_and_a_half_percent_over_the_previous_best(t
             grade = replace(reads, payment_bar=bar).grade(policy)
             assert grade.decision.value == decision
         assert fail_reason(grade.verdict) == "below_payment_bar"
+        # Sealed bar_futility: a first lifetime reading 1.07 ends the stage once the bar is over 1.5% above it.
+        early, first = replace(policy, futility_margin=0.015, bar_futility=1), replace(reads, candidate=reads.candidate[:1])
+        grades = [replace(first, payment_bar=bar).grade(early) for bar in ("1.085", "1.088")]
+        assert [grade.decision.value for grade in grades] == ["NO_DECISION", "FAIL"]
+        assert fail_reason(grades[1].verdict) == "below_payment_bar"
+        assert replace(first, payment_bar="1.088").grade(replace(early, bar_futility=0)).decision.value == "NO_DECISION"
