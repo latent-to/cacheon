@@ -123,16 +123,6 @@ def _get(value: object, *path: str, default: Any = None) -> Any:
     return value
 
 
-def _number(value: object) -> float | None:
-    """Rates cross the wire as strings to survive float round-tripping."""
-
-    try:
-        result = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-    return result if result == result and abs(result) != float("inf") else None
-
-
 def _decoded_evidence(product: dict) -> list[tuple[str, dict]]:
     """``(domain, payload)`` for every readable evidence row, in product order.
 
@@ -282,7 +272,7 @@ def _speed_lines(stage_exit: dict, *, baseline: str = _STOCK) -> list[str]:
     grade = speed["grading"]
     versus = "SGLang" if baseline == _STOCK else "the " + baseline
     lines = [f"  {'speed':<26s} paired agent replay, {speed['windows']} of "
-             f"{speed['window_limit']} passes at {speed['load']} sessions per lane"]
+             f"{speed['window_limit']} passes at {'/'.join(map(str, speed['loads']))} sessions per lane"]
     for role, label in (("B", baseline), ("C", "with your kernel")):
         lanes = [lane for lane in speed["lanes"] if lane["role"] == role]
         decode = _mean([lane["decode_tps"] for lane in lanes])

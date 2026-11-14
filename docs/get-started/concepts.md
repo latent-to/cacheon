@@ -78,8 +78,8 @@ the `forward_pass` target and declares that it applies to BF16 calls on `sm90`.
    recomputes the hash, republishes an immutable tree, and resolves the claimed target
    against the active catalog. It observes the actual proposal features rather than
    trusting the manifest to grant itself permissions.
-4. Version-3 qualification measures every candidate under speed policy 19: one
-   engine at a time owns the whole commissioned lane, and fresh candidate boots
+4. Version-3 qualification measures every candidate under speed policy 21: one
+   prefill/decode engine pair at a time owns the whole commissioned lane, and fresh candidate boots
    replay the sealed agent workload against a retained stock reference measured
    on that lane. A registered eager, untimed audit role
    (**A**) then checks the candidate delta; after the timed candidate boots are

@@ -22,7 +22,7 @@ lock file.
 
 `SettlementCandidate` accepts one complete audited PASS. The production
 version-3 attempt runs candidate boots against a retained stock reference on
-one lane (speed policy 19), then registered eager audit A and pristine T. Every
+one lane (speed policy 21), then registered eager audit A and pristine T. Every
 boot's turn records remain in the evidence, and the settled speedup is the
 per-boot cost ratio the grader computed. Retained batch-cell PASS rows settle on the
 speedup their own policy recorded.
@@ -212,7 +212,7 @@ promotion, integration, or release cannot renew the same bounty.
 ## Legacy V1 global projection
 
 The reward builder reopens retained PASS evidence and pays only records that beat
-the preceding rewarded v17, v18 or v19 record against the same baseline by at least 1.5%
+the preceding rewarded record against the same baseline by at least 1.5%
 (`V17_REWARD_MARGIN`); a declared recommission of that baseline continues its record
 (`reward_group_continuations`, see the emissions policy). Credit remains the
 unshrunken marginal logarithmic reward. An

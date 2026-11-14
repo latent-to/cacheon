@@ -42,7 +42,7 @@ from cacheon.eval.marginal_runtime import (
 )
 from cacheon.eval.oci_backend import TrustedArenaModelMountReceipt
 from cacheon.eval.oci_outer_session import SessionExecutionPlan
-from cacheon.eval.oci_session_protocol import SlotAuditPolicy
+from cacheon.eval.oci_session_protocol import ROW_FLOOR_PPM, SlotAuditPolicy
 from cacheon.eval.qualification import (
     QualificationProfile,
     ReferenceManifest,
@@ -311,6 +311,8 @@ class B300RegisteredQualificationPolicy:
     audit_toplogprobs_num: int = 1
     # Registered controls whose speed non-PASS still reaches the audit (never T).
     audit_control_delta_digests: tuple[str, ...] = ()
+    # The node audit's per-row floor (SlotAuditControl.row_floor_ppm), sealed per arena.
+    audit_row_floor_ppm: int = ROW_FLOOR_PPM
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -408,6 +410,8 @@ class B300RegisteredQualificationPolicy:
         if controls != tuple(sorted({_digest(row, "audit control delta") for row in controls})):
             raise B300RegisteredQualificationError("audit control deltas are not canonical")
         object.__setattr__(self, "audit_control_delta_digests", controls)
+        if _positive(self.audit_row_floor_ppm, "audit row floor") > 400_000:
+            raise B300RegisteredQualificationError("audit row floor exceeds the 40% ceiling")
 
     @classmethod
     def seal(
@@ -430,6 +434,7 @@ class B300RegisteredQualificationPolicy:
         audit_max_new_tokens: int = 2,
         audit_toplogprobs_num: int = 1,
         audit_control_delta_digests: tuple[str, ...] = (),
+        audit_row_floor_ppm: int = ROW_FLOOR_PPM,
     ) -> "B300RegisteredQualificationPolicy":
         if type(catalog) is not TargetCatalog:
             raise B300RegisteredQualificationError(
@@ -458,6 +463,7 @@ class B300RegisteredQualificationPolicy:
             audit_max_new_tokens,
             audit_toplogprobs_num,
             audit_control_delta_digests,
+            audit_row_floor_ppm,
         )
 
     def require_catalog(self, catalog: TargetCatalog) -> None:
@@ -505,9 +511,11 @@ class B300RegisteredQualificationPolicy:
             "topk_width": self.topk_width,
             "verification_policy_digest": self.verification_policy_digest,
         }
-        # Absent when empty, so every policy sealed before this field keeps its digest.
+        # Absent at their defaults, so every policy sealed before these fields keeps its digest.
         if self.audit_control_delta_digests:
             payload["audit_control_delta_digests"] = list(self.audit_control_delta_digests)
+        if self.audit_row_floor_ppm != ROW_FLOOR_PPM:
+            payload["audit_row_floor_ppm"] = self.audit_row_floor_ppm
         return payload
 
     @property

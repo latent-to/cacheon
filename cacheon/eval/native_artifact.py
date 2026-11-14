@@ -160,17 +160,6 @@ class NativeArtifactPublication:
         if _publication_digest(payload) != self.publication_digest:
             raise NativeArtifactError("native artifact publication digest is inconsistent")
 
-    def identity_dict(self) -> dict[str, object]:
-        """Return the path-free canonical publication identity."""
-
-        return {
-            "schema": _SCHEMA,
-            "build_spec_digest": self.build_spec_digest,
-            "publication_digest": self.publication_digest,
-            "directories": list(self.directories),
-            "files": [row.to_dict() for row in self.files],
-        }
-
 
 @dataclass
 class _CopyState:

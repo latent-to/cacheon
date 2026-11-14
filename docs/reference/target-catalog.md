@@ -50,7 +50,7 @@ byte-identical.
 
 Catalog registration defines identity and admission; it does not by itself
 prove that an arena opens the target. See
-[current arena availability](../miner-guide/slots.md#current-glm-53-availability).
+[current arena availability](../miner-guide/slots.md#current-availability).
 
 ## Resolution
 

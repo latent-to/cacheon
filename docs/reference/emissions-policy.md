@@ -24,9 +24,7 @@ durable evidence remain reopenable from Git history and the reserved schema.
 
 A distinct registered contribution with a complete audited PASS earns only when
 its credited speedup clears the sealed eligibility boundary relative to the best
-earlier rewarded PASS. Historical policies require `1 + min_margin`, read from
-retained qualification; pairs use the larger margin. V17 through V21 require 1.5% over the
-best earlier rewarded PASS. The first PASS against a commissioned baseline clears the same
+earlier rewarded PASS: 1.5% over the best earlier rewarded PASS. The first PASS against a commissioned baseline clears the same
 margin over stock (speedup 1). A tie or smaller improvement earns nothing despite an evaluation PASS.
 
 Comparison follows finalized submission order (block, event index, subindex,

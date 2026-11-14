@@ -29,6 +29,7 @@ from cacheon.eval.crossover_runtime import (
 )
 from cacheon.audit_gate import reason as _audit_reason
 from cacheon.eval.engine_launch import EngineLaunchSpec, TrustedLaunchBinding
+from cacheon.eval.pd_engine import is_pair, untimed_ranks
 from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence, reopen_evidence
 from cacheon.eval.device_state import DeviceStateReceipt
 from cacheon.eval.marginal_runtime import PreparedMarginalRuntime
@@ -66,10 +67,10 @@ from cacheon.eval.reference_protocol import (
     ReferenceRoleInput, request_sha256,
 )
 from cacheon.eval.reference_quality import (
-    RAW_QUALITY_DOMAIN, RAW_QUALITY_SCHEMA, RawHiddenTaskResult,
+    RAW_QUALITY_DOMAIN, RAW_QUALITY_SCHEMA,
     RawPromptQualityEvidence, RawRolloutEvidence, RawTokenEvidence,
     ReferenceQualityRawArtifact, ReferenceQualityRawBinding, ReferenceQualityVerdict,
-    distribution_from_f32_logprobs, reopen_reference_quality_evidence,
+    reopen_reference_quality_evidence,
     score_reference_quality, target_nll_from_f32,
     expected_raw_binding,
 )
@@ -218,10 +219,9 @@ class EntropyProvider(Protocol):
                  teardown: OCIQuiescenceReceipt) -> SelectionEntropyReceipt: ...
 
 class HiddenJudge(Protocol):
-    binding: "HiddenJudgeBinding"
+    """The packet's sealed judge binding; replay quality declares no hidden tasks, so it is never called."""
 
-    def __call__(self, *, prompt_digest: str, output_ids: tuple[int, ...],
-                 task_digests: tuple[str, ...]) -> "HiddenJudgeReceipt": ...
+    binding: "HiddenJudgeBinding"
 
 @dataclass(frozen=True)
 class HiddenJudgeBinding:
@@ -241,6 +241,9 @@ class HiddenJudgeBinding:
             "hidden_task_policy_digest": self.hidden_task_policy_digest,
         })
 
+# HiddenJudgeReceipt and hidden_judge_output_digest are the sealed packet's contract:
+# its numeric_answer_judge.py builds them, and build_prompt_authority imports it.
+# Deleting them with the replay judge call path broke commissioning step 3 (2026-11-11).
 @dataclass(frozen=True)
 class HiddenJudgeReceipt:
     binding_digest: str
@@ -358,7 +361,10 @@ class CausalQualificationInput:
             len(audit_policies) != len(candidates)
             or any(type(row) is not SlotAuditPolicy for row in audit_policies)
             or any(
-                row.expected_member_count != prepared.session_plan.engine_config.tp_size
+                row.expected_member_count != untimed_ranks(
+                    prepared.session_plan.engine_config.tp_size,
+                    prepared.session_plan.engine_config.engine_kwargs,
+                )
                 for row, prepared in zip(
                     audit_policies, self.prepared.candidates, strict=True
                 )
@@ -528,10 +534,6 @@ class CausalQualificationInput:
             object.__setattr__(self, field, require_sha256_hex(getattr(self, field), field=field))
 
 
-def _profile(authority: CandidateAuthority) -> QualificationProfile:
-    return authority.profile
-
-
 def _decision(value: str | QualificationDecision) -> QualificationDecision:
     try:
         return value if type(value) is QualificationDecision else QualificationDecision(value)
@@ -668,9 +670,7 @@ class ResidentSpeedWitness:
         ):
             raise QualificationRunnerError("resident speed wall time is invalid")
         rates = tuple(self.rates)
-        if (rates or type(self.goodput) is not GoodputReadSet
-                or bool(self.goodput.orientations) != (self.resident_policy.version == 18)
-                or bool(self.goodput.boots) != (self.resident_policy.version >= 19)):
+        if rates or type(self.goodput) is not GoodputReadSet or self.goodput.reference_boots != self.resident_policy.reference_boots:
             raise QualificationRunnerError("resident speed witness read order differs")
         object.__setattr__(self, "rates", rates)
         expected = _resident_speed_projection_digest(**{
@@ -1425,21 +1425,6 @@ def _reference_request(
         tuple(prompts),
     )
 
-def _task_digests(
-    profile: QualificationProfile,
-    prompt_digest: str,
-) -> tuple[str, ...]:
-    return tuple(sorted(canonical_digest(
-        "cacheon.qualification.hidden-task",
-        {
-            "corpus": profile.reference.hidden_corpus_commitment,
-            "judge": profile.reference.hidden_judge_digest,
-            "policy": profile.hidden_task_policy_digest,
-            "prompt": prompt_digest,
-            "index": index,
-        },
-    ) for index in range(profile.hidden_tasks_per_prompt)))
-
 def _hidden_judge_binding(
     profile: QualificationProfile,
 ) -> HiddenJudgeBinding:
@@ -1457,7 +1442,6 @@ def _raw_artifact(
     selection: SelectionReceipt,
     reference_execution: PristineReferenceExecutionEvidence,
     exchange: object,
-    hidden_judge: HiddenJudge,
 ) -> ReferenceQualityRawArtifact:
     profile = authority.profile
     request = exchange.request
@@ -1479,7 +1463,6 @@ def _raw_artifact(
             frame=frame,
             role_input=role_input,
             role_evidence=role_evidence,
-            hidden_judge=hidden_judge,
         ) for frame, role_input, role_evidence in zip(
             role_frames, request_prompt.roles, teacher_prompt.roles, strict=True
         ))
@@ -1740,6 +1723,7 @@ def _validate_reference_execution(
         "session_plan_digest": witness.plan_digest,
     })
     pre, post = witness.device_receipts
+    config = expected.reference_engine_config
     if (
         (witness.launch_digest, witness.runtime_identity_digest,
          witness.runtime_preflight_receipt_sha256, witness.arena_model_receipt_digest,
@@ -1751,8 +1735,10 @@ def _validate_reference_execution(
             expected.pristine_binding.native_build_spec.digest, plan_digest, session_digest,
             expected_requests)
         or pre[2] != post[2] or pre[1] >= post[1] or pre[4:7] != post[4:7] or pre[6] != expected.expected_device_policy_digest
-        or len(pre[4]) not in {expected.pristine_launch.hardware.visible_gpu_count,  # a pair's T: its decode GPUs
-                               expected.pristine_launch.hardware.tp_size}
+        # A pair's T boots the one-engine form on as many GPUs from the first decode GPU (pd_engine.untimed_gpus):
+        # 2 on GLM's 2xTP2 + TP4 pair, where the lane's tp_size voided a twin PASS (2026-11-12).
+        or len(pre[4]) != (untimed_ranks(config.tp_size, config.engine_kwargs) if is_pair(config.engine_kwargs)
+                           else expected.pristine_launch.hardware.visible_gpu_count)
         or float(pre[7]) < attempt.entropy_observed_monotonic_s
         or float(pre[8]) > float(post[7])
         or float(post[8]) > attempt.teardown_after_t.observed_monotonic_s
@@ -1944,7 +1930,7 @@ def reopen_causal_qualification(
             raw = report.raw_quality_binding
             quality = score_reference_quality(
                 reopen_reference_quality_evidence(root, report.raw_quality_artifact,
-                                                  expected_binding=raw),
+                                                  expected_binding=raw, calibration=calibration),
                 calibration=calibration, expected_context=expected.calibration_context,
             )
             speed = report.speed_witness
@@ -2164,17 +2150,6 @@ def run_causal_qualification(
                     "final continuation names an unknown product domain"
                 )
             return durable_final
-    judge_cache: dict[tuple[object, ...], HiddenJudgeReceipt] = {}
-
-    def judge_once(*, prompt_digest: str, output_ids: tuple[int, ...],
-                   task_digests: tuple[str, ...]) -> HiddenJudgeReceipt:
-        key = (judge_binding.digest, prompt_digest,
-               hidden_judge_output_digest(prompt_digest, output_ids), task_digests)
-        if key not in judge_cache:
-            judge_cache[key] = hidden_judge(prompt_digest=prompt_digest, output_ids=output_ids,
-                                            task_digests=task_digests)
-        return judge_cache[key]
-
     quality_state: QualityContinuation | None = (
         None if continuation is None else continuation.load_quality()
     )
@@ -2212,7 +2187,7 @@ def run_causal_qualification(
                 model_mount=value.model_mount,
                 reference=reference,
                 evidence_root=value.evidence_root,
-                deadline=float(deadline), payment_bar=payment_bar,
+                deadline=float(deadline), payment_bar=payment_bar, continuation=continuation,
                 quality_control=lambda stock, candidate, candidate_dir, quiescence:
                     create_controls(value, stock, candidate, candidate_dir, quiescence, entropy_provider),
             )
@@ -2315,7 +2290,6 @@ def run_causal_qualification(
             selection,
             reference_execution,
             exchange,
-            judge_once,  # type: ignore[arg-type]
         )
         validate_quality_binding(
             authority.profile,
@@ -2340,7 +2314,7 @@ def run_causal_qualification(
         quality_evidence = reopen_reference_quality_evidence(
             value.evidence_root,
             raw_ref,
-            expected_binding=raw.binding,
+            expected_binding=raw.binding, calibration=calibration,
         )
         quality = score_reference_quality(
             quality_evidence,

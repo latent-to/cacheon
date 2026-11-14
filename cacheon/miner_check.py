@@ -144,7 +144,7 @@ def verify_nodes(bundle: str) -> int:
 
 
 def _engine(config: dict, bundle: str, requests: list[dict], root: Path,
-            *, phase: str, seed: int) -> None:
+            *, phase: str, seed: int, row_floor_ppm: int) -> None:
     """The exp_cell procedure, using the same scheduler binder as qualification."""
     from cacheon import bootstrap, receipts, seam
     from cacheon.eval import pd_engine
@@ -159,7 +159,8 @@ def _engine(config: dict, bundle: str, requests: list[dict], root: Path,
         CACHEON_ACTIVE="1", CACHEON_BUNDLE_PATH=bundle, CACHEON_FRAMEWORK_MODE="0",
         CACHEON_SEAM_RECEIPT_DIR=str(receipt_dir), SGLANG_PLUGINS="cacheon",
         CACHEON_SLOT_AUDIT="1" if phase == "audit" else "0",
-        CACHEON_SLOT_AUDIT_SEED=str(seed), HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
+        CACHEON_SLOT_AUDIT_SEED=str(seed), CACHEON_SLOT_AUDIT_FLOOR_PPM=str(row_floor_ppm),
+        HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
     )
     # The arena's engine environment, as the sealed configuration sets it for the
     # validator's ranks: the DeepSeek-V4.1 Engram host tables are switched on here.
@@ -184,7 +185,7 @@ def _engine(config: dict, bundle: str, requests: list[dict], root: Path,
         for request in requests:
             engine.generate(**request)
         members = receipts.require(str(receipt_dir), "active", context="miner check")
-        count = int(config.get("tp_size", 1))
+        count = int(options.get("tp_size", 1))  # the form booted above, a pair's prefill role
         slots = _active_execution_members(members, expected_member_count=count)
         _require_execution_completion(
             str(receipt_dir), active_receipts=members, expected_slots=slots,
@@ -224,8 +225,8 @@ def check(args: argparse.Namespace) -> int:
 
     try:
         if (not math.isfinite(args.timeout_seconds) or args.timeout_seconds <= 0
-                or args.minimum_audit_windows < 1):
-            raise ValueError("timeout and minimum audit windows must be positive")
+                or args.minimum_audit_windows < 1 or not 0 < args.audit_row_floor_ppm <= 400_000):
+            raise ValueError("timeout and minimum audit windows must be positive, the row floor in (0, 400000] ppm")
         manifest = _manifest(args.bundle)
         if cmd_scan(argparse.Namespace(bundle=args.bundle)):
             return 2
@@ -251,10 +252,12 @@ def check(args: argparse.Namespace) -> int:
         root.mkdir(parents=True, exist_ok=False)
         (root / "inputs.json").write_text(json.dumps({
             "config": config, "requests": requests, "bundle": str(Path(args.bundle).resolve()),
-            "seed": args.seed,
+            "seed": args.seed, "row_floor_ppm": args.audit_row_floor_ppm,
         }, indent=2) + "\n")
         slots = sorted({op.slot for op in manifest.ops})
-        ranks = int(config.get("tp_size", 1))
+        from cacheon.eval import pd_engine
+
+        ranks = pd_engine.untimed_ranks(int(config.get("tp_size", 1)), config)
         for phase in ("audit", "graph"):
             folder = root / phase
             folder.mkdir()
@@ -281,6 +284,10 @@ def check(args: argparse.Namespace) -> int:
                 decision, detail = gate(report["receipts"]["audit"],
                                         min_calls=args.minimum_audit_windows,
                                         expected_slots=slots, expected_member_count=ranks)
+                # Stock raising is never a graded call: a layer pass that stock refused on
+                # every DSA layer graded only the KDA layers (G3, 2026-11-11).
+                if decision == "PASS" and any(row.get("baseline_refused") for row in report["receipts"]["audit"]):
+                    decision = "NO_DECISION"
                 report.update(decision=decision, detail=detail)
                 result.write_text(json.dumps(report, indent=2) + "\n")
                 print(f"{decision}: {detail}")
@@ -305,6 +312,7 @@ def add_parser(subparsers) -> None:
     parser.add_argument("--seed", type=int, default=7, help="shared audit sampling seed")
     parser.add_argument("--minimum-audit-windows", type=int, default=4, help="arena audit coverage minimum per address/rank")
     parser.add_argument("--timeout-seconds", type=float, default=1800, help="wall bound per fresh engine, including load")
+    parser.add_argument("--audit-row-floor-ppm", type=int, default=20_000, help="the arena's sealed node-audit row floor")
     parser.set_defaults(func=check)
 
 
@@ -317,7 +325,7 @@ def _main() -> None:
         inputs = json.loads(Path(source).read_text())
         sys.path.insert(0, inputs["bundle"])
         _engine(inputs["config"], inputs["bundle"], inputs["requests"], Path(destination),
-                phase=phase, seed=inputs["seed"])
+                phase=phase, seed=inputs["seed"], row_floor_ppm=inputs["row_floor_ppm"])
 
 
 if __name__ == "__main__":

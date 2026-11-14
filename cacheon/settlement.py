@@ -242,7 +242,7 @@ class ResidentLaneOrientation:
 
         if type(value) is not ResidentSpeedWitness:
             raise SettlementError("resident lane orientation lacks its exact speed witness")
-        if (value.baseline_lane_digest == value.candidate_lane_digest) != (value.resident_policy.version >= 19):
+        if value.baseline_lane_digest != value.candidate_lane_digest:
             raise SettlementError("resident crossover lanes differ from its speed policy topology")
         policy_digest = value.policy.digest
         control_digest = canonical_digest(

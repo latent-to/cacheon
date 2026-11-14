@@ -112,10 +112,12 @@ Truth is the stock node in the running engine, on the same call:
 1. on an audited eager call the stock node runs first;
 2. its result tensors are kept, together with the engine-state rows the batch may
    write: the cache rows at `out_cache_loc` (whole pages where the pool stores
-   pages), plus native recurrent convolution and temporal rows for both live
-   requests and tracked checkpoints. Native MTP verification also restores and
-   grades its batch-position temporal and convolution scratch rows. ReplaySSM
-   state remains unsupported. A call that moves the batch's layer-boundary
+   pages; a pooled DSA indexer's per-request key tails too), plus native recurrent convolution and temporal rows for both live
+   requests and tracked checkpoints. Under KDA
+   ReplaySSM speculation it grades the draft rings at each live request's
+   Mamba slot (the BF16 rounding residuals summed with the values they round)
+   and the per-request convolution windows; other speculative recurrent layouts
+   (GDN native MTP, other ReplaySSM forms) are refused. A call that moves the batch's layer-boundary
    residual stream (a decoder layer on SGLang main) also keeps the residual and
    the pending contribution it leaves there;
 3. the arguments stock changed, the state rows and the residual stream are put
@@ -124,9 +126,9 @@ Truth is the stock node in the running engine, on the same call:
    node with supported fused ops on SGLang's native reference paths, giving the
    same math with different rounding. Ordinary residual RMSNorm uses an unfused
    addition in the input dtype before native normalization; explicit FP32-residual
-   and other semantic overrides retain their native path. The DSA indexer has no native implementation
-   and retains hardware dispatch; its children and surrounding ops still use
-   native paths where called;
+   and other semantic overrides retain their native path. The DSA indexer has no native implementation, and
+   unquantized experts on FlashInfer's TRT-LLM runner hold a BF16 block layout no native path reads (the GLM-5.3-Flash
+   draft MoE); both retain hardware dispatch, and their children and surrounding ops still use native paths where called;
 5. the candidate runs on the same call, and each row of its result and state rows
    (a token, a cache row, a request's state) is graded by its relative error
    against stock's.
@@ -152,11 +154,18 @@ FP8. The first
 failed window of each bound node is logged with its concrete name and tensor
 position, including when the contribution claims a wildcard address.
 
-A row passes within the larger of 2% and three times the twin's
+A row passes within the larger of the arena's row floor and three times the twin's
 90th-percentile row error on that node, taking the larger of the current call
 and the recent-call estimate. Quiet decode history therefore cannot suppress
 the reference noise of a later prefill call. The limit never exceeds 40%: the widest honest node
-measured needed 33% and the wrong controls sat at 50%. Rows stock itself left
+measured needed 33% and the wrong controls sat at 50%. The floor is 2% unless the arena's
+sealed audit policy sets `row_floor_ppm`, which the settlement binds with the rest of the
+audit control. The audit attributes and controls: it proves the contribution ran in its
+slot on every rank and computes the same function within a bounded deviation, and output
+quality is pristine T's to judge, always against stock (a commission whose incumbent declares
+entries is refused). An arena whose twin is bitwise (GLM-5.3-Flash) gets no
+noise from the twin term, so 2% admitted no lossy node there: FP8 block-scaled projections
+sat at 6–13% row error while the wrong control sits at 50%. Rows stock itself left
 non-finite (an idle data-parallel rank's padding) are not graded. The tolerance is measured because honest
 rounding grows with the width of the node: the twin sits 0.4% from stock at a block
 and 4–11% at the whole stack. It is kept per bound node, not per address, because
@@ -341,10 +350,21 @@ unit to the address's audit receipt.
 
 Normal target submissions cannot request arbitrary engine-wide setup or framework mutation. Cross-cutting proposals are not submittable; dependency patches are refused, and native builds use the validator-shipped, policy-constrained build step. Successful work should be resolved into a registered target or reviewed product source without relabeling changed selected payload bytes under old evidence.
 
-With MTP enabled, contributions still optimize the registered target computation.
-The validator owns the draft model, speculative schedule, sampling and acceptance
-rules, and request batching. A contribution may not change those controls or
-manipulate draft proposals or acceptance decisions to manufacture throughput.
+With MTP enabled, the drafter's layer is a node address too, under the
+checkpoint's own name for it, `model.layers.<num_hidden_layers>` (for
+GLM-5.3-Flash, `model.layers.45.mlp` is the draft layer's MoE). No target layer
+carries that index, so those slots bind only on the draft worker, where the
+layer loads as `model.decoder`, and a wildcard such as `model.layers.*.mlp`
+still names target layers alone. Verification stays
+exact, so a draft node changes only how many proposals are accepted, and the
+speed score counts that. The validator owns the speculative schedule, sampling
+and acceptance rules, and request batching. A contribution may not change those
+controls or manipulate acceptance decisions to manufacture throughput.
+
+For an explicit MTP-layer claim, the timed candidate and its eager audit mount
+the commissioned controller's node adapter read-only in the pinned engine image.
+The runtime command binds the adapter's SHA-256. Stock and target-only trees
+use the image's installed adapter, preserving the retained stock measurement.
 
 This keeps experimentation possible without widening every ordinary submission's authority.
 

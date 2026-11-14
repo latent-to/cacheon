@@ -18,8 +18,8 @@
     "audit_minimum_calls": 4,
     "hidden_tasks_per_prompt": 0,
     "hidden_tasks_required": false,
-    "nll_tail_threshold": "0.35",
-    "select_count": 8,
+    "nll_tail_threshold": "@NLL_TAIL_THRESHOLD@",
+    "select_count": @QUALITY_PROMPTS@,
     "tokens_per_prompt": @TOKENS_PER_PROMPT@,
     "topk_width": 0
   },
@@ -79,7 +79,7 @@
   },
   "sglang_version": "0.5.21",
   "source_commit": "e0d4a0396ea98e914d448d497a72cf86568b411a",
-  "speed_policy": {
+  "speed_policy": {@SPEED_VERSION_FIELD@
     "max_conditioning_slowdown": "0",
     "max_qualification_seconds": 14400,
     "max_stage_seconds": 7200,

@@ -69,12 +69,9 @@ engine configuration. See [Kernel ABI](kernel-abi.md) and
 
 Inside the published image, mount the model and public arena inputs read-only,
 with writable cache and result directories. Expose the full arena GPU topology.
-The [GLM development inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/glm53)
-provide two batches, 24 requests in all, that exercise prefill, decode and
-prefix reuse on its published B300 configuration.
-The [DeepSeek-V4.1-Flash inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/dsv41flash)
-provide the same layout for its B300 TP2 configuration, including the engine
-environment the Engram host tables need.
+The [DeepSeek-V4.1-Flash PD inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/dsv41pd)
+provide 24 requests that exercise prefill, decode and prefix reuse on its
+published B300 configuration; `check` runs the pair's one-engine form.
 Use the input set for your arena; its model and topology must match. Then run:
 
 ```bash
@@ -119,12 +116,13 @@ The output directory must be new and outside the bundle. It retains inputs,
 `audit/engine.log`, `graph/engine.log`, stage results and the original receipt
 files, including failures. A failed audit stops before the graph launch.
 Default limits are 1,800 seconds per engine and four audit windows per
-address/rank. Set `--timeout-seconds` and `--minimum-audit-windows` to the arena's
-published development limits, not to values chosen after seeing a result.
+address/rank, and a 2% audit row floor. Set `--timeout-seconds`, `--minimum-audit-windows`
+and `--audit-row-floor-ppm` to the arena's published development limits, not to values
+chosen after seeing a result.
 
 Exit 0 means the development audit and capture checks passed, 2 means a failure
-or execution error, and 3 means insufficient/incomplete audit evidence. The
-[wrong control](https://github.com/latent-to/cacheon/tree/main/examples/miner_node_wrong)
+or execution error, and 3 means insufficient/incomplete audit evidence, including
+any call on which the stock reference itself raised. The [wrong control](https://github.com/latent-to/cacheon/tree/main/examples/miner_node_wrong)
 has a valid interface but scales tensor-valued MLP outputs by 1.5 and should fail
 the engine audit.
 

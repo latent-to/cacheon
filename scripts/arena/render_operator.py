@@ -13,8 +13,9 @@ digests every template, retained input and output.
 The deployment-owned sealed inputs are not templates and are never fabricated here: the packet
 (the fixed qualification capabilities, the numeric judge, the finalize step, the adapter and the
 sealed prompt authority), the model provision receipt and the pod transport are read from the
-``--retained-inputs`` directory and copied by digest; only the packet's replay load is rewritten to
-the arena's value, as the operator always did by hand.
+``--retained-inputs`` directory and copied by digest; only the packet's replay load (one session
+count, or a list of them for a multi-load arena), its per-load decode floors, scored windows and audit
+controls are rewritten to the arena's values, as the operator always did by hand.
 """
 
 import argparse
@@ -34,9 +35,17 @@ SCHEMA = "cacheon-arena-operator-v1"
 PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size", "replay_load",
         "tokens_per_prompt", "tokenizer_asset", "model_in_ram", "owner", "audit_control_delta_digests", "node"}
-NODE_KEYS = {"name", "scheduler_starts", "client_cpus"}
+# decode_floors: per-user decode floor per load (tok/s keyed by session count), required with several loads;
+# replay_windows: the scored windows per load, replacing the packet's; audit_row_floor_ppm: the node audit's
+# sealed per-row floor, absent at the 2% default; load_margin: the per-load regression margin, off when absent;
+# replay_warm_windows: the untimed windows before the scored ones (0-2), replacing the packet's; steady_span: score
+# each load until active sessions fall below this share of it, sealed with decode_floors; bar_futility: true ends a
+# stage whose first lifetime reads more than the packet's futility margin below the payment bar.
+OPTIONAL_KEYS = {"decode_floors", "replay_windows", "audit_row_floor_ppm", "load_margin", "replay_warm_windows",
+                 "steady_span", "quality", "speed_policy_version", "bar_futility"}
+NODE_KEYS = {"name", "scheduler_starts", "helper_starts", "client_cpus"}
 # engine_cpus: an engine's first GPU -> [DP controller vCPU, frontend vCPU] (oci_cpuset.canonical_cpu_roles).
-OPTIONAL_NODE_KEYS = {"engine_cpus"}
+OPTIONAL_NODE_KEYS = {"engine_cpus", "lifetime_memory_gib"}
 PACKET = ("cacheon_b300_qualification_adapter.py", "finalize-authority.py", "numeric_answer_judge.py",
           "prompt-authority.current.json", "qualification_capabilities.py")
 # The cpu-operator archive: commission_worker, prepare_worker and runtime_uid_preflight run on the pod;
@@ -82,16 +91,37 @@ def sha256(path: Path) -> str:
 def load_operator(path: Path) -> dict:
     """Read and shape-check one arena's operator.json; policy stays with the owner."""
     operator = json.loads(path.read_bytes())
-    if set(operator) != KEYS or operator["schema"] != SCHEMA:
-        raise SystemExit(f"{path}: expected keys {sorted(KEYS)} and schema {SCHEMA}")
+    if set(operator) - OPTIONAL_KEYS != KEYS or operator["schema"] != SCHEMA:
+        raise SystemExit(f"{path}: expected keys {sorted(KEYS)}, optionally {sorted(OPTIONAL_KEYS)}, and schema {SCHEMA}")
     if set(operator["node"]) - OPTIONAL_NODE_KEYS != NODE_KEYS:
         raise SystemExit(f"{path}: node needs {sorted(NODE_KEYS)}, optionally {sorted(OPTIONAL_NODE_KEYS)}")
     if not re.fullmatch(r"[a-z0-9]+", operator["slug"]):
         raise SystemExit(f"{path}: slug must be lowercase letters and digits")
-    width = operator["tensor_parallel_size"]
-    if not all(isinstance(operator[key], int) and operator[key] > 0
-               for key in ("tensor_parallel_size", "replay_load", "tokens_per_prompt")):
-        raise SystemExit(f"{path}: tensor_parallel_size, replay_load and tokens_per_prompt are positive integers")
+    width, loads = operator["tensor_parallel_size"], operator["replay_load"]
+    loads = loads if isinstance(loads, list) else [loads]
+    if not all(type(value) is int and value > 0
+               for value in (width, operator["tokens_per_prompt"], operator.get("replay_windows", 1),
+                             operator["node"].get("lifetime_memory_gib", 1), *loads)
+               ) or loads != sorted(set(loads)):
+        raise SystemExit(f"{path}: tensor_parallel_size, tokens_per_prompt, replay_windows, node.lifetime_memory_gib "
+                         "and the ascending replay_load (one session count or a list) are positive integers")
+    floors = operator.get("decode_floors", {})
+    if (sorted(floors) != (sorted(map(str, loads)) if floors or len(loads) > 1 else [])
+            or not all(re.fullmatch(r"[1-9][0-9]*(\.[0-9]*[1-9])?", value) for value in floors.values())):
+        raise SystemExit(f"{path}: decode_floors maps every replay load to a canonical decimal tok/s floor")
+    if operator.get("replay_warm_windows", 0) not in (0, 1, 2) or type(operator.get("replay_warm_windows", 0)) is not int:
+        raise SystemExit(f"{path}: replay_warm_windows is 0, 1 or 2")
+    if "load_margin" in operator and (not floors or not re.fullmatch(r"0\.[0-9]*[1-9]", operator["load_margin"])):
+        raise SystemExit(f"{path}: load_margin is a canonical decimal in (0, 1), sealed with decode_floors")
+    if "steady_span" in operator and (not floors or not re.fullmatch(r"0\.[0-9]*[1-9]", operator["steady_span"])):
+        raise SystemExit(f"{path}: steady_span is a canonical decimal in (0, 1), sealed with decode_floors")
+    if "bar_futility" in operator and (not floors or operator["bar_futility"] is not True):
+        raise SystemExit(f"{path}: bar_futility is true, sealed with decode_floors")
+    if "speed_policy_version" in operator and (type(operator["speed_policy_version"]) is not int or operator["speed_policy_version"] not in (21, 22)):
+        raise SystemExit(f"{path}: speed_policy_version must be 21 or 22")
+    starts, helpers = operator["node"]["scheduler_starts"], operator["node"]["helper_starts"]
+    if len(helpers) != len(starts) or not all(type(c) is int for c in (*starts, *helpers)):
+        raise SystemExit(f"{path}: helper_starts names one helper vCPU per scheduler start, in GPU order")
     for lane, cpus in operator["node"]["client_cpus"].items():
         devices = [int(value) for value in lane.split(",")]
         if len(devices) != width or devices != sorted(devices) or not cpus:
@@ -99,20 +129,30 @@ def load_operator(path: Path) -> dict:
     controls = operator["audit_control_delta_digests"]
     if controls != sorted(set(controls)) or not all(re.fullmatch(r"[0-9a-f]{64}", d) for d in controls):
         raise SystemExit(f"{path}: audit_control_delta_digests must be sorted, distinct, lowercase sha256 hex")
+    floor = operator.get("audit_row_floor_ppm")
+    if floor is not None and (type(floor) is not int or not 0 < floor <= 400_000 or floor == 20_000):
+        raise SystemExit(f"{path}: audit_row_floor_ppm is an integer in (0, 400000], absent at the 20000 default")
     return operator
 
 
 def values(operator: dict, arena_inputs: str) -> dict[str, str]:
     width = operator["tensor_parallel_size"]
+    quality = operator.get("quality", {})
     return {
         "ARENA_ID": operator["arena_id"], "ARENA_INPUTS": arena_inputs, "SLUG": operator["slug"],
         "MODEL_PROFILE_KEY": operator["model_profile_key"], "TP": str(width),
-        "REPLAY_LOAD": str(operator["replay_load"]), "TOKENS_PER_PROMPT": str(operator["tokens_per_prompt"]),
+        "TOKENS_PER_PROMPT": str(operator["tokens_per_prompt"]),
+        "QUALITY_PROMPTS": str(quality.get("select_count", 8)),
+        "SPEED_VERSION_FIELD": (f'\n    "version": {operator["speed_policy_version"]},' if "speed_policy_version" in operator else ""),
+        "NLL_TAIL_THRESHOLD": quality.get("nll_tail_threshold", "0.35"),
         "TOKENIZER_ASSET": operator["tokenizer_asset"],
         "OWNER": operator["owner"], "RAM_MODEL_ARGS": " '--ram-model'," if operator["model_in_ram"] else "",
         "SCHEDULER_STARTS": json.dumps(operator["node"]["scheduler_starts"]),
+        "HELPER_STARTS": json.dumps(operator["node"]["helper_starts"]),
         "NODE_NAME": operator["node"]["name"], "CLIENT_SETS": repr(operator["node"]["client_cpus"]),
         "ENGINE_CPUS": repr(operator["node"].get("engine_cpus")),
+        "LIFETIME_MEMORY": repr(operator["node"]["lifetime_memory_gib"] << 30
+                                if "lifetime_memory_gib" in operator["node"] else None),
     }
 
 
@@ -153,12 +193,36 @@ def archive(output: Path, root: Path, members: list[Path]) -> None:
     output.chmod(0o600)
 
 
+def render_quality(packet: Path, policy: dict, receipt: Path) -> None:
+    """Replace the retained synthetic calibration with the measured controls consumed by this commission."""
+    import pprint
+
+    controls = json.loads(receipt.read_bytes())
+    if controls["policy"] != policy or not 1 < policy["select_count"] <= 4096:
+        raise SystemExit("quality controls differ from the operator policy")
+    adapter = packet / "cacheon_b300_qualification_adapter.py"
+    text = adapter.read_text()
+    begin = text.index("def _threshold(context):")
+    end = text.index("def _seal_calibration_from_durable()", begin)
+    loader = (TEMPLATES / "quality_controls.py.tmpl").read_text().replace(
+        "@CONTROL_RECEIPT@", pprint.pformat(controls, sort_dicts=True))
+    text = text[:begin] + loader + "\n\n" + text[end:]
+    before = '"source": "bootstrap-calibration-seed"'
+    if text.count(before) != 1:
+        raise SystemExit("unrecognized calibration provenance in the retained adapter")
+    text = text.replace(before, '"source": "measured-teacher-controls", "controls": QUALITY_CONTROLS')
+    text = text.replace("sealed from the settled bootstrap calibration", "sealed from measured teacher controls and the stock speed")
+    check(adapter.name, text)
+    adapter.write_text(text)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arena", required=True, help="directory name under examples/arena_inputs")
     parser.add_argument("--retained-inputs", required=True, type=Path,
                         help="packet/, model-receipts/ and pod-remote-worker-service.py of this arena")
     parser.add_argument("--out", required=True, type=Path, help="new task directory layout to write")
+    parser.add_argument("--quality-controls", type=Path, help="receipt from seal_quality_controls.py")
     args = parser.parse_args()
     os.umask(0o077)
     arena = ROOT / "examples" / "arena_inputs" / args.arena
@@ -166,6 +230,8 @@ def main() -> None:
     fill = values(operator, args.arena)
     slug = operator["slug"]
     retained = args.retained_inputs.resolve(strict=True)
+    if ("quality" in operator) != (args.quality_controls is not None):
+        raise SystemExit("an arena declaring quality metrics requires its measured quality controls")
     (receipt,) = sorted((retained / "model-receipts").glob("model-provision-sha256-*.json"))
     json.loads(receipt.read_bytes())
     out = args.out
@@ -182,21 +248,36 @@ def main() -> None:
     for name in PACKET:
         target = f"commission-inputs/packet/{name}"
         copy(retained / "packet" / name, inputs / target, MODES.get(target, 0o644))
+    if args.quality_controls:
+        render_quality(inputs / "commission-inputs/packet", operator["quality"], args.quality_controls)
     capabilities = inputs / "commission-inputs/packet/qualification_capabilities.py"
     text = capabilities.read_text()
-    loads = re.findall(r'"load": \d+', text)
-    if len(loads) != 1:
-        raise SystemExit(f"{capabilities.name}: expected one replay load, found {loads}")
-    text = text.replace(loads[0], f'"load": {operator["replay_load"]}')
     # The registered audit controls are the arena's own bundles (a wrong control for this model's node address):
     # their digests replace the previous arena's in the sealed policy, as the replay load does.
-    pattern = re.compile(r'(?P<indent>[ \t]*)"audit_control_delta_digests": \[(?:\s*"[0-9a-f]{64}",)*\s*\]')
-    matches = list(pattern.finditer(text))
-    if len(matches) != 1:
-        raise SystemExit(f"{capabilities.name}: expected one audit control list, found {len(matches)}")
-    indent = matches[0].group("indent")
-    rows = "".join(f'{indent}    "{digest}",\n' for digest in operator["audit_control_delta_digests"])
-    text = text[:matches[0].start()] + f'{indent}"audit_control_delta_digests": [\n{rows}{indent}]' + text[matches[0].end():]
+    floor = operator.get("audit_row_floor_ppm")
+    controls = lambda match: "".join((*([f'{match["indent"]}"audit_row_floor_ppm": {floor},\n'] if floor else []),
+                                      f'{match["indent"]}"audit_control_delta_digests": [\n',
+                                      *(f'{match["indent"]}    "{digest}",\n'
+                                        for digest in operator["audit_control_delta_digests"]), f'{match["indent"]}]'))
+    rewrites = [(r'"load": (?:\d+|\[[\d, ]*\])', lambda _: f'"load": {json.dumps(operator["replay_load"])}'),
+                (r'(?P<indent>[ \t]*)"audit_control_delta_digests": \[(?:\s*"[0-9a-f]{64}",)*\s*\]', controls)]
+    if "decode_floors" in operator:  # keywords of the packet's GOODPUT_POLICY = GoodputPolicy(..., decode_floor=1.0)
+        floors = ", ".join(f"({load}, {operator['decode_floors'][load]})" for load in sorted(operator["decode_floors"], key=int))
+        margin = f', load_margin={operator["load_margin"]}' if "load_margin" in operator else ""
+        margin += f', steady_span={operator["steady_span"]}' if "steady_span" in operator else ""
+        margin += ", bar_futility=1.0" if "bar_futility" in operator else ""
+        rewrites.append((r"decode_floor=1\.0\)", lambda _: f"decode_floor=1.0, decode_floors=({floors},){margin})"))
+    if "replay_windows" in operator:
+        rewrites.append((r'"windows": \d+', lambda _: f'"windows": {operator["replay_windows"]}'))
+    # The commission refuses a zero count, so no warm windows drops the packet's key.
+    if "replay_warm_windows" in operator:
+        warm = operator["replay_warm_windows"]
+        rewrites.append((r'\n[ \t]*"warm_windows": \d+,' if not warm else r'"warm_windows": \d+',
+                         (lambda _: "") if not warm else (lambda _: f'"warm_windows": {warm}')))
+    for pattern, value in rewrites:
+        text, count = re.subn(pattern, value, text)
+        if count != 1:
+            raise SystemExit(f"{capabilities.name}: expected one match of {pattern}, found {count}")
     check(capabilities.name, text)
     capabilities.chmod(0o600)
     capabilities.write_text(text)

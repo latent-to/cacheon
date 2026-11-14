@@ -88,7 +88,7 @@ def stock_reference(qualification, speed):
                 or not speed.get("workload_digest")
                 or speed["workload_digest"] != inputs["workload_digest"]
                 or speed["workload_digest"] != summary["workload_digest"]
-                or speed.get("load") != summary["load"]):
+                or speed.get("loads") != [summary["load"]]):
             continue
         rate, ttft = summary["mean_decode_tps"], summary["mean_ttft_s"]
         if not math.isfinite(rate) or rate <= 0 or not math.isfinite(ttft) or ttft < 0:

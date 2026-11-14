@@ -83,7 +83,7 @@ is one arena and one incumbent stack, so kernel and cache PASSes against the sam
 baseline compete with each other. Bundles committed before a baseline's first crown
 still run against it; later ones are returned until a new baseline is commissioned.
 
-The speedup used for settlement is the policy-19 point estimate:
+The speedup used for settlement is the policy-21 point estimate:
 
 ```text
 settled speedup = exp(mean log cost of the 4 stock reference boots

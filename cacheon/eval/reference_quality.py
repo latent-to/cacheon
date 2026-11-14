@@ -11,7 +11,7 @@ import math
 import statistics
 import struct
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, field as dc_field, fields, is_dataclass
 from decimal import Decimal, ROUND_FLOOR, ROUND_HALF_EVEN, localcontext
 from enum import Enum
 from pathlib import Path
@@ -42,9 +42,8 @@ RAW_QUALITY_DOMAIN = "reference-quality.raw"
 RAW_QUALITY_SCHEMA = "cacheon.reference-quality-raw.v1"
 SUPPORT_POLICY_ID = "retained-support-f32-q18.v1"
 QUALITY_DECISIONS = frozenset({"PASS", "FAIL", "NO_DECISION"})
-_METRICS = frozenset(
-    {"mean_nll", "worst_nll", "tail_rate", "topk_kl", "argmax_rate", "coverage_dev", "task_score"}
-)
+_METRICS = frozenset({"mean_nll", "worst_nll", "tail_rate", "tail_excess_nll",
+                      "topk_kl", "argmax_rate", "coverage_dev", "task_score"})
 _MAX_PROMPTS = 4096
 _TAIL_EVENT_PROMPTS = 4
 _MAX_TOKENS = 1_048_576
@@ -87,7 +86,8 @@ def _encode(value: object) -> object:
     if isinstance(value, Enum):
         return value.value
     if is_dataclass(value):
-        return {field.name: _encode(getattr(value, field.name)) for field in fields(value)}
+        return {f.name: _encode(getattr(value, f.name)) for f in fields(value)
+                if not (f.metadata.get("wire_optional") and getattr(value, f.name) is None)}
     if isinstance(value, tuple):
         return [_encode(item) for item in value]
     if value is None or type(value) in {str, bool, int}:
@@ -144,6 +144,7 @@ class TeacherNLLEvidence(_Record):
     nll_sum: str
     nll_max: str
     tail_count: int
+    tail_excess_sum: str | None = dc_field(default=None, metadata={"wire_optional": True})
     def __post_init__(self) -> None:
         object.__setattr__(self, "token_count", _integer(self.token_count, "token_count", 1, _MAX_TOKENS))
         object.__setattr__(self, "nll_sum", _decimal(self.nll_sum, "nll_sum"))
@@ -151,6 +152,8 @@ class TeacherNLLEvidence(_Record):
         object.__setattr__(self, "tail_count", _integer(self.tail_count, "tail_count", 0, self.token_count))
         if decimal_value(self.nll_sum) > decimal_value(self.nll_max) * self.token_count:
             raise ReferenceQualityError("NLL sum exceeds token_count * max")
+        if self.tail_excess_sum is not None:
+            _decimal(self.tail_excess_sum, "tail excess sum", decimal_value(self.nll_sum))
     @property
     def mean(self) -> float:
         return float(_ratio(decimal_value(self.nll_sum), self.token_count))
@@ -162,6 +165,8 @@ class TeacherNLLEvidence(_Record):
         return self.tail_count / self.token_count
     @classmethod
     def from_dict(cls, value: object) -> "TeacherNLLEvidence":
+        if isinstance(value, Mapping) and "tail_excess_sum" not in value:
+            value = {**value, "tail_excess_sum": None}
         return _load(cls, value, "teacher NLL")
 @dataclass(frozen=True)
 class RolloutKLEvidence(_Record):
@@ -620,7 +625,7 @@ def _distribution_metrics(token: RawTokenEvidence) -> tuple[Decimal, Decimal, bo
     if not kl.is_finite() or not coverage.is_finite() or kl < 0:
         raise ReferenceQualityError("computed token KL/coverage is nonfinite")
     return kl, coverage, token.teacher_topk.true_argmax_token_id != token.rollout_topk.true_argmax_token_id
-def _rollout(raw: RawRolloutEvidence, tail_threshold: Decimal) -> RolloutQualityEvidence:
+def _rollout(raw: RawRolloutEvidence, tail_threshold: Decimal, *, measure_excess: bool) -> RolloutQualityEvidence:
     nlls = [decimal_value(token.target_nll) for token in raw.tokens]
     count = len(raw.tokens)
     if raw.tokens[0].teacher_topk is None:
@@ -637,19 +642,21 @@ def _rollout(raw: RawRolloutEvidence, tail_threshold: Decimal) -> RolloutQuality
             _text(ordered_kl[min(count - 1, int(Decimal("0.99") * count))], "p99 KL"),
             sum(row[2] for row in metrics),
             _text(_ratio(_sumd(coverages), count), "coverage deviation", Decimal(1)))
+    excess = (_text(_sumd(value - tail_threshold for value in nlls if value > tail_threshold), "tail excess sum")
+              if measure_excess else None)
     return RolloutQualityEvidence(
         TeacherNLLEvidence(count, _text(_sumd(nlls), "NLL sum"),
-                           _text(max(nlls), "NLL max", _MAX_NLL), sum(value > tail_threshold for value in nlls)),
+                           _text(max(nlls), "NLL max", _MAX_NLL), sum(value > tail_threshold for value in nlls), excess),
         rollout_kl,
         HiddenTaskEvidence(str(sum(task.passed for task in raw.hidden_tasks)), len(raw.hidden_tasks)),
     )
-def _derive(raw: ReferenceQualityRawArtifact, raw_digest: str) -> ReferenceQualityEvidence:
+def _derive(raw: ReferenceQualityRawArtifact, raw_digest: str, *, measure_excess: bool = False) -> ReferenceQualityEvidence:
     threshold = decimal_value(raw.binding.nll_tail_threshold)
     prompts = []
     for prompt in raw.prompts:
-        baseline = _rollout(prompt.baseline, threshold)
-        candidate = _rollout(prompt.candidate, threshold)
-        control = _rollout(prompt.stock_control, threshold)
+        baseline = _rollout(prompt.baseline, threshold, measure_excess=measure_excess)
+        candidate = _rollout(prompt.candidate, threshold, measure_excess=measure_excess)
+        control = _rollout(prompt.stock_control, threshold, measure_excess=measure_excess)
         prompts.append(PromptQualityEvidence(
             prompt.prompt_digest, baseline, candidate, control,
             sum(left.token_id == right.token_id for left, right in zip(prompt.baseline.tokens, prompt.candidate.tokens)),
@@ -686,6 +693,7 @@ def reopen_reference_quality_evidence(
     reference: EvidenceArtifactRef,
     *,
     expected_binding: ReferenceQualityRawBinding,
+    calibration: CalibrationManifest | None = None,
     max_bytes: int = DEFAULT_MAX_EVIDENCE_BYTES,
 ) -> ReferenceQualityEvidence:
     """Authenticate canonical raw bytes, bind their authority, and derive summaries."""
@@ -703,7 +711,10 @@ def reopen_reference_quality_evidence(
     raw = _parse_canonical(payload)
     if raw.binding != expected_binding:
         raise ReferenceQualityError("raw quality artifact binding was relabeled or is stale")
-    return _derive(raw, reference.sha256)
+    if calibration is not None and calibration.digest != raw.binding.calibration_digest:
+        raise ReferenceQualityError("raw quality evidence names another calibration")
+    measure_excess = calibration is not None and any(m.name == "tail_excess_nll" for m in calibration.quality_metrics)
+    return _derive(raw, reference.sha256, measure_excess=measure_excess)
 @dataclass(frozen=True)
 class ReferenceQualityVerdict:
     decision: str
@@ -732,6 +743,11 @@ class ReferenceQualityVerdict:
         object.__setattr__(self, "overlapping_metrics", overlap)
 def _metric(prompt: PromptQualityEvidence, policy: MetricCalibration) -> tuple[float, float, float]:
     def value(row: RolloutQualityEvidence) -> float:
+        if policy.name == "tail_excess_nll":
+            excess = row.teacher_nll.tail_excess_sum
+            if excess is None:
+                raise ReferenceQualityError("tail_excess_nll requires the sealed per-token excess")
+            return float(_ratio(decimal_value(excess), row.teacher_nll.token_count))
         values = {
             "mean_nll": row.teacher_nll.mean,
             "worst_nll": row.teacher_nll.worst,

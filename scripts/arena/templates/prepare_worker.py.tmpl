@@ -108,13 +108,15 @@ pins = {}
 for node, group in sorted(groups.items()):
     local = [sorted(cpus) for _, cpus in sorted(cores[node].items())]
     assert len(local) >= 2 * len(group) + 24, 'too few local cores for the pin table and the client sets'
-    # Measured on this VM 2026-10-18: scheduler vCPUs chosen from the fast positions (single-thread sweep).
-    STARTS = @SCHEDULER_STARTS@
+    # Measured on the host (single-thread sweep): each GPU's scheduler vCPU and its helper core, both from the
+    # fast positions. The helper is sealed, not first + 1: hosts that number SMT siblings adjacently would land it
+    # on the scheduler's own core.
+    STARTS, HELPERS = @SCHEDULER_STARTS@, @HELPER_STARTS@
     assert set(gpu_nodes) == set(range(len(STARTS))), 'this table is for the @NODE_NAME@ box'
     by_cpu = {cpu: cpus for cpus in local for cpu in cpus}
     for gpu in sorted(group):
         first = STARTS[gpu]
-        a, b = by_cpu[first], by_cpu[first + 1]
+        a, b = by_cpu[first], by_cpu[HELPERS[gpu]]
         assert a != b
         pins[str(gpu)] = [a[0], b[0], *b[1:]]
 prior = json.loads((shared / 'inputs/deployment.json').read_bytes())
@@ -122,6 +124,10 @@ prior['resources']['runtime']['cpu_pins'] = pins
 ENGINE_CPUS = @ENGINE_CPUS@
 if ENGINE_CPUS is not None:
     prior['resources']['runtime']['cpu_roles'] = ENGINE_CPUS
+# A host KV tier is pinned host RAM inside the lifetime's cgroup (GLM-5.3-Flash: 4 prefill ranks x 350 GB, 2026-11-11).
+LIFETIME_MEMORY = @LIFETIME_MEMORY@
+if LIFETIME_MEMORY is not None:
+    prior['resources']['runtime']['memory_bytes'] = LIFETIME_MEMORY
 # Timed, not read from lscpu/sysfs: a guest can hide SMT and clock tiers (oci_cpuset.verify_cpu_plan).
 sys.dont_write_bytecode = True  # the source tree is sealed below; leave no __pycache__ in it
 sys.path.insert(0, str(source))
@@ -172,6 +178,5 @@ for p in [source, *source.rglob('*')]:
     p.chmod(p.stat().st_mode & ~0o222)
 print(json.dumps({'stage': str(stage), 'source': str(source), 'cpu_pins': pins, 'cpu_check': cpu_check,
                   'lane_devices': lane,
-                  'replay_load': @REPLAY_LOAD@, 'replay_windows': 4,
                   'speed_wall_seconds': prior['speed_policy']['max_stage_seconds'],
                   'qualification_wall_seconds': prior['speed_policy']['max_qualification_seconds']}))

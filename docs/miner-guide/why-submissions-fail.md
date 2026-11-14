@@ -104,7 +104,9 @@ gain did not clear that bound by the last sealed boot, and the candidate was not
 measurably slower either — an ordinary competitive miss, not a regression.
 `candidate_slower` means the estimate fell below the mirrored bound. A first
 candidate boot that reads slower than the arena's sealed futility margin fails
-without the second boot, and its detail names that margin. A candidate
+without the second boot, and its detail names that margin. Where the arena seals
+`bar_futility`, a first boot reading more than that margin below the payment bar
+also fails without the second, as `below_payment_bar`. A candidate
 that clears the speed bound but misses service attainment fails with
 `service_contract_not_met`. On a policy-20 arena, a candidate whose median per-user
 decode rate falls below the sealed floor fails with `service_floor_not_met`, however
@@ -182,7 +184,7 @@ target families. A submission for one is parked at intake with reason
 judgement on the bundle and it is not charged — the cited eval-cost payment
 stays spendable. The submission closes as `NO_DECISION` and is not re-queued:
 resubmit the same bytes when the family reopens. The operator's announcement
-names the open targets; see [GLM availability](slots.md#current-glm-53-availability).
+names the open targets; see [current availability](slots.md#current-availability).
 
 ## Things that are not valid submissions
 

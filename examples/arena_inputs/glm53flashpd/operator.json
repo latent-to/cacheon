@@ -1,0 +1,42 @@
+{
+  "schema": "cacheon-arena-operator-v1",
+  "arena_id": "glm53flashpd-b300-node-v1",
+  "slug": "glm53flashpd",
+  "model_profile_key": "GLM-5.3-Flash-NVFP4",
+  "tensor_parallel_size": 8,
+  "replay_load": [96, 160, 224],
+  "decode_floors": {"96": "85", "160": "82", "224": "80"},
+  "load_margin": "0.01",
+  "steady_span": "0.5",
+  "bar_futility": true,
+  "replay_windows": 1,
+  "speed_policy_version": 22,
+  "replay_warm_windows": 0,
+  "quality": {
+    "algorithm_id": "teacher-familywise-upper-bound-v1",
+    "familywise_z": "2",
+    "select_count": 32,
+    "nll_tail_threshold": "5",
+    "limits": {
+      "mean_nll": {"stock_envelope": "0.15", "candidate_delta": "0.08"},
+      "tail_excess_nll": {"stock_envelope": "0.015", "candidate_delta": "0.01"}
+    }
+  },
+  "tokens_per_prompt": 22484,
+  "tokenizer_asset": "tokenizer-official",
+  "model_in_ram": true,
+  "owner": "glm53flashpd-node",
+  "audit_row_floor_ppm": 150000,
+  "audit_control_delta_digests": [
+    "4c253998e53d898caaebbff3bc7aeca2ab687f3d3eec507cc9257defc474d184"
+  ],
+  "node": {
+    "name": "8-GPU B300 pod",
+    "scheduler_starts": [48, 20, 10, 14, 170, 174, 154, 164],
+    "helper_starts": [50, 22, 12, 16, 172, 176, 156, 166],
+    "lifetime_memory_gib": 1792,
+    "client_cpus": {
+      "0,1,2,3,4,5,6,7": [36, 62, 148, 188, 70, 44, 74, 78]
+    }
+  }
+}

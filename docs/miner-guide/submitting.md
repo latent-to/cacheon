@@ -390,7 +390,7 @@ The authoritative path is staged:
 !!! info "When a reward begins"
     A distinct retained qualified contribution earns V1 credit when it beats the
     best earlier rewarded PASS against the same arena and incumbent by the
-    required margin (1.5% under V17, V18 and V19). Settlement separately selects the crown. The validator later combines
+    required margin (1.5%). Settlement separately selects the crown. The validator later combines
     eligible claims into a weight vector and publishes it on-chain. See
     [How miners earn rewards](incentives.md).
 
