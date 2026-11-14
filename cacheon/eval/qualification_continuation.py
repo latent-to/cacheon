@@ -35,7 +35,7 @@ from cacheon.stack_identity import (
 
 
 RECORD_SCHEMA = "cacheon.eval.qualification-continuation-record.v2"
-_STAGES = ("speed_first", "speed", "audit_armed", "audit_completed", "t_armed", "quality", "final", "recovery")
+_STAGES = ("speed", "audit_armed", "audit_completed", "t_armed", "quality", "final", "recovery")
 
 
 def _decimal(value: object, where: str) -> str:
@@ -178,6 +178,7 @@ class QualificationContinuation:
         self.worker_recovery_reference: EvidenceArtifactRef | None = None
         self.replacement_execution = getattr(store, "worker_replacements", {}).get(request_digest)
         self.checkpoint_root = getattr(store, "checkpoint_root", store.root / "checkpoints")
+        self._speed_first_root = store.root / "speed-first"
 
     # -- closed record file handling ----------------------------------------
 
@@ -325,18 +326,47 @@ class QualificationContinuation:
             or any(type(row) is not str or not row for row in reference)
             or type(execution) is not EngineExecutionEvidence or type(quiescence) is not OCIQuiescenceReceipt):
             raise QualificationContinuationError("first speed lifetime lacks its closed engine session")
-        self._record("speed_first", {
-            "plan_digest": require_sha256_hex(plan_digest, field="speed plan digest"),
-            "clock_domain": clock_domain, "reference": list(reference),
-            "started": _decimal(started, "speed stage start"),
-            "execution": self._codec.encode(execution), "quiescence": self._codec.encode(quiescence),
-        })
+        path = self._speed_first(plan_digest)
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+        try:
+            with temporary.open("xb") as handle:
+                handle.write(canonical_json_bytes({
+                    "plan_digest": plan_digest, "clock_domain": clock_domain, "reference": list(reference),
+                    "started": _decimal(started, "speed stage start"),
+                    "execution": self._codec.encode(execution), "quiescence": self._codec.encode(quiescence),
+                }))
+                handle.flush()
+                os.fsync(handle.fileno())
+            # A plan keeps one first lifetime: the newest replaces any an earlier attempt left.
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _speed_first(self, plan_digest: str) -> Path:
+        """One record per speed plan under the store, outside this request's directory.
+
+        A HOLD completes its lease and the release is dispatched under a new one, so the retry's request
+        digest and scope directory differ from the interrupted attempt's: a record kept in that directory
+        was never found again (2026-11-14). The plan digest names the candidate, launch, lane and policy.
+        """
+        self._speed_first_root.mkdir(mode=0o700, exist_ok=True)
+        return self._speed_first_root / f"{require_sha256_hex(plan_digest, field='speed plan digest')}.json"
+
+    def discard_speed_first(self, plan_digest: str) -> None:
+        """Remove a plan's retained first lifetime once its stage completed or cannot use it."""
+        self._speed_first(plan_digest).unlink(missing_ok=True)
 
     def load_speed_first(self, plan_digest: str, clock_domain: str, reference: tuple[str, ...]):
-        """Reopen the retained first lifetime on its plan, host clock and stock lifetimes; any change is a HOLD."""
-        payload = self._load("speed_first")
-        if payload is None:
+        """Reopen the retained first lifetime on its plan, host clock and stock lifetimes; any change raises."""
+        import json
+
+        path = self._speed_first(plan_digest)
+        if not path.exists():
             return None
+        try:
+            payload = json.loads(path.read_bytes())
+        except (OSError, ValueError) as exc:
+            raise QualificationContinuationError(f"first speed lifetime is malformed: {exc}") from None
         if (type(payload) is not dict
             or set(payload) != {"plan_digest", "clock_domain", "reference", "started", "execution", "quiescence"}
             or payload["plan_digest"] != plan_digest or payload["clock_domain"] != clock_domain

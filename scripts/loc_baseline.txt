@@ -197,12 +197,14 @@
 # Every replay AIPerf run (prime and timed windows) drops its unread default collectors; a reaped one cost two qualifications: cacheon +3.
 # A retry reopens an undecided first candidate lifetime (speed_first) and boots only the second: cacheon +74, docs +7.
 # Sealed first-lifetime payment-bar futility (bar_futility): cacheon +14, docs +6, examples +3, scripts +5, tests +6.
+# speed_first is keyed by the speed plan and its retry runs on its own stage clock (as written it was never found
+# after a release); replay-client failures are typed holds, not adapter-epoch failures: cacheon +58, docs +11.
 (root) 1163
 .github 338
-cacheon 92346
+cacheon 92404
 cacheon_kernels 936
 dashboard 4420
-docs 13385
+docs 13396
 examples 431
-scripts 4726
+scripts 4728
 tests 14184

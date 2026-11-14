@@ -27,6 +27,9 @@ from uuid import UUID
 from cacheon.eval import aiperf_client, pd_engine
 from cacheon.eval.agent_slice import SliceManifest, load_slice_manifest
 from cacheon.eval.oci_session_protocol import BatchRequest, MAX_BATCH_REQUEST_BYTES
+# The validator's own replay client failing is infrastructure: untyped, one AIPerf exit closed the worker's
+# adapter epoch and parked the queue behind a transport hold (2026-11-13 and 2026-11-14).
+from cacheon.eval.oci_outer_session import OuterSessionInfrastructureError, OuterSessionTimeoutError
 from cacheon.eval.oci_request_exchange import flush_cache
 from cacheon.eval.service_capacity import (
     LoadRead, ServiceContract, ServiceEvidenceError, TurnRecord, attainment, fixed_work_rate,
@@ -541,11 +544,14 @@ async def _prime(plan: AgentReplayPlan, context_length: int | None, load: int) -
                 client = await asyncio.create_subprocess_exec(
                     *argv, stdout=log, stderr=log, start_new_session=True, env={**os.environ, "TMPDIR": str(ipc)},
                 )
-                code = await asyncio.wait_for(client.wait(), _PRIME_CLIENT_S)
+                try:
+                    code = await asyncio.wait_for(client.wait(), _PRIME_CLIENT_S)
+                except asyncio.TimeoutError:
+                    raise OuterSessionTimeoutError(f"AIPerf did not finish priming the replay; see {work / 'aiperf.log'}") from None
             if code:
-                raise RuntimeError(f"AIPerf exited {code} priming the replay; see {work / 'aiperf.log'}")
+                raise OuterSessionInfrastructureError(f"AIPerf exited {code} priming the replay; see {work / 'aiperf.log'}")
             if not received:
-                raise RuntimeError(f"AIPerf sent no request priming the replay; see {work / 'aiperf.log'}")
+                raise OuterSessionInfrastructureError(f"AIPerf sent no request priming the replay; see {work / 'aiperf.log'}")
             for key, future in pending.items():
                 ids, digest = await future
                 _PROMPTS[key] = (_shared(ids), digest)
@@ -595,12 +601,12 @@ async def _run_load_read(session, plan: AgentReplayPlan, load: int, *, tokenizer
                 done, _ = await asyncio.wait(waiters, timeout=max(0, session.deadline - session.clock()),
                                              return_when=asyncio.FIRST_COMPLETED)
                 if not done:
-                    raise TimeoutError("AIPerf exceeded the engine session deadline")
+                    raise OuterSessionTimeoutError("AIPerf exceeded the engine session deadline")
             if bridge.failure is not None:
                 raise bridge.failure
             code = waiters[0].result()
             if code:
-                raise RuntimeError(f"AIPerf exited {code}; see {output / 'aiperf.log'}")
+                raise OuterSessionInfrastructureError(f"AIPerf exited {code}; see {output / 'aiperf.log'}")
             read = collect_read(plan, bridge, load)
             rows = sorted(bridge.rows.values(), key=lambda row: row.batch_index)
             session.batch_rows.extend(rows)

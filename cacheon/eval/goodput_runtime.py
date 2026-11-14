@@ -14,6 +14,7 @@ import asyncio
 import gc
 import hashlib
 import json
+import logging
 import math
 import os
 import time
@@ -295,7 +296,13 @@ def _boot(executor, arm, lane, model_mount, *, prefix, deadline, tokenizer):
             task = run_replay(controller, read_plan, tokenizer=tokenizer)
             return await asyncio.wait_for(task, timeout=read_plan.max_work_seconds or None)
 
-        asyncio.run(bounded_replay())
+        try:
+            asyncio.run(bounded_replay())
+        except asyncio.TimeoutError:
+            from cacheon.eval.oci_outer_session import OuterSessionTimeoutError
+
+            # Typed, so the row is held and the worker serves the next one; untyped it closed the adapter epoch.
+            raise OuterSessionTimeoutError("replay exceeded its sealed work bound") from None
         return controller.finish(require_all=False)
 
     try:
@@ -445,7 +452,11 @@ def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root
     An undecided first lifetime is retained in the continuation. A retry on the same host clock reopens it and
     boots only the second lifetime, as the first of its own evaluator process: ``gc.freeze`` gives each lifetime
     the first one's heap, and the GLM PD stock pair 88ad50ad read its second lifetime 0.6% faster over its three
-    loads, not slower (2026-11-14).
+    loads, not slower (2026-11-14). The retry's stage clock starts at the retry and its budget is the stage's less
+    what the first lifetime used: a retry is released minutes to hours after the failure, so a stage that kept its
+    first start could never fit its second lifetime. A record the stage cannot use (another plan, host clock or
+    stock reference, a lifetime that no longer validates, or less budget left than the first lifetime took) is
+    removed and both lifetimes are measured: as a HOLD it repeated on every release, since nothing else removes it.
     """
     from cacheon.eval.crossover_runtime import ResidentCrossoverEvidence, _lane_digest
     from cacheon.eval.qualification_continuation import QualificationContinuationError
@@ -459,24 +470,7 @@ def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root
     stock = tuple(read for row in reference for read in row.session.replay_reads)
     sessions = tuple(row.session.session_id for row in reference)
     domain = None if continuation is None else _clock_domain()
-    retained = None if continuation is None else continuation.load_speed_first(plan.digest, domain, sessions)
-    boots = []
-    if retained is None:
-        started = float(clock())
-    else:
-        started, execution, quiet = retained
-        _validate_replay_sessions([(execution.session.replay_reads, execution, plan.candidate, ())], replay)
-        if (quiet.namespace_digest != plan.candidate.executor_namespace_digest
-                or (quiet.container_ids, quiet.lease_records, quiet.resource_entries) != ((), (), ())
-                or not started <= execution.session.ready_completed_at <= execution.session.session_completed_at
-                <= quiet.observed_monotonic_s <= float(clock())):
-            raise QualificationContinuationError("retained first speed lifetime left its stage clock")
-        boots.append((execution, quiet, None))
-    deadline = min(deadline, started + plan.policy.max_stage_seconds)
-    if not math.isfinite(deadline) or deadline <= float(clock()):
-        if retained is not None:
-            raise QualificationContinuationError("retained first speed lifetime has no remaining stage budget")
-        raise ValueError("goodput stage has no remaining execution budget")
+    started, used, boots = float(clock()), 0.0, []
 
     def graded():
         reads = GoodputReadSet(stock, tuple(read for row in boots for read in row[0].session.replay_reads),
@@ -485,8 +479,27 @@ def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root
                                reference_lane=stock[0].lane if getattr(reference, "origin", "") else "")
         return reads, reads.grade(plan.policy.goodput)
 
-    if boots and graded()[1].decision is not SpeedStageDecision.NO_DECISION:
-        raise QualificationContinuationError("retained first speed lifetime no longer leaves its stage undecided")
+    try:
+        retained = None if continuation is None else continuation.load_speed_first(plan.digest, domain, sessions)
+        if retained is not None:
+            first_started, execution, quiet = retained
+            _validate_replay_sessions([(execution.session.replay_reads, execution, plan.candidate, ())], replay)
+            used = quiet.observed_monotonic_s - first_started
+            boots.append((execution, quiet, None))
+            if (quiet.namespace_digest != plan.candidate.executor_namespace_digest
+                    or (quiet.container_ids, quiet.lease_records, quiet.resource_entries) != ((), (), ())
+                    or not first_started <= execution.session.ready_completed_at
+                    <= execution.session.session_completed_at <= quiet.observed_monotonic_s <= started
+                    or plan.policy.max_stage_seconds < 2 * used
+                    or graded()[1].decision is not SpeedStageDecision.NO_DECISION):
+                raise QualificationContinuationError("retained first speed lifetime left its stage clock, budget or rule")
+    except Exception:  # whatever makes the record unusable, the stage's own two lifetimes remain the requested path
+        logging.getLogger(__name__).exception("speed_first removed; both candidate lifetimes are measured")
+        continuation.discard_speed_first(plan.digest)
+        used, boots = 0.0, []
+    deadline = min(deadline, started + plan.policy.max_stage_seconds - used)
+    if not math.isfinite(deadline) or deadline <= started:
+        raise ValueError("goodput stage has no remaining execution budget")
     while len(boots) < CANDIDATE_BOOTS:
         boots.append(_boot(executor, plan.candidate, lane, model_mount, prefix="candidate",
                            deadline=deadline, tokenizer=tokenizer))
@@ -494,7 +507,14 @@ def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root
         if grade.decision is not SpeedStageDecision.NO_DECISION:
             break
         if continuation is not None and len(boots) == 1:
-            continuation.record_speed_first(plan.digest, domain, sessions, started, *boots[0][:2])
+            try:
+                continuation.record_speed_first(plan.digest, domain, sessions, started, *boots[0][:2])
+            except Exception:  # the record only spares a retry its first lifetime; this stage does not need it
+                logging.getLogger(__name__).exception("speed_first was not retained")
+    if continuation is not None:
+        # Decided: the record is keyed by the plan alone, so left behind a later request for the plan would reopen
+        # it, and one that failed after this point would fail every such request the same way.
+        continuation.discard_speed_first(plan.digest)
     candidate, candidate_quiet, candidate_directory = boots[-1]
     pairs, controls, entropy = ((), (), None)
     if grade.decision is SpeedStageDecision.PASS:
@@ -539,7 +559,9 @@ def regrade_reference_speed(evidence, plan):
     ], replay)
     stage = (*candidates, *((bracket,) if bracket else ()))
     marks = [evidence.started_monotonic_s]
-    for row, receipt in zip(stage, (*(None,) * (len(candidates) - 1), *quiet)):
+    # A first lifetime retained from an interrupted attempt closed before the retry's stage clock started.
+    retained = len(candidates) > 1 and candidates[0].session.session_completed_at <= evidence.started_monotonic_s
+    for row, receipt in list(zip(stage, (*(None,) * (len(candidates) - 1), *quiet)))[retained:]:
         marks += [row.session.ready_completed_at, row.session.session_completed_at]
         marks += [] if receipt is None else [receipt.observed_monotonic_s]
     if marks + [evidence.completed_monotonic_s] != sorted(marks + [evidence.completed_monotonic_s]):

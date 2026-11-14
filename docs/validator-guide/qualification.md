@@ -277,13 +277,24 @@ normal grader, evidence import and settlement still consume the completed result
 
 ### Interrupted replay controllers
 
-Continuation is stage-level, with one record inside the speed stage. A first
+Continuation is stage-level, with one record inside the speed stage. A failure
+of the validator's own replay client (an AIPerf exit, a prime that sends no
+request, a replay past its deadline) is an infrastructure error: the row is held
+as `resident_evidence_unavailable` and the worker serves the next one. A first
 candidate lifetime that leaves the stage undecided is retained as `speed_first`
-before the second boots, bound to the speed plan digest, the host clock domain
+before the second boots, in the worker's continuation root under the speed plan
+digest, bound to the host clock domain
 (boot ID and time namespace) and the session IDs of the stock lifetimes it was
-graded against. A retry on the same worker reopens it, regrades it from its raw
+graded against. A released HOLD is dispatched under a new lease and request, so the
+record is keyed by the plan, which names the candidate, launch, lane and policy.
+The next request for that plan on the same worker reopens it, regrades it from its raw
 session, and boots only the second lifetime, as the first lifetime of its own
-evaluator process; a changed plan, host clock or reference is a HOLD. The record
+evaluator process; the completed stage removes the record. The retry's stage clock starts at the retry, so the retained
+lifetime precedes the stage start in the evidence, and its budget is
+`max_stage_seconds` less what the first lifetime used. A record the retry cannot
+use (a changed plan, host clock or reference, a lifetime that no longer validates,
+or less budget left than the first lifetime took) is removed and the stage measures
+both lifetimes; the worker log names the reason. The record
 never enters a relay checkpoint, so a replacement worker measures both lifetimes.
 The speed stage itself commits once, complete, after the selected quality
 controls and normal engine teardown. There are no per-window replay
