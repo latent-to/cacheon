@@ -55,7 +55,7 @@ sessions and saturated prefill near 200-220, so the loads are 96, 160 and 224 se
 with floors 85, 82 and 80 tokens/s, about 10% under the commissioned pair's stock reference (pooled decode medians
 95.2, 91.3 and 89.2 over four boots, 2026-11-12). The production replay's first-turn cold wave keeps decode near its
 128-request cap at every load, so these sit well under the 11-11 rig medians (143.8, 113.0, 110.5). Stock must hold each
-floor at its load. The `node` block uses the replacement B300 pod's measured pin table (2026-11-13).
+floor at its load. The `node` block uses the replacement B300 pod's measured pin table (2026-11-14).
 Each GPU has a fast scheduler vCPU and a helper on a separate physical core. The client uses eight more fast
 vCPUs. DP 1 requires no `engine_cpus`. A replacement measures one fresh stock pair on its physical
 GPUs before scoring candidates. The operator seals this schedule with `speed_policy_version: 22`.
