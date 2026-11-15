@@ -74,6 +74,7 @@ from cacheon.eval.oci_reference_session import (
     run_reference_session,
 )
 from cacheon.eval.oci_session_protocol import RuntimePreflightFacts
+from cacheon.eval.oci_worker_policy import worker_policy_files
 from cacheon.eval.runtime_preflight import (
     HOST_RECEIPT_SCHEMA,
     RuntimePreflightReceipt,
@@ -713,20 +714,11 @@ def build_runtime_argv(
         f"{CONTAINER_ARTIFACT_BASE}/{publication.build_spec_digest[:2]}/"
         f"{publication.build_spec_digest}"
     )
-    worker_policy = Path(__file__).with_name("engine_worker.py")
+    policy_mounts, policy_digests = worker_policy_files(
+        resolved.materialized_tree, model_root, CONTAINER_ENGINE_WORKER_POLICY, OCIBackendError)
     site_bootstrap = Path(__file__).with_name("oci_site")
-    try:
-        worker_policy_info = worker_policy.lstat()
-        worker_policy_raw = worker_policy.read_bytes()
-    except OSError as exc:
-        raise OCIBackendError(f"controller engine-worker policy is unavailable: {exc}") from None
-    if stat.S_ISLNK(worker_policy_info.st_mode) or not stat.S_ISREG(
-        worker_policy_info.st_mode
-    ):
-        raise OCIBackendError("controller engine-worker policy has an unsafe shape")
-    worker_policy_digest = hashlib.sha256(worker_policy_raw).hexdigest()
     environment = {
-        "CACHEON_CONTROLLER_ENGINE_WORKER_SHA256": worker_policy_digest,
+        **policy_digests,
         "CACHEON_DISPOSABLE_WRITABLE_ROOT": "1",
         "CUDA_CACHE_PATH": f"{CONTAINER_CACHE}/cuda",
         "FLASHINFER_WORKSPACE_BASE": f"{CONTAINER_CACHE}/flashinfer",
@@ -813,11 +805,7 @@ def build_runtime_argv(
         "--no-healthcheck",
         "--log-driver=none",
         "--workdir=/tmp",
-        (
-            f"--mount=type=bind,src={worker_policy},"
-            f"dst={CONTAINER_ENGINE_WORKER_POLICY},"
-            "bind-propagation=rprivate,readonly"
-        ),
+        *policy_mounts,
         # The disposable container overlay is writable, but the descendant
         # bootstrap remains validator-owned policy.  Bind the complete,
         # installed bootstrap directory read-only so the worker's existing
@@ -1418,11 +1406,11 @@ class OCIEngineExecutor:
             resolved, preflight, identity, expected, model_root = self._validate_launch(
                 launch, binding, mount, plan
             )
-            # The eager audit runs a PD pair's prefill role alone on the lane's first TP GPUs
-            # (pd_engine.colocated); requiring a process on the decode role's empty GPUs voided the PD
-            # arena's first audit (2026-10-28). Its receipts cover only those, so pristine T can run beside it.
+            # The eager audit runs a PD pair's prefill role alone on its GPUs (pd_engine.untimed_gpus): requiring a process
+            # on the decode role's empty GPUs voided the PD arena's first audit (2026-10-28); pristine T runs beside it.
             colocated = plan.audit_policy is not None and pd_engine.is_pair(plan.engine_config.engine_kwargs)
-            engine_gpu_ids = self.device_guard.policy.physical_gpu_ids[:plan.engine_config.tp_size] if colocated else None
+            engine_gpu_ids = self.device_guard.policy.physical_gpu_ids[pd_engine.untimed_gpus(
+                plan.engine_config.tp_size, plan.engine_config.engine_kwargs)[0]] if colocated else None
 
             def run(
                 transport: AttachedSessionTransport,
@@ -1607,8 +1595,8 @@ class OCIEngineExecutor:
                 model_root=model_root,
                 session_protocol="reference",
                 run=run,
-                gpu_ids=(self.device_guard.policy.physical_gpu_ids[-plan.engine_config.tp_size:]
-                         if pd_engine.is_pair(plan.engine_config.engine_kwargs) else None),
+                gpu_ids=(self.device_guard.policy.physical_gpu_ids[pd_engine.untimed_gpus(plan.engine_config.tp_size,
+                         plan.engine_config.engine_kwargs)[1]] if pd_engine.is_pair(plan.engine_config.engine_kwargs) else None),
             )
             if (
                 type(raw.value) is not ReferenceSessionEvidence

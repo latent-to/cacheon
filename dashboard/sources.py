@@ -32,11 +32,13 @@ class DashboardSource:
     weights_included: bool
     checkpoint: dict | None
     slug: str = ""
+    submissions_open: bool = True
 
     def public(self):
         """Expose labels and reward status, never operator filesystem coordinates."""
         return {"key": self.key, "slug": self.slug or self.key,
                 "label": self.label, "model": self.model,
+                "submissions_open": self.submissions_open,
                 "weights_status": "included in global offer" if self.weights_included
                 else "weights off / not yet in served vector"}
 
@@ -96,9 +98,11 @@ def load_sources(path, network, netuid, enrich):
         raise ValueError("enrichment cache cannot be an intake database")
     result, databases, caches, private_roots = {}, set(), set(), []
     for row in raw["sources"]:
-        if set(row) != {"key", "slug", "label", "model", "paths", "cache", "evidence_roots",
-                        "cutoff_reservation", "processes", "weights_included", "checkpoint"}:
+        if set(row) - {"submissions_open"} != {"key", "slug", "label", "model", "paths", "cache", "evidence_roots",
+                                               "cutoff_reservation", "processes", "weights_included", "checkpoint"}:
             raise ValueError("dashboard source fields do not match")
+        if type(row.get("submissions_open", True)) is not bool:
+            raise ValueError("submissions_open must be a boolean")
         key, slug = row["key"], row["slug"]
         if not isinstance(key, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", key) or key in result:
             raise ValueError("dashboard source keys must be unique")
@@ -123,7 +127,8 @@ def load_sources(path, network, netuid, enrich):
         values.update(QUAL_EVIDENCE_EXTRA=extras, CUTOFF_RESERVATION=row["cutoff_reservation"],
                       ENRICHER=Enrichment(cache, network, netuid))
         result[key] = DashboardSource(key, row["label"], row["model"], values,
-                                      row["processes"], row["weights_included"], row["checkpoint"], slug)
+                                      row["processes"], row["weights_included"], row["checkpoint"], slug,
+                                      row.get("submissions_open", True))
         databases.add(db)
         caches.add(cache.resolve())
         private_roots.append(private)

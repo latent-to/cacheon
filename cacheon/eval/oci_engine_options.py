@@ -21,16 +21,15 @@ ENGINE_KWARG_KINDS: Mapping[str, str] = {
     """.split(), "positive_int"),
     **dict.fromkeys("""
         cuda_graph_backend_prefill kv_cache_dtype quantization speculative_algorithm
-        hicache_mem_layout hicache_io_backend dsv4_attn_backend mm_feature_transport
-        reasoning_parser tool_call_parser speculative_draft_attention_backend
+        hicache_mem_layout hicache_io_backend hicache_write_policy dsv4_attn_backend speculative_draft_attention_backend
         speculative_draft_model_path moe_a2a_backend disaggregation_transfer_backend
+        dsa_prefill_backend dsa_decode_backend dsa_paged_mqa_logits_backend
     """.split(), "token"),
     **dict.fromkeys("""
         disable_radix_cache enable_dp_attention enable_flashinfer_allreduce_fusion
         trust_remote_code enable_hierarchical_cache enable_decoder_swa_bounded_replay
-        weight_loader_prefetch_checkpoints enable_layernorm_sp enable_megamoe_for_layernorm_sp
-        speculative_use_block_verification enable_dp_lm_head enable_dp_attention_local_control_broadcast
-        disaggregation_decode_enable_radix_cache
+        weight_loader_prefetch_checkpoints speculative_use_block_verification enable_dp_lm_head enable_dp_attention_local_control_broadcast
+        disaggregation_decode_enable_radix_cache enable_linear_replayssm_spec
     """.split(), "bool"),
     # Speed policy 20's prefill/decode pair: each role's kwargs and environment over the shared ones
     # (cacheon.eval.pd_engine). GPU placement and the bootstrap port are derived, never sealed.
@@ -39,30 +38,17 @@ ENGINE_KWARG_KINDS: Mapping[str, str] = {
     # Resident sessions recapture CUDA graphs on a LIVE scheduler loop; the
     # default 300s watchdog kills the rank mid-capture (measured 2026-07-20).
     "watchdog_timeout": "positive_int",
-    # Hybrid sliding-window models size their SWA KV pool as a ratio of the
-    # full-attention pool; SGLang's fallback 0.8 starved the full pool at 24
-    # sessions on 4xB300 Muse Spark (InferenceX run 38825818513, 2026-10-16).
-    # The only float kwarg; the config digest spells it like mem_fraction_static.
-    "swa_full_tokens_ratio": "unit_float",
 }
-# SGLang reads the DeepSeek-V4.1 Engram host-table switches from the environment,
-# not ServerArgs; at TP2 the tables do not fit beside the weights in HBM. The
-# Muse Spark DFlash2 draft sampler and the TVM FFI JIT architecture list are
-# environment switches the same way. SGLang's Muse hook forces the unified
-# cache's out-of-window sliding-window KV release off; with it off the SWA pool
-# holds about three sessions of cached context, the prefix hit rate at 24
-# sessions fell to 0.34 and per-user decode to 15.7 tok/s (Verda, 2026-10-18).
+# SGLang reads the DeepSeek-V4.1 Engram host-table switches and the DFlash2 draft sampler from the environment,
+# not ServerArgs.
 #
 # The prefill/decode arena is TEE-shaped: confidential computing has no multicast, so NVLS and
 # symmetric-memory multicast are sealed off, and Engram peer shards (CUDA VMM fabric handles) are
 # unproven there. MegaMoE's per-rank token cap differs by role: set wrong, it passes startup and
 # asserts at the first long prefill (upstream #46198).
 ENGINE_ENV_KINDS: Mapping[str, str] = dict.fromkeys(
-    ("SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE", "SGLANG_DSV41_ENGRAM_HOST_TABLE_LAYOUT",
-     "SGLANG_OPT_DSV41_MEGA_MHC_PREFILL", "SGLANG_SPEC_TP_SYNC",
-     "SGLANG_DEFAULT_THINKING", "SGLANG_DSV41_REASONING_EFFORT",
-     "SGLANG_DFLASH_EAGER_DRAFT_SAMPLER", "TVM_FFI_CUDA_ARCH_LIST",
-     "SGLANG_OPT_UNIFIED_CACHE_FREE_OUT_OF_WINDOW_SLOTS",
+    ("SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE", "SGLANG_OPT_DSV41_MEGA_MHC_PREFILL",
+     "SGLANG_DEFAULT_THINKING", "SGLANG_DSV41_REASONING_EFFORT", "SGLANG_DFLASH_EAGER_DRAFT_SAMPLER",
      "NCCL_NVLS_ENABLE", "TORCH_SYMM_MEM_DISABLE_MULTICAST", "SGLANG_OPT_DSV41_ENGRAM_PEER_SHARDS",
      "SGLANG_OPT_DEEPGEMM_MEGA_MOE_NUM_MAX_TOKENS_PER_RANK", "SGLANG_OPT_DSV41_BF16_INDEX_LOGITS",
      "SGLANG_ENABLE_PREFILL_WAR_READ_DONE", "SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT",
@@ -74,11 +60,10 @@ ENGINE_ENV_KINDS: Mapping[str, str] = dict.fromkeys(
      # throughput as NIXL, a 165 s faster boot, and no whole-pool descriptor registration the first time a decode
      # rank meets a prefill rank, which cost NIXL ~500 s of every boot's first window (8xB300, 2026-10-27).
      "MC_INTRANODE_NVLINK", "MC_TCP_ENABLE_CONNECTION_POOL", "SGLANG_MOONCAKE_CUSTOM_MEM_POOL"), "token")
-_ROLE_FIELDS = frozenset({"engine_kwargs", "engine_env"})
+_ROLE_FIELDS = frozenset({"engine_kwargs", "engine_env", "servers"})
 
 _TOKEN = re.compile(r"[A-Za-z0-9_.:+/@-]{1,256}\Z")
 _MODEL_SUBDIR = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}\Z")
-_FLOAT_FIELDS = ("mem_fraction_static", "swa_full_tokens_ratio")
 
 
 def _bool(value: object, *, field_name: str, error: type[Exception]) -> bool:
@@ -134,12 +119,6 @@ def _validate_options(value: object, kinds: Mapping[str, str], *, label: str,
             result[key] = _optional_token(item, field_name=field_name, error=error)
             if result[key] is None:
                 raise error(f"{field_name} must not be null")
-        elif kind == "unit_float":
-            result[key] = _bounded_float(
-                item, field_name=field_name, minimum=0.0, maximum=1.0, error=error
-            )
-            if result[key] == 0.0:
-                raise error(f"{field_name} must be in (0, 1]")
         elif kind == "int_list":
             if (
                 not isinstance(item, (list, tuple))
@@ -153,13 +132,16 @@ def _validate_options(value: object, kinds: Mapping[str, str], *, label: str,
                 raise error(f"{field_name} must be a strictly increasing bounded int array")
             result[key] = list(item)
         elif kind == "role":
-            if not isinstance(item, Mapping) or not item or set(item) - _ROLE_FIELDS:
-                raise error(f"{field_name} must hold engine_kwargs and/or engine_env")
-            # A role overrides only scalar options, its own running-request cap among them; it
-            # never nests another role or carries a float.
-            scalar = {**{name: k for name, k in kinds.items() if k not in ("role", "unit_float")},
-                      "max_running_requests": "positive_int"}
+            if (not isinstance(item, Mapping) or not item or set(item) - _ROLE_FIELDS
+                    or ("servers" in item and (key != "pd_prefill" or type(item["servers"]) is not int
+                                               or not 1 <= item["servers"] <= 8))):
+                raise error(f"{field_name} must hold engine_kwargs and/or engine_env, and prefill servers")
+            # A role overrides only scalar options, its own TP degree and running-request cap among them; it
+            # never nests another role or carries a float. Prefill may run several servers (pd_engine.layout).
+            scalar = {**{name: k for name, k in kinds.items() if k != "role"},
+                      "max_running_requests": "positive_int", "tp_size": "positive_int"}
             result[key] = {
+                **({"servers": item["servers"]} if "servers" in item else {}),
                 **({"engine_kwargs": _validate_options(item["engine_kwargs"], scalar, label=f"{field_name}.engine_kwargs",
                                                        error=error)} if "engine_kwargs" in item else {}),
                 **({"engine_env": _validate_options(item["engine_env"], ENGINE_ENV_KINDS, label=f"{field_name}.engine_env",
@@ -186,7 +168,4 @@ def _digest_identity(identity: dict[str, object]) -> dict[str, object]:
     """Stack identities deliberately reject JSON floats: bind each binary64
     value through its shortest round-trippable decimal spelling."""
     identity["mem_fraction_static"] = format(identity["mem_fraction_static"], ".17g")  # type: ignore[arg-type]
-    kwargs = identity["engine_kwargs"]
-    if isinstance(kwargs, dict) and "swa_full_tokens_ratio" in kwargs:
-        kwargs["swa_full_tokens_ratio"] = format(kwargs["swa_full_tokens_ratio"], ".17g")  # type: ignore[arg-type]
     return identity

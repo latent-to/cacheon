@@ -228,8 +228,8 @@ weaker than it reads, because the caller can still decline afterwards. Once an e
 is invoked there are exactly two outcomes, `completed` or `failed`, and either one
 proves selection.
 
-The active-member gate expects exactly the registered tensor-parallel scheduler
-ranks. Too few receipts means a scheduler did not activate; an extra receipt
+The active-member gate expects exactly the booted engine's tensor-parallel scheduler
+ranks (a pair's one-engine form: its prefill role's). Too few receipts means a scheduler did not activate; an extra receipt
 means candidate code crossed into an unexpected process role. Either condition
 invalidates coverage rather than being rounded away.
 

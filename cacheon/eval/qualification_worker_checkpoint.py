@@ -395,7 +395,7 @@ def read_snapshot(path, digest):
     if (set(value) != {"schema", "origin", "stages"} or value["schema"] != SCHEMA
             or canonical_json_bytes(value) != raw):
         raise QualificationContinuationError("worker checkpoint is not canonical")
-    # Policy 16-18 snapshots also carry per-window speed stages; policy 19 re-measures them.
+    # Retired paired-policy snapshots also carry per-window speed stages; a stage re-measures them.
     value["stages"] = {name: row for name, row in value["stages"].items() if name in _COMPLETE}
     return value
 

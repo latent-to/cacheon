@@ -14,7 +14,9 @@ time from the seed and both boot times land in the harvest record beside the rec
 
 The engine flags are the sealed engine config translated the way ``cacheon.eval.engine_worker``
 translates it for ``sglang.Engine`` (same keys, same precedence); ``launch_server`` takes the same
-fields as flags.
+fields as flags. A prefill/decode pair's lease seeds both of its engines from one tree, so each role
+boots in turn, in its one-engine form (``cacheon.eval.pd_engine``: the shared options under the role's
+own), into the same cache.
 """
 
 import argparse
@@ -66,6 +68,17 @@ def engine_kwargs(config: dict) -> dict:
              "engine_env", "log_level", "mem_fraction_static", "moe_runner_backend", "tp_size", "max_running_requests"}
     kwargs.update({key: value for key, value in config.items() if key not in owned})
     return kwargs
+
+
+def roles(config: dict) -> list[tuple[str, dict]]:
+    """The engine configs one seed must warm: each role of a prefill/decode pair, else the config itself."""
+    if "pd_prefill" not in config:
+        return [("", config)]
+    shared = {key: value for key, value in config.items()
+              if key not in ("pd_prefill", "pd_decode", "disaggregation_transfer_backend")}
+    return [(role, {**shared, **config[role].get("engine_kwargs", {}),
+                    "engine_env": {**config.get("engine_env", {}), **config[role].get("engine_env", {})}})
+            for role in ("pd_prefill", "pd_decode")]
 
 
 def engine_flags(kwargs: dict) -> list[str]:
@@ -192,14 +205,18 @@ def main() -> None:
     if not gpus_free(args.gpus.split(",")):
         raise SystemExit(f"GPUs {args.gpus} are not free")
     config = json.loads((args.arena_inputs / "engine-config.json").read_bytes())
-    flags = engine_flags(engine_kwargs(config))
-    env = {key: f"{CONTAINER_CACHE}/{family}" for key, family in CACHE_ENV.items()}
-    env.update(FIXED_ENV)
-    env.update(config.get("engine_env", {}))
+    engines = []
+    for role, role_config in roles(config):
+        env = {key: f"{CONTAINER_CACHE}/{family}" for key, family in CACHE_ENV.items()}
+        env.update(FIXED_ENV)
+        env.update(role_config.get("engine_env", {}))
+        engines.append((f"-{role.replace('_', '-')}" if role else "", engine_flags(engine_kwargs(role_config)), env))
     args.work.mkdir(mode=0o700, parents=True)
     cache = args.work / "cache"
     cache.mkdir()
-    cold = boot(args, cache, f"cacheon-seed-harvest-{args.port}", args.work / "engine-cold.log", flags, env)
+    cold = [boot(args, cache, f"cacheon-seed-harvest-{args.port}{suffix}",
+                 args.work / f"engine-cold{suffix}.log", flags, env) for suffix, flags, env in engines]
+    cold = cold[0] if len(cold) == 1 else cold
     args.out.mkdir(mode=0o755, parents=True)
     receipt, dropped = seal(cache, args.out, image_id)
     record = {"schema": "cacheon-runtime-seed-harvest-v1", "image": args.image, "image_proof": str(args.image_proof),
@@ -210,8 +227,10 @@ def main() -> None:
         shutil.copytree(args.out, seeded, symlinks=False)
         for path in [seeded, *seeded.rglob("*")]:
             path.chmod(path.stat().st_mode | 0o200)
-        record["seeded_boot_seconds"] = boot(args, seeded, f"cacheon-seed-verify-{args.port}",
-                                             args.work / "engine-seeded.log", flags, env)
+        seconds = [boot(args, seeded, f"cacheon-seed-verify-{args.port}{suffix}",
+                        args.work / f"engine-seeded{suffix}.log", flags, env)
+                   for suffix, flags, env in engines]
+        record["seeded_boot_seconds"] = seconds[0] if len(seconds) == 1 else seconds
     with args.out.with_name(args.out.name + ".json").open("x") as handle:
         handle.write(json.dumps(receipt) + "\n")
     args.out.with_name(args.out.name + ".json").chmod(0o444)

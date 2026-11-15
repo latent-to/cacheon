@@ -9,7 +9,7 @@ the CLI has no local qualification command.
 | `scan` | Does the declared bundle tree satisfy the static intake policy? | Local admission diagnostic |
 | `verify` | Does the bundle scan clean, resolve to a registered target, import, and match each entry signature? | Local interface diagnostic |
 | `check` | In the published arena image, does every bound address pass the audit against stock and complete inside CUDA graphs on every rank? | Local engine diagnostic |
-| Qualification | Does the exact delta clear execution, replay speed (policy 19), audit, and pristine-quality gates? | One decision; one complete audited PASS qualifies for settlement |
+| Qualification | Does the exact delta clear execution, replay speed (policy 21), audit, and pristine-quality gates? | One decision; one complete audited PASS qualifies for settlement |
 
 Unknown bundles still execute code during verification. Run them only inside the minimum
 [hostile-code isolation boundary](../security/isolation.md#operator-requirements) used for
@@ -113,7 +113,7 @@ products that a qualification attempt retains.
   and is eligible only for bounded retry.
 - `qualified` means one complete audited PASS is retained; settlement reopens that
   exact contribution and its evidence.
-- A qualified V17, V18 or V19 PASS earns reward only when it beats the best earlier rewarded PASS
+- A qualified PASS earns reward only when it beats the best earlier rewarded PASS
   against the same arena and incumbent stack by 1.5%; see
   [Settlement and weights](settlement-and-weights.md).
 

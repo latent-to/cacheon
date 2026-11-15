@@ -120,18 +120,6 @@ class Manifest:
     raw: dict[str, Any] = field(default_factory=dict)
     competition: CompetitionEntry | None = None
 
-    def op_for(self, slot: str, variant: str | None = None) -> OpEntry | None:
-        """Return one row without allowing manifest order to select a variant."""
-        matches = tuple(op for op in self.ops if op.slot == slot)
-        if variant is not None:
-            return next((op for op in matches if op.variant == variant), None)
-        if len(matches) > 1:
-            raise ManifestError(
-                f"slot {slot!r} has multiple variants; specify one of "
-                f"{tuple(op.variant for op in matches)!r}"
-            )
-        return matches[0] if matches else None
-
 
 def _require(cond: bool, msg: str) -> None:
     if not cond:

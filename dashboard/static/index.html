@@ -958,7 +958,7 @@ function renderArenas() {
   const choices = [...arenas.filter(s => s.submissions_open !== false),
     ...arenas.filter(s => s.submissions_open === false)];
   $("#arena-select").innerHTML = choices.map(s =>
-    `<option value="${esc(s.key)}" ${s.key === arena ? "selected" : ""}>${esc(s.label)}${s.submissions_open === false ? " (closed)" : ""}</option>`).join("") + '<option value="okc">Open Kernel Challenge</option>';
+    `<option value="${esc(s.key)}" ${s.key === arena ? "selected" : ""}>${esc(s.label)}${s.submissions_open === false ? " (closed)" : ""}</option>`).join("");
   $("#arena-status").innerHTML = arenas.filter(s => s.submissions_open !== false).map(s => {
     const status = arenaState(s);
     const weight = Number.isInteger(s.target_weight_ppm) ? `${(s.target_weight_ppm / 10000).toLocaleString(undefined, {maximumFractionDigits: 4})}% target` : "target unavailable";
@@ -970,7 +970,6 @@ function renderArenas() {
   if (arenas.length) $("#arena-status").innerHTML += `<span class="muted" title="Target settings refresh with the dashboard every 15 seconds.">Targets checked ${esc(arenasCheckedAt)} · refreshes every 15s</span>`;
 }
 $("#arena-select").onchange = async e => {
-  if (e.target.value === "okc") { location.href = "/okc"; return; }
   arena = e.target.value;
   closeDetail();
   subFilters.offset = 0;

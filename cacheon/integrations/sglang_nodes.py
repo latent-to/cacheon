@@ -37,6 +37,7 @@ call the stock children it does not replace.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import sys
 from collections import deque
@@ -64,10 +65,14 @@ _RUNNER = "sglang.srt.model_executor.model_runner"
 _STOCK_LOAD = "_cacheon_stock_load_model"
 # A row passes within max(_FLOOR, _TWIN_FACTOR x the twin's 90th-percentile row
 # error), never above _CEILING. No honest single kernel reached a quarter of the
-# floor; the widest honest node needed 0.33 (three times 11% at the whole stack) and
-# the wrong controls sat at 0.5 (H100 Qwen runs, 2026-09-19). The ceiling is what a
-# candidate that managed to make the twin noisy could buy at most.
+# 2% default floor; the widest honest node needed 0.33 (three times 11% at the whole
+# stack) and the wrong controls sat at 0.5 (H100 Qwen runs, 2026-09-19). The ceiling
+# is what a candidate that managed to make the twin noisy could buy at most. An arena
+# seals its own floor (SlotAuditControl.row_floor_ppm): GLM-5.3-Flash's twin is
+# bitwise, so 2% admitted nothing lossy, FP8 block-scaled projections sat at 6-13%
+# (pod, 2026-11-11).
 _FLOOR = 0.02
+_ARENA_FLOOR = int(os.environ.get("CACHEON_SLOT_AUDIT_FLOOR_PPM") or 0) / 1_000_000 or _FLOOR
 _TWIN_FACTOR = 3.0
 _CEILING = 0.4
 # Share of rows that must pass, graded once this many rows have pooled. Honest noise
@@ -192,9 +197,7 @@ def _state_rows(
     Only a call that carries the engine's batch can reach the cache pools: the cache
     rows at ``out_cache_loc``. An unrecognized cache layout raises rather than
     leaving written state unchecked. Native recurrent live and checkpoint rows
-    are restored too; speculative and ReplaySSM layouts remain refused: the
-    retired Qwen GDN arena's 21,400-call MTP audit restored and graded none of its
-    replay writes (2026-09-22).
+    are restored too, with KDA ReplaySSM verify rings (``_recurrent_rows``).
 
     SGLang keeps an FP8 cache in ``uint8`` storage with the real type on the pool.
     Graded as bytes, a near-zero value whose sign flips reads as a jump of 128 (7% of
@@ -208,7 +211,7 @@ def _state_rows(
     )
     if batch is None:
         return []
-    rows = _recurrent_rows(runner.req_to_token_pool, batch, layer)
+    rows = _recurrent_rows(runner, batch, layer)
     if batch.out_cache_loc is None:
         return rows
     rows += _cache_rows(runner.token_to_kv_pool, batch, layer)
@@ -222,16 +225,26 @@ def _state_rows(
     return rows
 
 
-def _recurrent_rows(requests, batch, layer):
-    """The native committed and speculative recurrent rows this forward can write."""
+def _recurrent_rows(runner, batch, layer):
+    """The native committed and speculative recurrent rows this forward can write.
+
+    KDA ReplaySSM verify (GLM-5.3-Flash, layout dumped from a TP2 engine on 2026-11-11) appends drafts to rings
+    keyed by Mamba slot and writes request i's conv windows to verify scratch row i of the physical buffer.
+    ``rawv``/``rawk`` hold the BF16 rounding of ``d``/``k`` and are graded summed with them. Other speculative
+    layouts raise: GDN native-MTP scratch and request rings served only the retired Qwen arena, whose 21,400-call
+    MTP audit never graded the rings (2026-09-22).
+    """
+    requests = runner.req_to_token_pool
     pool = getattr(requests, "mamba_pool", None)
     if pool is None:
         return []
     state = getattr(pool, "mamba_cache", None)
-    if (state is None or (getattr(state, "intermediate_ssm", None) is not None
-                         and not torch.is_tensor(state.intermediate_ssm))
+    replay = getattr(pool, "enable_linear_replayssm_spec", False)
+    if (state is None or getattr(state, "intermediate_ssm", None) is not None
             or getattr(pool, "enable_linear_replayssm", False)
-            or getattr(pool, "enable_linear_replayssm_spec", False)):
+            or (replay and (not getattr(pool, "replayssm_is_kda", False)
+                            or getattr(pool, "replayssm_request_ring", True)
+                            or state.replayssm_d.shape[:2] != state.temporal.shape[:2]))):
         raise RuntimeError("recurrent state is not audited on this runtime")
     live = requests.translate_mamba_indices(requests.get_mamba_indices(batch.req_pool_indices))
     real = getattr(batch, "_original_batch_size", None)
@@ -251,13 +264,16 @@ def _recurrent_rows(requests, batch, layer):
             for buffer in (state.temporal, *state.conv) for index in layers
             if buffer[index].numel()]
     mode = getattr(batch, "forward_mode", None)
-    if (getattr(state, "intermediate_ssm", None) is not None
-            and mode is not None and mode.is_target_verify()):
-        # GDN verify scratch is indexed by batch position, not by a translated
-        # request or Mamba slot. The extra pool row is discard-only padding.
-        slots = torch.arange(live.numel(), device=live.device)
-        for buffer in (state.intermediate_ssm, *state.intermediate_conv_window):
-            rows.extend((buffer[index], 0, slots, buffer.dtype) for index in layers)
+    if replay and mode is not None and mode.is_target_verify():
+        slots = live.reshape(-1).long()
+        slots = slots[slots >= 0]
+        scratch = runner.attn_backend.linear_attn_backend.verify_intermediate_state_indices[:live.numel()].long()
+        for index in layers:
+            rows.extend((ring[index], 0, slots, ring.dtype) for ring in (
+                state.replayssm_d, state.replayssm_k, state.replayssm_g, state.replayssm_beta))
+            rows.extend((low[index], 0, slots, high[index]) for low, high in (
+                (state.replayssm_rawv, state.replayssm_d), (state.replayssm_rawk, state.replayssm_k)))
+            rows.extend((window[index], 0, scratch, window.dtype) for window in pool._intermediate_conv_window_phys)
     return rows
 
 
@@ -267,6 +283,9 @@ def _cache_rows(pool, batch, layer: int | None) -> list[tuple]:
     paged = dsv4_state_rows(pool, batch, layer)
     if paged is not None:
         return paged
+    dsa = dsa_state_rows(pool, batch, layer)
+    if dsa is not None:
+        return dsa
     pool = getattr(pool, "full_kv_pool", pool)
     buffers = [
         buffer
@@ -276,9 +295,6 @@ def _cache_rows(pool, batch, layer: int | None) -> list[tuple]:
     ]
     if not buffers:
         raise RuntimeError(f"no cache buffer recognized on {type(pool).__name__}")
-    dsa = dsa_state_rows(pool, batch.out_cache_loc, layer)
-    if dsa is not None:
-        return dsa
     held = getattr(pool, "dtype", None)
     fp8 = held is not None and held.is_floating_point and held.itemsize == 1
     return [
@@ -295,6 +311,8 @@ def _cache_rows(pool, batch, layer: int | None) -> list[tuple]:
 def _values(buffer: torch.Tensor, dim: int, index: torch.Tensor, held) -> torch.Tensor:
     """The numbers a state row holds at ``index``."""
 
+    if torch.is_tensor(held):  # a rounding residual, graded with the BF16 value it rounds
+        return held.index_select(dim, index).float() + buffer.index_select(dim, index).float()
     return state_values(buffer.index_select(dim, index), held)
 
 
@@ -323,6 +341,10 @@ def _dsa_choice_position(module, count: int) -> int | None:
     if (isinstance(module, getattr(model, "DeepseekV2DecoderLayer", ()))
             and module.self_attn.use_dsa and count == 3):
         return 2
+    # GLM-5.3-Flash returns (hidden_states, topk_indices); a linear-attention layer's indices are None.
+    hybrid = sys.modules.get("sglang.srt.models.glm5_next")
+    if isinstance(module, getattr(hybrid, "Glm5NextDecoderLayer", ())) and count == 2:
+        return 1
     return None
 
 
@@ -494,16 +516,25 @@ def _native_forward(module):
 
 @contextmanager
 def _native(module):
-    """Use supported native paths while the DSA indexer retains hardware dispatch.
+    """Use native paths, except on ops whose pinned native forward is a raising stub or cannot read its weights.
 
-    The pinned Indexer explicitly has no native implementation. Its children and
-    surrounding ops still take native paths; forcing its stub refused 6,048
-    references in the first full GLM layer-bundle audit (B300, 2026-09-20).
+    The DSA Indexer has none, and GLM-5.3-Flash's IndexerKPool inherits the
+    MultiPlatformOp stub; their children and surrounding ops still take native paths.
+    Forcing the Indexer stub refused 6,048 references in the first full GLM
+    layer-bundle audit (B300, 2026-09-20); forcing IndexerKPool's refused stock on
+    every DSA layer, so only KDA layers were graded (G3, 2026-11-11). Unquantized
+    experts on FlashInfer's TRT-LLM runner hold its BF16 block layout, which the native
+    per-expert ``F.linear`` cannot read: GLM-5.3-Flash's draft layer refused every
+    reference, so each claim on it ended NO_DECISION (miner repro, 2026-11-13).
     """
 
-    indexer = getattr(sys.modules.get("sglang.srt.layers.attention.dsa.dsa_indexer"), "Indexer", ())
+    stubs = [getattr(getattr(sys.modules.get(name), cls, None), "forward_native", None)
+             for name, cls in (("sglang.srt.layers.attention.dsa.dsa_indexer", "Indexer"),
+                               ("sglang.srt.layers.utils.multi_platform", "MultiPlatformOp"))]
+    blocked = getattr(sys.modules.get("sglang.srt.layers.quantization.unquant"), "UnquantizedFusedMoEMethod", ())
     sites = [m for m in module.modules()
-             if "_forward_method" in vars(m) and not isinstance(m, indexer)]
+             if "_forward_method" in vars(m) and type(m).forward_native not in stubs
+             and not (isinstance(m, blocked) and getattr(m, "use_flashinfer_trtllm_moe", False))]
     saved = [m._forward_method for m in sites]
     for m in sites:
         m._forward_method = _native_forward(m)
@@ -562,7 +593,7 @@ def _grade(slot: str, node: int, actual: list, twin: list, *, node_name: str = "
         # noise: quiet decode history falsely rejected GLM's 4096-row prefill calls.
         history_p90 = sorted(noise)[int(0.9 * (len(noise) - 1))]
         measured = _TWIN_FACTOR * max(noise[-1], history_p90)
-        tolerance = min(_CEILING, max(_FLOOR, measured))
+        tolerance = min(_CEILING, max(_ARENA_FLOOR, measured))
         if pruned and position in pruned:
             _prune.pool(slot, (node, position, step), errors, *pruned[position], tolerance)
         pooled = _pooled.setdefault(key, [0, 0, [], 1])
@@ -716,17 +747,25 @@ def make_node_dispatcher(
     return dispatched
 
 
-def bind(runner, registry: KernelRegistry = REGISTRY) -> list[str]:
-    """Bind every registered node slot to the served model; return the bound names."""
+def bind(runner, registry: KernelRegistry = REGISTRY, *, draft: bool = False) -> list[str]:
+    """Bind every registered node slot to the served model; return the bound names.
+
+    The MTP drafter is addressed by the checkpoint's own name for its layer,
+    ``model.layers.<num_hidden_layers>``, which no target layer carries; the drafter loads that
+    layer as ``model.decoder``. Those slots bind only on the draft worker, the rest only on the
+    target, so wildcard slots such as ``model.layers.*.mlp`` keep naming target layers alone.
+    """
 
     # Every path, each module once per slot, and one module two slots reach is an overlap:
     # the DeepSeek-V4.1 fork registers each decoder layer's successor as its ``_next_layer``
     # child (upstream #42245), and the deduplicating listing named 37 of 40 layers only
     # through that chain, so ``model.layers.*`` bound 3 of 40 (B300, 2026-10-12 and 10-15).
     named = dict(runner.model.named_modules(remove_duplicate=False))
+    config = runner.model_config.hf_config
+    layer = f"model.layers.{getattr(config, 'text_config', config).num_hidden_layers}."
     bound: dict[str, str] = {}
-    for slot in sorted(s for s in registry.slots() if s != _CACHE):
-        pattern = node_pattern(slot)
+    for slot in sorted(s for s in registry.slots() if s != _CACHE and s.startswith(layer) == draft):
+        pattern = node_pattern("model.decoder." + slot.removeprefix(layer) if draft else slot)
         names = [name for name in named if pattern.match(name)]
         names = [n for i, n in enumerate(names) if all(named[m] is not named[n] for m in names[:i])]
         error = None
@@ -751,7 +790,8 @@ def bind(runner, registry: KernelRegistry = REGISTRY) -> list[str]:
     for name, slot in bound.items():
         module = named[name]
         module.forward = make_node_dispatcher(
-            slot, module, module.forward, runner, seals[name], registry=registry, node_name=name
+            slot, module, module.forward, runner, seals[name], registry=registry,
+            node_name=layer + name.removeprefix("model.decoder.") if draft else name,
         )
     for name in bound:
         seals[name].extend(_seal(named[name]))
@@ -769,22 +809,11 @@ def install(registry: KernelRegistry = REGISTRY) -> None:
 
     def load_model(self, *args, **kwargs):
         result = load(self, *args, **kwargs)
-        # Node addresses belong to the target model, not its speculative drafter.
-        if not self.is_draft_worker:
-            bind(self, registry)
+        # Shiv opened the MTP drafter as a target on 2026-11-12: its BF16 routed experts were the
+        # largest unquantized decode item (~6.5% of a GLM-5.3-Flash verify cycle). Verification
+        # stays exact, so a draft node moves acceptance only.
+        bind(self, registry, draft=bool(self.is_draft_worker))
         return result
 
     setattr(runner, _STOCK_LOAD, load)
     runner.load_model = load_model
-
-
-def is_installed() -> bool:
-    runner = getattr(sys.modules.get(_RUNNER), "ModelRunner", None)
-    return runner is not None and _STOCK_LOAD in runner.__dict__
-
-
-def uninstall() -> None:
-    runner = getattr(sys.modules.get(_RUNNER), "ModelRunner", None)
-    if runner is not None and _STOCK_LOAD in runner.__dict__:
-        runner.load_model = runner.__dict__[_STOCK_LOAD]
-        delattr(runner, _STOCK_LOAD)

@@ -47,6 +47,7 @@ _METRIC_DIRECTIONS = {
     "argmax_rate": "lower",
     "coverage_dev": "lower",
     "mean_nll": "lower",
+    "tail_excess_nll": "lower",
     "tail_rate": "lower",
     "task_score": "higher",
     "topk_kl": "lower",
@@ -184,11 +185,7 @@ class MetricCalibration:
             "stock_envelope",
             _decimal(self.stock_envelope, field=f"{self.name} stock_envelope"),
         )
-        object.__setattr__(
-            self,
-            "candidate_delta",
-            _decimal(self.candidate_delta, field=f"{self.name} candidate_delta"),
-        )
+        object.__setattr__(self, "candidate_delta", _decimal(self.candidate_delta, field=f"{self.name} candidate_delta"))
         if self.absolute_floor is not None:
             object.__setattr__(
                 self,
@@ -440,19 +437,6 @@ class CalibrationThresholdPolicy:
         if names != tuple(sorted(set(names))):
             raise CalibrationError("quality metrics must be unique and name-sorted")
         object.__setattr__(self, "quality_metrics", metrics)
-
-    @classmethod
-    def from_manifest(cls, manifest: CalibrationManifest) -> "CalibrationThresholdPolicy":
-        if type(manifest) is not CalibrationManifest:
-            raise CalibrationError("configured calibration manifest is not exact and typed")
-        return cls(
-            context=manifest.context,
-            algorithm_id=manifest.algorithm_id,
-            status=manifest.status,
-            speed=manifest.speed,
-            quality_metrics=manifest.quality_metrics,
-            familywise_z=manifest.familywise_z,
-        )
 
     def to_dict(self) -> dict[str, object]:
         return {

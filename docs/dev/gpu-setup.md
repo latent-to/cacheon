@@ -139,16 +139,16 @@ This scans the bundle, resolves its target, and checks imports and entry signatu
 in a child process. Run the numerical audit and graph checks in the published arena
 image with `check`, using that
 arena's model, engine options, public requests and full tensor-parallel width.
-For GLM, after building the bundle as described in the
+For the DeepSeek-V4.1-Flash PD arena, after building the bundle as described in the
 [bundle format](../miner-guide/bundle-format.md):
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1,2,3 \
 python -m cacheon.cli check path/to/bundle \
-  --model /models/GLM-5.3-NVFP4 \
-  --engine-config examples/arena_inputs/glm53/engine-config.json \
-  --requests examples/arena_inputs/glm53/development-requests.json \
-  --output /tmp/glm-node-check
+  --model /models/DeepSeek-V4.1-Flash \
+  --engine-config examples/arena_inputs/dsv41pd/engine-config.json \
+  --requests examples/arena_inputs/dsv41pd/development-requests.json \
+  --output /tmp/node-check
 ```
 
 Use a fresh output directory and check the per-node, per-rank table. The command
@@ -170,7 +170,7 @@ comparison.
 
 Production version-3 qualification materializes the exact incumbent and
 candidate engines through an injected arena service and measures fresh candidate
-boots against a retained stock reference on one lane (speed policy 19). It then
+boots against a retained stock reference on one lane (speed policy 21). It then
 runs registered eager audit A, tears down candidate lifetimes, and obtains
 candidate-free pristine T quality evidence. A contributor-controlled model run
 cannot substitute for that authority.

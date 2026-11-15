@@ -47,7 +47,7 @@ _GUIDANCE: dict[str, tuple[str, str]] = {
         "previous best PASS on its baseline, or stock for the first, by 1.5%.",
     ),
     "below_payment_bar": (
-        "The bundle was faster than the baseline, but its speedup was below the "
+        "The bundle's speedup was below the "
         "payment bar: 1.5% over the best paid PASS on its baseline, or over stock "
         "when there is none. Qualification stopped at the speed stage.",
         "Only a speedup that clears the bar can be paid, so the audit and quality "

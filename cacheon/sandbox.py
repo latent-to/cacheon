@@ -20,8 +20,8 @@ What this module DOES provide:
   1. ``scan_source`` — a cheap AST policy scan that rejects the obvious
      egress/escape patterns *before* anything is imported. This is a filter to
      cut noise and catch lazy attacks, not a sandbox.
-  2. ``load_entry`` — import the module and pull out the slot's ``entry``
-     callable, in-process, *after* the scan passes. Intended to be called from
+  2. ``load_module`` + ``callable_from`` — import the module and pull out the
+     slot's callables, in-process, *after* the scan passes. Intended to be called from
      inside the isolated worker, never from the trusted validator process.
 """
 
@@ -443,10 +443,3 @@ def callable_from(module, name: str) -> Callable:
         raise AttributeError(
             f"kernel module {getattr(module, '__name__', '?')} has no callable {name!r}")
     return fn
-
-
-def load_entry(source_path: str | Path, entry: str) -> Callable:
-    """``load_module`` + pull one callable. For SEVERAL callables from the same op use
-    ``load_module`` once + ``callable_from`` — repeated ``load_entry`` calls re-execute
-    the module body into separate instances (see ``load_module``)."""
-    return callable_from(load_module(source_path), entry)

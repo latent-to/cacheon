@@ -9,8 +9,8 @@ tools that produce the arena's own inputs: the prompt pools and authority, the
 retained image proof and the warm runtime seed. Bringing up an arena is
 therefore: write its inputs, build and retain, render the operator, review the
 render against the previous arena's, launch, prove off-chain, and connect. The
-DeepSeek-V4.1-Flash and Muse-Spark-Open arenas render from the same templates;
-their rendered operators differ only where their `operator.json` files differ.
+DeepSeek-V4.1-Flash and GLM-5.3-Flash prefill/decode arenas render from the same
+templates; their rendered operators differ only where their `operator.json` files differ.
 
 ## 1. Arena inputs
 
@@ -79,11 +79,15 @@ python3 scripts/arena/harvest_runtime_seed.py --arena-inputs examples/arena_inpu
 The tool boots the stock engine once in the exact image with the sealed flags
 and the production cache environment, stops it, seals the cache's regular files
 as the seed with the receipt the commissioner recomputes, and with `--verify`
-boots once more from the seed and records both boot times.
+boots once more from the seed and records both boot times. For a prefill/decode
+pair it boots each role in turn, in its one-engine form (the shared options under
+the role's own), into the same cache, since one seed serves every engine of a
+lease; `--gpus` names the widest role's GPUs, and a narrower role uses the first of them.
 
 **Deployment-owned packet.** The remaining packet files are sealed outside this
 repository and copied by digest, never fabricated: the fixed qualification
-capabilities (its replay load is rewritten to the arena's value), the numeric
+capabilities (its replay load, per-load decode floors, scored windows and audit
+controls are rewritten to the arena's values), the numeric
 judge, the finalize step, the closed adapter, the model provision receipt and
 the pod transport. One directory holds them:
 
@@ -107,16 +111,26 @@ the pod transport. One directory holds them:
 | `slug` | the short name in unit names, credential ids, digest domains and rendered file names |
 | `model_profile_key` | the model profile key the deployment profile seals |
 | `tensor_parallel_size` | the lane width; one engine at a time owns every GPU of the lane |
-| `replay_load` | the sealed replay sessions per window |
+| `replay_load` | the sealed replay session concurrency: one count, or an ascending list (low, mid, high) a PD pair replays in every lifetime, highest first, and scores as a geometric mean |
+| `decode_floors` | required with several loads, else optional: each load's per-user decode floor in tokens/s, keyed by the load as a string, as canonical decimals; written into the packet's goodput policy |
+| `load_margin` | optional, with `decode_floors`: a canonical decimal in (0, 1); a load whose throughput-ratio upper bound is below 1 minus it fails the candidate; written into the packet's goodput policy |
+| `bar_futility` | optional, with `decode_floors`: `true` measures the packet's `futility_margin` from the request's payment bar, so a first candidate lifetime reading more than the margin below the bar fails without the second; written into the packet's goodput policy |
+| `steady_span` | optional, with `decode_floors`: a canonical decimal in (0, 1); each load is scored in seconds per warm turn until its active sessions fall below this share of the load, so the drain tail of the longest sessions does not set the window; written into the packet's goodput policy. A stock reference imports into a recommissioned pair across a change of this key or of `decode_floors` |
+| `replay_windows` | optional: the scored windows per load, replacing the packet's |
+| `replay_warm_windows` | optional: the untimed windows before the scored ones, 0 to 2, replacing the packet's; time one stock lifetime on the node before sealing, since each window lasts as long as the slice's longest session at the model's per-user speed |
 | `tokens_per_prompt` | the largest recorded output budget of one turn in the sessions the replay serves; the commission refuses any other value |
+| `quality` | optional teacher policy with a selected turn count, severity threshold, paired metric limits and stock drift limits; the operator render requires the measured control receipt |
 | `tokenizer_asset` | the tokenizer directory name inside the replay inputs archive |
 | `model_in_ram` | whether the checkpoint is served from a RAM mount or from its storage path |
 | `owner` | the dispatcher owner name of the commissioned pair |
 | `audit_control_delta_digests` | the registered controls' selected delta digests, sorted; a wrong control for this model's node address, so its audit runs after its speed failure |
+| `audit_row_floor_ppm` | optional: the node audit's per-row floor in ppm, absent at the 20000 (2%) default and at most 400000; set from `cacheon check --audit-row-floor-ppm` runs in which an honest lossy control passes and the wrong control fails |
 | `node.name` | the host class whose measured scheduler positions follow |
 | `node.scheduler_starts` | one measured-fast vCPU start per GPU of the host, in GPU order |
+| `node.helper_starts` | the measured-fast helper vCPU per GPU, in GPU order, on a different physical core from its scheduler |
 | `node.client_cpus` | the validator client core set per lane, keyed by the lane's device list |
-| `node.engine_cpus` | optional: per engine, keyed by its first GPU, the data-parallel controller's vCPU and the frontend's vCPU |
+| `node.engine_cpus` | optional: per engine (each prefill server and the decode engine of a pair), keyed by its first GPU, the data-parallel controller's vCPU and the frontend's vCPU; an engine with DP 1 runs no controller |
+| `node.lifetime_memory_gib` | optional: the host memory cap of one engine lifetime's container in GiB (default 1024), sealed into the runtime resource policy; a host KV tier (`hicache_size`, per rank) is pinned inside it |
 
 The node section is a measured fact of the host, not a tuning knob: scheduler
 pins, engine roles and the client set bind the sealed runtime digest. The
@@ -134,11 +148,28 @@ from `cacheon.engine_tree` and `cacheon.target_catalog`; the render writes the
 list into the sealed policy of the packet's fixed capabilities, replacing the
 previous arena's controls as it replaces the replay load.
 
+For an arena declaring `quality`, build its control receipt from keyed token logprobs.
+The baseline, independent stock, faithful optimization and damaged control must
+cover the same prompts and token budgets. Fit and validation panels have disjoint
+prompt IDs. The supplied speed witness contributes only its stored stock boots.
+The command exits if either panel fails to distinguish the controls.
+
+```bash
+PYTHONPATH=. python scripts/arena/seal_quality_controls.py \
+  --operator examples/arena_inputs/glm53flashpd/operator.json --baseline stock.json \
+  --stock stock-repeat.json --positive faithful.json --negative damaged.json \
+  --speed-witness qualification-attempt.json --out quality-controls.json
+```
+
+Pass `--quality-controls quality-controls.json` to `scripts/arena/render_operator.py`.
+The derived manifest binds the measured observations to the new commission. Verify the
+controls on the commissioned workload and run its off-chain twin before connecting it.
+
 ## 4. Render and review
 
 ```bash
-python scripts/arena/render_operator.py --arena musespark \
-  --retained-inputs /path/to/retained --out /path/to/operator-musespark
+python scripts/arena/render_operator.py --arena dsv41pd \
+  --retained-inputs /path/to/retained --out /path/to/operator-dsv41pd
 ```
 
 The output is the task-directory layout the validator VM launches from:
@@ -160,10 +191,19 @@ render still produces the bytes that commissioned it.
 
 On the validator VM, from a task directory that holds the retained artifacts,
 with the replay inputs archive (`replay-inputs-<slug>.tar`: the sealed workload
-slice and the tokenizer) placed beside the rendered `launch_stage.py`:
+slice and the tokenizer) placed beside the rendered `launch_stage.py`. The
+archive unpacks into the pod's `assets/` directory and must hold
+`workload/manifest.json` with the slice directory it names beside it, plus
+`tokenizer-<asset>/`; the commission's replay-tokenizer preflight loads that
+manifest and checks its digest against the packet's `slice_digest`. The
+`--known-hosts` file holds exactly one line, the pod's active ed25519 key:
 
 ```bash
-python3 -B scripts/arena/launch_node.py --operator /path/to/operator-musespark \
+ssh-keyscan -p <port> -t ed25519 <pod> > known_hosts
+```
+
+```bash
+python3 -B scripts/arena/launch_node.py --operator /path/to/operator-dsv41pd \
   --task-dir /path/to/task --base /path/to/base --image-proof durable-images.json \
   --source runtime-source.tar --source-metadata runtime-source.json \
   --source-revision <commit> --image-digest <sha256 hex> -- \
