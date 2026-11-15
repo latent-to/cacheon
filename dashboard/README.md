@@ -184,7 +184,10 @@ Each qualification attempt also has a **Performance** section:
   first-token time, and service attainment. A retained-reference grade adds one
   row per load: stock and candidate cost as the scorer computes it (seconds per
   warm turn under a sealed steady span), that load's gain, and the pooled decode
-  median against the load's floor.
+  median against the load's floor. When the request sealed a payment bar it is
+  shown beside the gain. A run that stopped after its first engine boot shows,
+  as its needed gain, the line that first boot had to reach for the second to
+  run: the sealed futility margin under the payment bar.
 - A retained batch-cell attempt (speed policies 8–15) shows that its
   measurements are unavailable; its stored lane rates are not rendered.
 

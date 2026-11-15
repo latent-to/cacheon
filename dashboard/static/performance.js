@@ -16,7 +16,11 @@ const resultLine = (decision, r) => `<b${{PASS: ' style="color:var(--ok)"', FAIL
 function replayPerformance(speed, title) {
   const grade = speed.grading;
   const fastest = speed.score_basis === "fastest_pass_latency";
-  const margin = (speed.speedup - grade.required_speedup) * 100;
+  // A first lifetime under the continue line ends the stage; its statistical "needed" figure was never the test.
+  const stopped = grade.continue_at != null && speed.candidate_boots > 1
+    && speed.lanes.filter((lane) => lane.role === "C").every((lane) => lane.boot === 0);
+  const needed = stopped ? grade.continue_at : grade.required_speedup;
+  const margin = (speed.speedup - needed) * 100;
   // A pass pairs the two arms that ran at the same moment: same lane orientation, same pass number.
   // Both orientations number their passes from 1; on 2026-10-01 every row of a swapped run read "pass 1".
   const swaps = {B: [], C: []};
@@ -49,13 +53,16 @@ function replayPerformance(speed, title) {
       ${reference ? `${metricNumber(speed.window_limit, 0)} times per fresh engine boot; the candidate ran ${metricNumber(speed.windows / speed.window_limit, 0)} boots against ${metricNumber(speed.reference_boots, 0)} retained stock boots`
         : `${metricNumber(speed.windows, 0)} time${speed.windows === 1 ? "" : "s"}${early ? ` of a possible ${metricNumber(speed.window_limit, 0)}` : ""}`}.</p>
     <div class="cards">${card(metricGain(speed.speedup), "Measured gain", grade.decision === "PASS" ? "ok" : "bad")}
-      ${card(metricGain(grade.required_speedup), early ? `Needed at pass ${metricNumber(speed.windows, 0)} of ${metricNumber(speed.window_limit, 0)}` : "Needed")}
+      ${card(metricGain(needed), stopped ? "Needed after boot 1 to run boot 2" : early ? `Needed at pass ${metricNumber(speed.windows, 0)} of ${metricNumber(speed.window_limit, 0)}` : "Needed")}
+      ${grade.payment_bar == null ? "" : card(metricGain(grade.payment_bar), "Payment bar (best paid PASS + 1.5%)")}
       ${card(sideBySide(arm("B", "decode_tps"), arm("C", "decode_tps"), 1, "more"), "Decode tok/s, baseline → candidate")}
       ${card(sideBySide(arm("B", "mean_ttft_s"), arm("C", "mean_ttft_s"), 2, "less"), "First token (s), baseline → candidate")}
       ${card((margin >= 0 ? "+" : "") + metricNumber(margin, 2) + " pp", margin >= 0 ? "Above what was needed" : "Short of what was needed")}
       ${card(metricNumber(speed.speed_stage_seconds / 60, 1) + " min", "Speed stage, including startup")}</div>
     <p>${esc(grade.detail[0].toUpperCase() + grade.detail.slice(1))}.${early ? " What is needed shrinks with every pass, so a full run needs less than the figure shown for this pass." : ""}
-      ${grade.futility_margin ? `A run whose first ${reference ? "boot" : "lane orientation"} reads more than ${metricNumber(grade.futility_margin * 100, 2)}% slower than the baseline stops there.` : ""}</p>
+      ${grade.continue_at == null ? "" : grade.payment_bar != null && grade.continue_at > 1 - grade.futility_margin
+        ? `A run whose first boot reads more than ${metricNumber(grade.futility_margin * 100, 2)}% below the payment bar, under ${metricGain(grade.continue_at)}, stops there: its second boot could not lift it to a paid PASS.${stopped ? " This run stopped after its first boot." : ""}`
+        : `A run whose first ${reference ? "boot" : "lane orientation"} reads more than ${metricNumber(grade.futility_margin * 100, 2)}% slower than the baseline stops there.`}</p>
     <div class="metrics-table">${reference ? table(["Engine boot", "Same work (s)", "Decode (tok/s)", "First token (s)", "In service level (%)"], rows)
       : table(["Pass", "Gain", fastest ? "Mean turn (s)" : "Same work (s)", "Decode (tok/s)", "First token (s)", "In service level (%)"], rows)}</div>
     ${(speed.per_load || []).length ? `<div class="metrics-table">${table(["Load", grade.steady_span ? "Scored s per warm turn" : "Scored same work (s)",

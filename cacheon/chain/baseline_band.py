@@ -135,6 +135,7 @@ def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
             "loads": list(reads.loads),
             "windows": len(reads.candidate if reads.boots else reads.incumbent) // len(reads.loads),
             "window_limit": reads.window_limit, "reference_boots": reads.reference_boots,
+            "candidate_boots": reads.boots,
             "contract": asdict(policy.contract),
             "per_load": _per_load(reads, policy),
             "grading": {"steady_span": policy.steady_span or None,"decision": grade.decision.value, "detail": grade.verdict.detail,
@@ -147,7 +148,12 @@ def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
                         "error_rate": policy.error_rate or None,
                         "attainment_tolerance": policy.attainment_tolerance,
                         "attainment_margin": policy.attainment_margin, "futility_margin": policy.futility_margin,
-                        "attainment_pooled": bool(policy.attainment_pooled)},
+                        "attainment_pooled": bool(policy.attainment_pooled),
+                        "payment_bar": float(reads.payment_bar) if reads.payment_bar else None,
+                        # The first lifetime's continue-or-stop line: the sealed margin under the bar (stock when
+                        # no bar is sealed), the same comparison reference_grade makes before a second boot.
+                        "continue_at": ((float(reads.payment_bar) if policy.bar_futility and reads.payment_bar else 1.0)
+                                        * (1 - policy.futility_margin) if policy.futility_margin else None)},
         })
     except (RuntimeError, ValueError, KeyError, TypeError, AttributeError) as exc:
         speed["grading_error"] = str(exc)
