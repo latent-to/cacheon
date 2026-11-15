@@ -25,20 +25,13 @@ module and parent/child claims that overlap. Binding succeeds only when the
 requested method exists in the served model; actual execution and audit
 coverage are checked separately.
 
-## Current GLM-5.3 availability
+## Current availability
 
-The GLM node arena is `glm53-b300-node-v1`, using GLM-5.3 NVFP4 with
-SGLang 0.5.20 on B300, TP4 and attention DP4. `forward_pass` and `prefix_cache`
-are both open, and its incumbent is the composed champion implementation. Use the
-[GLM development inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/glm53)
-with that model and topology; checks against another arena's inputs do not
-establish GLM coverage.
-
-The DeepSeek-V4.1-Flash node arena is `dsv41flash-b300-node-v1`, using SGLang
-0.5.21 on B300 at TP2 with expert parallelism 2 and the Engram host tables in
-pinned host memory. `forward_pass` and `prefix_cache` are both open. Use the
-[DeepSeek-V4.1-Flash development inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/dsv41flash)
+The live arena serves DeepSeek-V4.1-Flash as a prefill/decode pair on one
+8x B300 node. Use the
+[DeepSeek-V4.1-Flash PD development inputs](https://github.com/latent-to/cacheon/tree/main/examples/arena_inputs/dsv41pd)
 with that model and topology; its README lists which node addresses execute.
+Checks against another arena's inputs do not establish coverage.
 
 ## Arena availability
 

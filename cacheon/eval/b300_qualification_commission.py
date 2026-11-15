@@ -46,6 +46,7 @@ from cacheon.eval.calibration import (
     publish_calibration_evidence,
 )
 from cacheon.eval.crossover_runtime import ResidentSpeedPolicy
+from cacheon.eval.oci_session_protocol import ROW_FLOOR_PPM
 from cacheon.eval.engine_launch import (
     EngineLaunchSpec,
     TrustedLaunchBinding,
@@ -99,37 +100,14 @@ def _pristine_reference_authority(
     return pristine_launch, pristine_session_plan
 
 
-def _bind_hidden_judge(
-    capability: object,
-    *,
-    binding: HiddenJudgeBinding,
-    tokenizer_digest: str,
-    prompt_batches: tuple[tuple[str, ...], ...],
-    workload_digest: str,
-    hidden_tasks_per_prompt: int,
-) -> object:
-    judge = capability
-    binder = getattr(capability, "bind_prompt_plan", None)
-    if hidden_tasks_per_prompt and callable(binder):
-        if getattr(capability, "tokenizer_digest", None) != tokenizer_digest:
-            raise B300QualificationCommissionError(
-                "hidden judge tokenizer differs from the sealed prompt identity"
-            )
-        try:
-            judge = binder(
-                prompt_batches=prompt_batches,
-                workload_digest=workload_digest,
-                hidden_tasks_per_prompt=hidden_tasks_per_prompt,
-            )
-        except Exception as exc:
-            raise B300QualificationCommissionError(
-                f"hidden judge prompt-plan binding failed: {exc}"
-            ) from None
-    if not callable(judge) or getattr(judge, "binding", None) != binding:
+def _bind_hidden_judge(capability: object, *, binding: HiddenJudgeBinding) -> object:
+    """Replay quality declares no hidden tasks (``_require_replay_quality``), so the packet's judge is never
+    bound to a prompt plan or called; its sealed binding still enters the reference identity."""
+    if not callable(capability) or getattr(capability, "binding", None) != binding:
         raise B300QualificationCommissionError(
             "bound hidden judge differs from the sealed prompt identity"
         )
-    return judge
+    return capability
 
 
 def _tracked_deadline_provider(
@@ -308,6 +286,7 @@ def compose_commissioned_qualifications(
             audit_control_delta_digests=tuple(
                 policy_block.get("audit_control_delta_digests", ())
             ),
+            audit_row_floor_ppm=policy_block.get("audit_row_floor_ppm", ROW_FLOOR_PPM),
         )
     except B300RegisteredQualificationError as exc:
         raise B300QualificationCommissionError(
@@ -315,6 +294,9 @@ def compose_commissioned_qualifications(
         ) from None
 
     _require_replay_quality(policy, session_block)
+    # T grades against the baseline's stored rollouts; stock keeps stacked wins from compounding drift (owner, 2026-11-11).
+    if capabilities.incumbent_entries:
+        raise B300QualificationCommissionError("replay quality is graded against stock: the incumbent declares entries")
 
     executor = b300_deployment._build_executor(
         inputs.root / "qualification-lane-a",
@@ -390,19 +372,19 @@ def _compose_locked(
     from cacheon.eval.goodput_runtime import GoodputPolicy
     settings = session_block["replay"]
     goodput = GoodputPolicy.from_dict(speed_block["goodput"])
-    if not goodput.error_rate:
+    if not goodput.error_rate or not goodput.decode_floor:
         raise B300QualificationCommissionError(
-            "new replay commissions require elapsed-work statistical eligibility; "
-            "V16 latency scoring is retained only for historical evidence"
+            "new replay commissions are prefill/decode pairs with elapsed-work eligibility and a decode floor"
         )
     replay = AgentReplayPlan(
-        Path(settings["manifest_path"]), (settings["load"],),
+        Path(settings["manifest_path"]),
+        tuple(sorted(settings["load"], reverse=True)) if type(settings["load"]) is list else (settings["load"],),
         Path(settings["aiperf_binary"]), Path(settings["tokenizer_path"]),
         inputs.root / "qualification-replays" / screen_lane,
         goodput.contract, "incumbent", 1, screen_lane, windows=settings["windows"],
         elapsed_cost=True,
         max_work_seconds=settings.get("max_work_seconds", 0),
-        closed_loop=bool(goodput.decode_floor),
+        closed_loop=True,
         warm_windows=settings.get("warm_windows", 0),
     )
     if replay.slice.digest != settings["slice_digest"]:
@@ -441,14 +423,7 @@ def _compose_locked(
         pristine_native=pristine_native,
     )
     workload_digest = marginal_workload_digest(baseline_session_plan)
-    hidden_judge = _bind_hidden_judge(
-        capabilities.hidden_judge,
-        binding=hidden_binding,
-        tokenizer_digest=inputs.prompt_identity["tokenizer_digest"],
-        prompt_batches=inputs.prompt_batches,
-        workload_digest=workload_digest,
-        hidden_tasks_per_prompt=policy.hidden_tasks_per_prompt,
-    )
+    hidden_judge = _bind_hidden_judge(capabilities.hidden_judge, binding=hidden_binding)
     model_mount = TrustedArenaModelMountReceipt.capture(
         inputs.model_root,
         arena_digest=manifest.digest,
@@ -492,10 +467,7 @@ def _compose_locked(
         max_qualification_seconds=speed_block["max_qualification_seconds"],
         calibration=calibration_manifest,
         context=calibration_context,
-        # New commissions run one engine on the whole lane against a retained
-        # stock reference (v19); PD references measure each stock pair in its own evaluator process (v21).
-        # Historical witnesses retain their original policy and arithmetic.
-        version=21 if goodput.decode_floor else 19,
+        version=speed_block.get("version", 21),
         min_windows=speed_block["min_windows"],
         max_window_scatter=float(speed_block["max_window_scatter"]),
         max_conditioning_slowdown=float(speed_block["max_conditioning_slowdown"]),

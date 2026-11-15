@@ -337,8 +337,8 @@ def _load_bundle_into_registry(bundle: str) -> None:
             logger.warning("cacheon: skip %s, failed scan: %s", op.slot, scan.violations)
             continue
         meta = json.loads((Path(bundle) / op.metadata).read_text()) if op.metadata else {}
-        # ONE module instance per op source: pulling entry/prepare/setup via separate
-        # load_entry calls would re-execute the module body per callable and split
+        # ONE module instance per op source: loading entry/prepare/setup separately
+        # would re-execute the module body per callable and split
         # them across different module namespaces (module-global state shared between
         # prepare and entry would vanish; sys.modules would point at the last copy
         # while entry closed over an earlier one — torch.compile re-imports by name).

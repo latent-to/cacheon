@@ -162,13 +162,49 @@
 # PD audit/pristine CPU roles use the first group of the full lane plan: runtime/docs net 0, +51 regression lines.
 # Explicit stock imports retain original arms across this audit repair: runtime +62, docs +7, tests +53; replaces repeat campaigns.
 # The qualification publication resolver waits out the shared intake lock within the coordinator's bound: runtime +17, +1 note.
-(root) 1166
+# GLM-5.3-Flash PD arena: low/mid/high replay loads (geometric mean, per-load floors) generalize the one-load path; hybrid DSA
+# layer map, dp-1 decode pins, pair seed harvest: runtime +65, docs +26, examples +137, scripts +28, tests +3, +2 notes.
+# Then the three loads share one lifetime's replay budget (lower loads replay a prefix), the pair runs N prefill servers
+# of their own TP (GLM: 2x TP2 + TP4 decode), and replay's dead hidden-judge call and top-k projection go: cacheon -67,
+# docs +9, examples +8, scripts +4 (+3 notes), tests +9.
+# Only the DeepSeek-V4.1-Flash PD arena is live (owner 2026-11-11): the retired arenas' inputs, the GLM-5.3 champion
+# bundle, lockstep replay, and policies 16-19's graders and branches go: cacheon +140/-464, docs +112/-377,
+# examples +1/-513, bundles -2398, tests +28/-36, root +4/-7, +3 notes.
+# GLM-5.3-Flash PD baseline r7b: a 350 GB HiCache host tier per prefill rank, the decode radix cache, and a sealed
+# per-arena lifetime memory cap (1.4 TB pinned overran the 1 TiB default), and CuTe DSL indexer logits (1.13-1.52x
+# DeepGEMM at next_n 6): examples +3 (the DSV README drops its duplicate of the results page), scripts +6, docs +1,
+# +3 notes; cacheon -3 (the reward walk's unused report list).
+# The KDA ReplaySSM audit rows (GLM-5.3-Flash decode speculation) replace their refusal and the colocated audit takes
+# decode's ReplaySSM flag: cacheon +30, docs +3, examples -1, +3 notes. `check` counts the one-engine form's members
+# via pd_engine.untimed_ranks: cacheon +6. Pooled DSA index rows and tails (+10) cost the GDN native-MTP rows (-8).
+# Stock keeps hardware dispatch on stub-native ops (IndexerKPool) and `check` refuses a pass stock refused calls in
+# (+14), paid by five callerless definitions (-75): cacheon -61. The node audit's row floor becomes a sealed per-arena
+# policy value (GLM-5.3-Flash 15%): docs +12, examples +6, scripts +8, paid by ten callerless definitions: cacheon -212;
+# the packet judge's HiddenJudgeReceipt and hidden_judge_output_digest come back (+37) for commissioning step 3.
+# Commission refuses a non-stock incumbent (docs +4), paid by the uncalled batch_request wrapper: cacheon -18.
+# Sealed one-sided per-load regression guard (load_margin): cacheon +17 after the uncalled sandbox.load_entry, docs +6.
+# GLM-5.3-Flash PD go-live: steady-span load scoring and its import exemption, the pair T GPU-count fix, the twin
+# payment bar, the dashboard per-load view and the commissioned pin tables: cacheon +110, dashboard +9, docs +18,
+# examples +13, scripts +29, tests +9. The branch stays net -3,234 lines against main (retired arenas deleted).
+# File ceilings: qualification_runner.py 2430 (the T check; still 24 under main), oci_outer_session.py 906
+# (12e0a9c7 sizes a pair's audit members by its one-engine form).
+# Live dashboard patches folded in for the GLM cutover: closed-arena submissions_open and the fork SGLang overlay,
+# less the dead OKC selector entry (no /okc route in this tree): dashboard +18.
+# Measured GLM teacher controls replace synthetic control observations in this operator render. Document the
+# quality metrics, sealed sample count and command, and exercise severity and historical evidence reopening.
+# Audit twin keeps TRT-LLM BF16 experts fused so the GLM draft node audits: cacheon +5 (sglang_nodes.py has no dead code).
+# Explicit MTP claims mount the commissioned adapter. The shared file-mount helper replaces the inline worker mount.
+# Every replay AIPerf run (prime and timed windows) drops its unread default collectors; a reaped one cost two qualifications: cacheon +3.
+# A retry reopens an undecided first candidate lifetime (speed_first) and boots only the second: cacheon +74, docs +7.
+# Sealed first-lifetime payment-bar futility (bar_futility): cacheon +14, docs +6, examples +3, scripts +5, tests +6.
+# speed_first is keyed by the speed plan and its retry runs on its own stage clock (as written it was never found
+# after a release); replay-client failures are typed holds, not adapter-epoch failures: cacheon +58, docs +11.
+(root) 1163
 .github 338
-bundles 2398
-cacheon 92611
+cacheon 92404
 cacheon_kernels 936
-dashboard 4393
-docs 13532
-examples 745
-scripts 4434
-tests 14088
+dashboard 4420
+docs 13396
+examples 431
+scripts 4728
+tests 14184

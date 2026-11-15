@@ -1,11 +1,11 @@
 """Frozen qualification speed policy, retaining the historical wire identity.
 
-Only the replay policies remain: version 16 (fixed cutoff), 17 (statistical) and 18 (portable paired
-windows) are historical evidence; version 19 runs one engine per node against a retained stock reference,
-and version 20 runs version 19's arithmetic over a prefill/decode engine pair at a sealed closed-loop
-concurrency, failing a candidate whose pooled per-user decode p50 falls under the contract's floor.
-Version 21 keeps that arithmetic and measures stock as two boot pairs, each the first two engine lifetimes
-of its own evaluator process, as every candidate pair is read.
+Only the prefill/decode replay policies remain. Version 20 grades a prefill/decode engine pair against a
+retained stock reference at a sealed closed-loop concurrency, failing a candidate whose pooled per-user decode
+p50 falls under the contract's floor; it stays readable for the DeepSeek-V4.1-Flash PD arena's 2026-10-28
+attempts. Version 21 keeps that arithmetic and measures stock as two boot pairs, each the first two engine
+lifetimes of its own evaluator process, as every candidate pair is read. Version 22 measures one such pair.
+Versions 16-19 served retired arenas.
 The batch-cell fields stay on the wire at zero so sealed replay witnesses decode byte for byte.
 """
 
@@ -40,7 +40,7 @@ class ResidentSpeedPolicy:
     def __post_init__(self) -> None:
         if (
             type(self.version) is not int
-            or self.version not in (16, 17, 18, 19, 20, 21)
+            or self.version not in (20, 21, 22)
             or type(self.max_stage_seconds) is not int
             or not 60 <= self.max_stage_seconds <= 7_200
             or type(self.max_qualification_seconds) is not int
@@ -62,7 +62,7 @@ class ResidentSpeedPolicy:
                     self.prefill_credit_weight,
                 )
             )
-            or not (self.min_margin == 0 if self.version >= 17 else 0 < self.min_margin < 1)
+            or self.min_margin != 0
             or self.noise_multiplier <= 0
             or not 0 <= self.max_noise < 1
         ):
@@ -73,15 +73,10 @@ class ResidentSpeedPolicy:
             # broken measurement convict or crown instead of NO_DECISION.
             raise CrossoverRuntimeError("resident speed policy requires max_noise <= 0.02")
         if (type(self.goodput) is not GoodputPolicy
-            or (self.version == 16 and (
-                self.goodput.error_rate != 0
-                or self.goodput.required != 1 + max(self.min_margin, self.noise_multiplier * self.goodput.null_noise)))
-            # Owner ruling 2026-10-01: 0.125 (90% at the final look); 0.01 stays readable for stages sealed before it.
-            or (self.version >= 17 and (self.goodput.error_rate not in (0.01, 0.125) or self.goodput.required != 1))
-            # Versions 19 and 20 always pool attainment over the reference and the candidate's lifetimes.
-            or (self.version >= 19 and (self.goodput.error_rate != 0.125 or not self.goodput.attainment_pooled))
-            # PD policies hold the decode p50 to the contract's floor.
-            or bool(self.goodput.decode_floor) != (self.version in (20, 21))
+            # Owner ruling 2026-10-01: 0.125 (90% at the final look). Attainment pools over the reference and the
+            # candidate's lifetimes, and the decode p50 is held to the contract's floor.
+            or self.goodput.error_rate != 0.125 or self.goodput.required != 1
+            or not self.goodput.attainment_pooled or not self.goodput.decode_floor
             or self.goodput.null_noise > self.max_noise
             or self.goodput.boot_noise > self.max_noise
             # The batch-cell thresholds are wire fields only; replay seals them at zero.
@@ -95,27 +90,21 @@ class ResidentSpeedPolicy:
                 raise CrossoverRuntimeError(str(exc)) from None
 
     @property
+    def reference_boots(self) -> int:
+        """Number of measured stock lifetimes sealed into this version's witness."""
+        return CANDIDATE_BOOTS if self.version == 22 else REFERENCE_BOOTS
+
+    @property
     def digest(self) -> str:
-        if self.version >= 19:
-            return canonical_digest("cacheon.qualification.goodput-speed-policy.v1", {
-                **self.to_dict(), "timing": "fixed_work_host_time", "repeat_limit": 0,
-                "topology": "one_engine_owns_the_lane", "reference_boots": REFERENCE_BOOTS,
-                "candidate_boots": CANDIDATE_BOOTS, "aggregation": "log_mean_elapsed_serving_time_per_boot",
-                "eligibility": "alpha_spending_0.05_0.05_0.10_0.80_at_boot_boundaries",
-                "sentinel": "stock_bracket_after_pass_one_sided_0.01", "continuation": "completed_stage",
-                **({"topology": "pd_prefill_decode_on_one_node", "arrival": "closed_loop_after_cold_round",
-                    "gate": "pooled_decode_p50_at_every_look"} if self.version in (20, 21) else {}),
-                **({"reference_pair_boots": CANDIDATE_BOOTS,
-                    "reference_pair_process": "first_lifetimes_of_a_fresh_evaluator"} if self.version >= 21 else {}),
-            })
         return canonical_digest("cacheon.qualification.goodput-speed-policy.v1", {
-            **self.to_dict(), "read_order": ["B", "C"],
-            "timing": "paired_fixed_work_host_time", "repeat_limit": 0,
-            **({"orientations": 2, "aggregation": "pooled_elapsed_serving_time_equal_log_orientation",
-                "eligibility": "alpha_spending_0.05_0.05_0.10_0.80"}
-               if self.version >= 17 else {}),
-            **({"continuation": "completed_paired_windows_with_original_physical_bindings",
-                "boot_noise": "undivided_per_orientation"} if self.version == 18 else {}),
+            **self.to_dict(), "timing": "fixed_work_host_time", "repeat_limit": 0,
+            "topology": "pd_prefill_decode_on_one_node", "reference_boots": self.reference_boots,
+            "candidate_boots": CANDIDATE_BOOTS, "aggregation": "log_mean_elapsed_serving_time_per_boot",
+            "eligibility": "alpha_spending_0.05_0.05_0.10_0.80_at_boot_boundaries",
+            "sentinel": "stock_bracket_after_pass_one_sided_0.01", "continuation": "completed_stage",
+            "arrival": "closed_loop_after_cold_round", "gate": "pooled_decode_p50_at_every_look",
+            **({"reference_pair_boots": CANDIDATE_BOOTS,
+                "reference_pair_process": "first_lifetimes_of_a_fresh_evaluator"} if self.version >= 21 else {}),
         })
 
     def to_dict(self) -> dict[str, object]:
@@ -189,7 +178,7 @@ class ResidentSpeedPolicy:
             raise CrossoverRuntimeError(str(exc)) from None
         return cls(
             max_stage_seconds=max_stage_seconds,
-            min_margin=0.0 if version >= 17 else float(decimal_value(calibration.speed.min_margin)),
+            min_margin=0.0,
             noise_multiplier=float(decimal_value(calibration.speed.noise_multiplier)),
             max_noise=float(decimal_value(calibration.speed.max_noise)),
             calibration_digest=calibration.digest,

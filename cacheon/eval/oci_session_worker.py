@@ -466,8 +466,8 @@ def _validate_live_preflight(
     if observed_sglang != expected_sglang:
         raise SessionWorkerError("installed SGLang differs from the launch identity")
     architectures = _gpu_architectures()
-    # A prefill/decode pair (speed policy 20) sees both roles' GPUs, tp_size each, as engine_worker pins them.
-    if len(architectures) != config.tp_size * (2 if pd_engine.is_pair(config.engine_kwargs) else 1):
+    # A prefill/decode pair (speed policy 20) sees every role's GPUs, as engine_worker pins them.
+    if len(architectures) != pd_engine.lane_width(config.tp_size, config.engine_kwargs):
         raise SessionWorkerError("visible GPU count differs from the engine tensor-parallel degree")
     facts = RuntimePreflightFacts(
         launch_digest=launch_digest,

@@ -167,10 +167,7 @@ class B300QualificationCapabilities:
         if (
             not callable(self.secret_loader)
             or not callable(self.entropy_provider)
-            or not (
-                callable(self.hidden_judge)
-                or callable(getattr(self.hidden_judge, "bind_prompt_plan", None))
-            )
+            or not callable(self.hidden_judge)
             or not callable(getattr(self.source_resolver, "resolve_proposal", None))
         ):
             raise B300QualificationCommissionError(
@@ -316,7 +313,8 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
     policy = value.get("policy")
     if (
         type(policy) is not dict
-        or set(policy) - {"audit_control_delta_digests", "audit_max_new_tokens"} != _COMMISSION_POLICY_FIELDS
+        or set(policy) - {"audit_control_delta_digests", "audit_max_new_tokens", "audit_row_floor_ppm"}
+        != _COMMISSION_POLICY_FIELDS
         or type(policy.get("audit_control_delta_digests", [])) is not list
         or not isinstance(policy.get("nll_tail_threshold"), str)
         or type(policy.get("hidden_tasks_required")) is not bool
@@ -332,6 +330,7 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
     _commission_int(policy.get("select_count"), "select_count", minimum=2)
     _commission_int(policy.get("audit_minimum_calls"), "audit_minimum_calls", minimum=1)
     _commission_int(policy.get("audit_max_new_tokens", 2), "audit_max_new_tokens", minimum=1)
+    _commission_int(policy.get("audit_row_floor_ppm", 1), "audit_row_floor_ppm", minimum=1)
     session = value.get("session")
     speed = value.get("resident_speed")
     if not (type(session) is dict and "replay" in session and type(speed) is dict and "goodput" in speed):
@@ -349,10 +348,12 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
     _commission_int(session.get("warmup_count"), "warmup_count", minimum=0)
     _commission_int(session.get("conditioning_count"), "conditioning_count", minimum=0)
     _commission_decimal(session.get("temperature"), "temperature")
-    if set(speed) != _COMMISSION_SPEED_FIELDS:
+    if set(speed) - {"version"} != _COMMISSION_SPEED_FIELDS:
         raise B300RegisteredQualificationError(
             "sealed qualification resident-speed block is not closed"
         )
+    if "version" in speed and _commission_int(speed["version"], "resident speed version", minimum=21) not in (21, 22):
+        raise B300RegisteredQualificationError("unsupported commissioned resident speed version")
     from cacheon.eval.goodput_runtime import GoodputPolicy
     replay = session["replay"]
     if type(replay) is not dict or set(replay) - {"max_work_seconds", "warm_windows"} != {
@@ -360,7 +361,9 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
     }:
         raise B300RegisteredQualificationError("sealed replay fields differ")
     _digest(replay["slice_digest"], "replay slice")
-    _commission_int(replay["load"], "replay load", minimum=1)
+    # One load is an integer; several (low, mid, high concurrency) a list, replayed highest first.
+    for load in replay["load"] if type(replay["load"]) is list and replay["load"] else [replay["load"]]:
+        _commission_int(load, "replay load", minimum=1)
     _commission_int(replay["windows"], "replay windows", minimum=1)
     if "max_work_seconds" in replay:
         _commission_int(replay["max_work_seconds"], "replay work seconds", minimum=1)

@@ -1,0 +1,19 @@
+QUALITY_CONTROLS = @CONTROL_RECEIPT@
+
+
+def _bootstrap_calibration(_inputs, context, stage):
+    from cacheon.eval.calibration import (
+        CalibrationEvidenceSet, CalibrationObservation, CalibrationThresholdPolicy,
+        MetricCalibration, SpeedCalibration, derive_calibration_manifest,
+    )
+
+    policy = QUALITY_CONTROLS["policy"]
+    metrics = tuple(MetricCalibration(name, "lower", **limits)
+                    for name, limits in sorted(policy["limits"].items()))
+    threshold = CalibrationThresholdPolicy(
+        context, policy["algorithm_id"], "frozen", SpeedCalibration("0.01", "2", "0.02"),
+        metrics, policy["familywise_z"],
+    )
+    observations = tuple(CalibrationObservation.from_dict(row) for row in QUALITY_CONTROLS["observations"])
+    manifest = derive_calibration_manifest(threshold, observations)
+    return threshold, manifest, CalibrationEvidenceSet.create(threshold, observations)

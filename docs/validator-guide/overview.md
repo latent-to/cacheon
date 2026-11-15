@@ -24,7 +24,7 @@ flowchart LR
     Intake --> Private["Private 0700 fetch tree"]
     Private --> Publication["Immutable worker publication"]
     Publication --> Arena["Injected arena service<br/>trusted provider"]
-    Arena --> OCI["Replay speed stage<br/>one engine per lane (v19)"]
+    Arena --> OCI["Replay speed stage<br/>one PD pair per lane (v21)"]
     OCI --> Audit["Audit-only role"]
     Audit --> T["Pristine T reference<br/>candidate-free"]
     T --> Evidence["Content-addressed evidence"]
@@ -75,7 +75,7 @@ The current validator path is deliberately staged:
    duplicate FAIL replay, closed-target release, and capacity limits apply here.
    There is no separate screen.
 7. Qualify admitted candidates under the version-3 protocol: fresh candidate
-   boots against a retained stock reference on one lane (speed policy 19), then
+   boots against a retained stock reference on one lane (speed policy 21), then
    audit and pristine T.
 8. Reopen the complete audited PASS and apply target and evaluation-stack changes
    in one settlement transaction.

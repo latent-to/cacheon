@@ -87,7 +87,7 @@ def test_only_threshold_records_earn_in_submission_order(tmp_path, target):
                 store, index=i, marker=str(i), target=target,
                 speedups=(score, score), retained_block=100-i,
             ) for i, score in enumerate(("1.0277661067436534", "1.0256515334199241",
-                                        "1.0277661067436534", "1.03", "1.0403"))
+                                        "1.0277661067436534", "1.04", "1.0432"))
         ]
         retained = list(store._db.execute("SELECT * FROM settlement_qualifications"))
         expected = {candidates[0].hotkey, candidates[4].hotkey}
@@ -99,18 +99,11 @@ def test_only_threshold_records_earn_in_submission_order(tmp_path, target):
         assert {c.hotkey for c in store.passed_reward_claims()} == expected
 
 
-@pytest.mark.parametrize("margin,score,earns", [
-    ("0.01", "1.060499999999", False), ("0.01", "1.0605", True),
-    ("0.02", "1.0605", False), ("0.02", "1.071", True),
-])
-def test_sealed_margin_and_exact_threshold(tmp_path, margin, score, earns):
+@pytest.mark.parametrize("score,earns", [("1.065749999999", False), ("1.06575", True)])
+def test_ruled_margin_and_exact_threshold(tmp_path, score, earns):
     with _store(tmp_path) as store:
         _qualified_settlement_candidate(store)
-        payload = json.dumps({"speed_witness": {"resident_policy": {"min_margin": margin}}}).encode()
-        later = _qualified_settlement_candidate(
-            store, index=1, marker="later", speedups=(score, score),
-            attempt_payloads=(payload, payload),
-        )
+        later = _qualified_settlement_candidate(store, index=1, marker="later", speedups=(score, score))
         assert (later.hotkey in {c.hotkey for c in store.passed_reward_claims()}) == earns
 
 
@@ -258,30 +251,29 @@ def test_scoring_compares_all_slots_without_advancing_unpaid_or_later_records(tm
         assert comparisons[candidates[0].reservation_digest]["score_speedup"] == Decimal("1.1")
 
 
-@pytest.mark.parametrize("version", [17, 18, 19, 20, 21])
+@pytest.mark.parametrize("version", [20, 21])
 def test_statistical_records_pay_one_and_a_half_percent_over_the_previous_best(tmp_path, version):
     from decimal import Decimal
     from cacheon.chain.evaluation_order import reward_comparisons
     from cacheon.eval.goodput_runtime import GoodputPolicy, GoodputReadSet
     from cacheon.eval.service_capacity import LoadRead, ServiceContract, TurnRecord
 
-    def _read(arm, lane, window, seconds):  # one cold and one warm turn of the one session
-        cold = TurnRecord("session", "main", 0, 10**9, 10**9, 10**9+1, 2*10**9, 100, 2, "ok")
-        warm = TurnRecord("session", "main", 1, 3*10**9, 3*10**9, 3*10**9+1,
-                          3*10**9+round(seconds*10**9), 100, 2, "ok")
-        return LoadRead(arm, window, lane, 24, (cold, warm))
+    def _read(arm, boot, seconds):  # one cold and one warm turn of the one session, one lifetime each
+        start = (boot + 1) * 1000 * 10**9
+        cold = TurnRecord("session", "main", 0, start, start, start+1, start+10**9, 100, 2, "ok")
+        start += 2 * 10**9
+        warm = TurnRecord("session", "main", 1, start, start, start+1, start+round(seconds*10**9), 100, 2, "ok")
+        return LoadRead(arm, 1, "lane", 24, (cold, warm))
 
     CONTRACT, WORK = ServiceContract(0.001, 1000.0, 0.8), {"session": (2, 0)}
     policy = GoodputPolicy(CONTRACT, 1.0, 0.0003, 0.0, 0.0, 0.01, 0.0001)
     with _store(tmp_path) as store:
         candidates = []
         for index, score in enumerate((1.01, 1.05, 1.06, 1.07)):
-            baseline, candidate = [], []
-            for window, lane in enumerate(("A", "A", "B", "B"), 1):
-                baseline.append(_read("incumbent", lane, window, 100))
-                candidate.append(_read("candidate", "B" if lane == "A" else "A", window, 100/score))
-            reads = GoodputReadSet(tuple(baseline), tuple(candidate),
-                                   tuple((root, *counts) for root, counts in WORK.items()), 4)
+            reads = GoodputReadSet(tuple(_read("incumbent", boot, 100) for boot in range(4)),
+                                   tuple(_read("candidate", boot, 100/score) for boot in range(4, 6)),
+                                   tuple((root, *counts) for root, counts in WORK.items()), 1,
+                                   boots=2, reference_boots=4)
             payload = json.dumps({"speed_witness": {
                 "resident_policy": {"version": version, "min_margin": 0.0, "goodput": policy.to_dict()},
                 "goodput": reads.to_dict(),
@@ -306,3 +298,9 @@ def test_statistical_records_pay_one_and_a_half_percent_over_the_previous_best(t
             grade = replace(reads, payment_bar=bar).grade(policy)
             assert grade.decision.value == decision
         assert fail_reason(grade.verdict) == "below_payment_bar"
+        # Sealed bar_futility: a first lifetime reading 1.07 ends the stage once the bar is over 1.5% above it.
+        early, first = replace(policy, futility_margin=0.015, bar_futility=1), replace(reads, candidate=reads.candidate[:1])
+        grades = [replace(first, payment_bar=bar).grade(early) for bar in ("1.085", "1.088")]
+        assert [grade.decision.value for grade in grades] == ["NO_DECISION", "FAIL"]
+        assert fail_reason(grades[1].verdict) == "below_payment_bar"
+        assert replace(first, payment_bar="1.088").grade(replace(early, bar_futility=0)).decision.value == "NO_DECISION"

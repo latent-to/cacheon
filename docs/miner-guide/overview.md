@@ -106,7 +106,7 @@ before working on an advanced target.
 For a registered target, the validator constructs an exact marginal comparison:
 
 - **B**: the exact incumbent, measured once per lane as a retained stock
-  reference of four fresh boots;
+  reference of two fresh stock boots under v22 and four under v20 or v21;
 - **C**: the one-target-transition candidate, replaying the same workload in
   up to two fresh boots on the same lane;
 - **A**: a registered eager, untimed audit role for the candidate delta; and
@@ -116,7 +116,7 @@ For a registered target, the validator constructs an exact marginal comparison:
 The candidate does not choose the rest of the stack. One engine at a time owns
 the whole commissioned lane, and every boot replays the sealed workload for the
 same number of windows. The score compares the log mean elapsed time per boot:
-the four reference boots against the candidate's boots. The candidate passes
+the commissioned reference boots against the candidate's boots. The candidate passes
 only when the statistical lower bound on that gain exceeds one and service
 attainment holds; the second candidate boot always yields PASS or FAIL. An arena
 may seal a futility margin (the GLM arena seals 1.5%): a first candidate boot

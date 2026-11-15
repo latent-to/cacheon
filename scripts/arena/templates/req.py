@@ -12,6 +12,7 @@ from cacheon.chain.evaluation_coordinator import ClaimedQualificationEvaluation,
 from cacheon.chain.intake import FinalizedArrival, FinalizedIntakeStore, IntakePolicy, IntakeScope
 from cacheon.chain.mainnet_screen_dispatcher import RemoteOnlyArenaProvider, _manifest_from_dict, make_qualification_publication_resolver
 from cacheon.chain.publication import publish_worker_bundle, reopen_worker_bundle
+from cacheon.chain.evaluation_order import payment_bar
 from cacheon.chain.qualification_request import qualification_request_body
 from cacheon.chain.remote_evaluation_dispatcher import seal_remote_request
 from cacheon.chain.remote_worker_pod_service import accept_request
@@ -57,8 +58,17 @@ pubs = tuple(reopen_worker_bundle(r.publication_root, r.arrival.content_hash, ex
              for r in rows)
 claim = ClaimedQualificationEvaluation(lease, rows, pubs, tuple(
     ArenaCandidateBinding(a, p, n) for p, a, n in zip(pubs, _qualification_reservations(rows, pubs), attempts, strict=True)))
+stack = EvaluationStackManifest.from_dict(capture["incumbent_stack"])
+# The dispatcher seals the producer's bar into every new request (remote_worker_checkpoints.claim_payment_bar); without
+# it a twin PASS below the opening bar read as a PASS (DSV 2026-11-04, GLM-5.3-Flash PD 2026-11-12).
+store, _ = coordinator._open_at_durable_cursor()
+try:
+    bar = payment_bar(store._db, stack, claim.candidates[0].reservation.reservation_digest)
+finally:
+    store.close()
 body = qualification_request_body(coordinator, claim, incumbent_tree_digest=capture["incumbent_tree_digest"],
-                                  incumbent_stack_digest=EvaluationStackManifest.from_dict(capture["incumbent_stack"]).digest)
+                                  incumbent_stack_digest=stack.digest, payment_bar=bar)
+print("PAYMENT_BAR=" + body.get("payment_bar", ""))
 request = seal_remote_request(claim.lease, readiness, registration["service_identity"], identity, credential, body)
 transport = DurableSpoolAuthenticatedWorkerTransport(
     registration_path=paths.registration, spool_root=WORK / "spool", credential_path=Path(registration["credential_path"]),

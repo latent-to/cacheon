@@ -1,0 +1,41 @@
+{
+  "attention_backend": null,
+  "disable_custom_all_reduce": false,
+  "dtype": "bfloat16",
+  "max_running_requests": null,
+  "mem_fraction_static": 0.85,
+  "moe_runner_backend": "flashinfer_trtllm",
+  "random_seed": 7,
+  "log_level": "error",
+  "tp_size": 4,
+  "quantization": "modelopt_fp4",
+  "kv_cache_dtype": "fp8_e4m3",
+  "dsa_prefill_backend": "trtllm",
+  "dsa_decode_backend": "trtllm",
+  "dsa_paged_mqa_logits_backend": "cutedsl",
+  "trust_remote_code": true,
+  "speculative_algorithm": "EAGLE",
+  "speculative_num_steps": 5,
+  "speculative_eagle_topk": 1,
+  "speculative_num_draft_tokens": 6,
+  "enable_hierarchical_cache": false,
+  "disaggregation_transfer_backend": "mooncake",
+  "pd_prefill": {
+    "servers": 2,
+    "engine_kwargs": {"tp_size": 2, "chunked_prefill_size": 16384, "enable_hierarchical_cache": true, "hicache_size": 350,
+                      "hicache_write_policy": "write_through", "hicache_mem_layout": "page_first"}
+  },
+  "pd_decode": {
+    "engine_kwargs": {"enable_linear_replayssm_spec": true, "disaggregation_decode_enable_radix_cache": true,
+                      "max_running_requests": 128, "cuda_graph_max_bs_decode": 128}
+  },
+  "engine_env": {
+    "NCCL_NVLS_ENABLE": "0",
+    "TORCH_SYMM_MEM_DISABLE_MULTICAST": "1",
+    "SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT": "1800",
+    "SGLANG_DISAGGREGATION_WAITING_TIMEOUT": "1800",
+    "MC_INTRANODE_NVLINK": "true",
+    "MC_TCP_ENABLE_CONNECTION_POOL": "true",
+    "SGLANG_MOONCAKE_CUSTOM_MEM_POOL": "INTRA_NODE_NVLINK"
+  }
+}

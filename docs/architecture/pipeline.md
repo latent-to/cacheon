@@ -149,10 +149,10 @@ Principal code: [`eval/qualification_intake.py`](https://github.com/latent-to/ca
 ## 6. Version-3 adaptive qualification
 
 The production evidence protocol is version 3. Inside it, every candidate is
-measured under speed policy 19: fresh candidate boots replay the sealed agent
-workload on the whole commissioned lane and are graded against a retained stock
-reference measured on that lane. Speed policies 16–18 are regrade-only, and
-evidence sealed below version 16 is refused.
+measured under speed policy 21: fresh prefill/decode pair boots replay the sealed
+agent workload on the whole commissioned lane and are graded against a retained
+stock reference measured on that lane. Speed policy 20 is regrade-only, and
+evidence sealed below version 20 is refused.
 
 The current subpolicy retains stage and total budgets and the physical-lane
 binding. Evidence reopens under the arithmetic that
@@ -199,7 +199,7 @@ trajectory under a separate pristine lifetime. T never contains the candidate an
 not compete on speed. Hidden reference work, quality policy, and selected prompt identity
 are bound into retained evidence.
 
-The host applies the exact versioned policy. Conceptually, a policy-19 result
+The host applies the exact versioned policy. Conceptually, a policy-21 result
 compares the log mean elapsed serving cost per boot:
 
 ```text
