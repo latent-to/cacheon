@@ -124,6 +124,7 @@ def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
                             "mean_warm_latency_s": work.elapsed_s / work.turns,
                             "elapsed_s": elapsed.elapsed_s, "turns_per_second": elapsed.rate,
                             "attainment": attainment(read, policy.contract),
+                            "goodput_tps": _output_tokens(read) / elapsed.elapsed_s,
                             **_replay_diagnostics(read)})
             lanes.extend(arm)
         speed.update({
@@ -183,8 +184,17 @@ def _per_load(reads, policy) -> list[dict[str, Any]]:
         logs = [sum(math.log(cost(read)) for read in arm) / len(arm) for arm in (base, cand)]
         rows.append({"load": load, "stock_cost": math.exp(logs[0]), "candidate_cost": math.exp(logs[1]),
                      "gain": math.exp(logs[0] - logs[1]), "stock_decode_tps": decode_p50(base),
-                     "candidate_decode_tps": decode_p50(cand), "decode_floor_tps": floors.get(load)})
+                     "candidate_decode_tps": decode_p50(cand), "decode_floor_tps": floors.get(load),
+                     **{f"{name}_goodput_tps": sum(map(_output_tokens, arm)) / sum(
+                         fixed_work_rate(read, reads.work(read.load), wall_time=True).elapsed_s for read in arm)
+                        for name, arm in (("stock", base), ("candidate", cand))}})
     return rows
+
+
+def _output_tokens(read) -> int:
+    """Output tokens served by a window's timed warm turns: goodput is these over the warm wall span."""
+    cold = min(row.credit_issued_ns for row in read.records)
+    return sum(row.output_tokens for row in read.records if row.credit_issued_ns != cold)
 
 
 def _replay_diagnostics(read) -> dict[str, Any]:

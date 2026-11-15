@@ -184,7 +184,9 @@ Each qualification attempt also has a **Performance** section:
   first-token time, and service attainment. A retained-reference grade adds one
   row per load: stock and candidate cost as the scorer computes it (seconds per
   warm turn under a sealed steady span), that load's gain, and the pooled decode
-  median against the load's floor. When the request sealed a payment bar it is
+  median against the load's floor. Goodput is output tokens served by the timed
+  warm turns over their wall span, per engine boot, per load and pooled per arm,
+  baseline → candidate. When the request sealed a payment bar it is
   shown beside the gain. A run that stopped after its first engine boot shows,
   as its needed gain, the line that first boot had to reach for the second to
   run: the sealed futility margin under the payment bar.

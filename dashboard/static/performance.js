@@ -32,9 +32,12 @@ function replayPerformance(speed, title) {
   // Policy 19 runs one engine at a time on the whole lane: rows are fresh boots, not simultaneous pairs.
   const reference = speed.score_basis === "retained_reference_boots";
   const mean = (lanes, field) => lanes.reduce((n, lane) => n + lane[field], 0) / lanes.length;
+  // Goodput pools served output tokens over the summed timed span; a mean of per-load rates would weight loads equally.
+  const goodput = (lanes) => lanes.reduce((n, lane) => n + lane.goodput_tps * lane.elapsed_s, 0)
+    / lanes.reduce((n, lane) => n + lane.elapsed_s, 0);
   const bootRows = (role, label) => Object.values(speed.lanes.filter((lane) => lane.role === role)
     .reduce((boots, lane) => ((boots[lane.boot] ||= []).push(lane), boots), {})).map((lanes, boot) => `<tr>
-      <td>${label(boot)}</td><td>${metricNumber(mean(lanes, "elapsed_s"), 1)}</td><td>${metricNumber(mean(lanes, "decode_tps"), 1)}</td>
+      <td>${label(boot)}</td><td>${metricNumber(mean(lanes, "elapsed_s"), 1)}</td><td>${metricNumber(goodput(lanes), 0)}</td><td>${metricNumber(mean(lanes, "decode_tps"), 1)}</td>
       <td>${metricNumber(mean(lanes, "mean_ttft_s"), 2)}</td><td>${metricNumber(mean(lanes, "attainment") * 100, 1)}</td></tr>`);
   const rows = reference ? [...bootRows("B", (boot) => boot < speed.reference_boots ? `Stock reference boot ${boot + 1}` : "Stock bracket after PASS"),
     ...bootRows("C", (boot) => `Candidate boot ${boot + 1}`)] : speed.lanes.filter((lane) => lane.role === "B").map((base, pass) => {
@@ -55,6 +58,8 @@ function replayPerformance(speed, title) {
     <div class="cards">${card(metricGain(speed.speedup), "Measured gain", grade.decision === "PASS" ? "ok" : "bad")}
       ${card(metricGain(needed), stopped ? "Needed after boot 1 to run boot 2" : early ? `Needed at pass ${metricNumber(speed.windows, 0)} of ${metricNumber(speed.window_limit, 0)}` : "Needed")}
       ${grade.payment_bar == null ? "" : card(metricGain(grade.payment_bar), "Payment bar (best paid PASS + 1.5%)")}
+      ${speed.lanes[0].goodput_tps == null ? "" : card(sideBySide(...["B", "C"].map((role) => goodput(speed.lanes.filter((lane) => lane.role === role))), 0, "more"),
+        "Goodput, output tok/s, baseline → candidate")}
       ${card(sideBySide(arm("B", "decode_tps"), arm("C", "decode_tps"), 1, "more"), "Decode tok/s, baseline → candidate")}
       ${card(sideBySide(arm("B", "mean_ttft_s"), arm("C", "mean_ttft_s"), 2, "less"), "First token (s), baseline → candidate")}
       ${card((margin >= 0 ? "+" : "") + metricNumber(margin, 2) + " pp", margin >= 0 ? "Above what was needed" : "Short of what was needed")}
@@ -63,11 +68,12 @@ function replayPerformance(speed, title) {
       ${grade.continue_at == null ? "" : grade.payment_bar != null && grade.continue_at > 1 - grade.futility_margin
         ? `A run whose first boot reads more than ${metricNumber(grade.futility_margin * 100, 2)}% below the payment bar, under ${metricGain(grade.continue_at)}, stops there: its second boot could not lift it to a paid PASS.${stopped ? " This run stopped after its first boot." : ""}`
         : `A run whose first ${reference ? "boot" : "lane orientation"} reads more than ${metricNumber(grade.futility_margin * 100, 2)}% slower than the baseline stops there.`}</p>
-    <div class="metrics-table">${reference ? table(["Engine boot", "Same work (s)", "Decode (tok/s)", "First token (s)", "In service level (%)"], rows)
+    <div class="metrics-table">${reference ? table(["Engine boot", "Same work (s)", "Goodput (output tok/s)", "Decode (tok/s)", "First token (s)", "In service level (%)"], rows)
       : table(["Pass", "Gain", fastest ? "Mean turn (s)" : "Same work (s)", "Decode (tok/s)", "First token (s)", "In service level (%)"], rows)}</div>
     ${(speed.per_load || []).length ? `<div class="metrics-table">${table(["Load", grade.steady_span ? "Scored s per warm turn" : "Scored same work (s)",
-      "Gain", "Decode median tok/s (floor)"], speed.per_load.map((row) => `<tr><td>${metricNumber(row.load, 0)} sessions</td>
+      "Gain", "Goodput, output tok/s", "Decode median tok/s (floor)"], speed.per_load.map((row) => `<tr><td>${metricNumber(row.load, 0)} sessions</td>
       <td>${sideBySide(row.stock_cost, row.candidate_cost, grade.steady_span ? 4 : 1)}</td><td><b>${metricGain(row.gain)}</b></td>
+      <td>${sideBySide(row.stock_goodput_tps, row.candidate_goodput_tps, 0, "more")}</td>
       <td>${sideBySide(row.stock_decode_tps, row.candidate_decode_tps, 1, "more")}${row.decode_floor_tps == null ? "" : ` (${metricNumber(row.decode_floor_tps, 0)})`}</td></tr>`))}</div>
     <p class="metric-note">The measured gain is the geometric mean of the per-load gains.${grade.steady_span
       ? ` Each load is scored until fewer than ${metricNumber(grade.steady_span * 100, 0)}% of its sessions are still active after the last one starts, so the drain of the longest sessions does not set the time.` : ""}</p>` : ""}
