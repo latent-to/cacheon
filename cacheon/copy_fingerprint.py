@@ -236,25 +236,22 @@ def _closure_norm(root: Path, entry: Path, transform) -> str:
     return "\x1e".join(parts)
 
 
-def _op_identity_for_slot(manifest, op, slot: str) -> str:
-    """Project one op through an explicit dispatch-slot execution identity.
+def _entry_closure_norm(root: Path, op, transform, closures: dict[Path, str]) -> str:
+    """``_closure_norm`` of ``op``'s entry, computed once per entry file in one bundle pass.
 
-    Python/Triton/CUDA rows use their exact six-field projection.
+    A per-layer bundle names one entry file from dozens of ops. The closure depends only
+    on that file, so recomputing it per op repeated identical work under the intake
+    controller's flock: 47 ops over one 7,885-line entry held it for 14 minutes and the
+    settlement coordinator exited past its 100 s lock bound (mainnet 2026-11-16).
     """
-
-    return "\x00".join(
-        [
-            slot,
-            op.entry,
-            op.prepare or "",
-            op.setup or "",
-            op.base_kernel or "",
-            op.override_point or "",
-        ]
-    )
+    entry = resolve_source(root, op)
+    key = entry.resolve()
+    if key not in closures:
+        closures[key] = _closure_norm(root, entry, transform)
+    return closures[key]
 
 
-def _op_identity(op, *, manifest=None) -> str:
+def _op_identity(op) -> str:
     """The non-source identity of an op: slot + callable names + override composition.
 
     ``base_kernel`` / ``override_point`` are INCLUDED — an M1 override submission JIT-composes
@@ -264,7 +261,9 @@ def _op_identity(op, *, manifest=None) -> str:
     label, not source identity, and renaming it must not evade copy detection. Capability metadata
     is likewise excluded, so relabeling a stolen implementation's domain does not make it fresh.
     """
-    return _op_identity_for_slot(manifest, op, op.slot)
+    return "\x00".join([
+        op.slot, op.entry, op.prepare or "", op.setup or "", op.base_kernel or "", op.override_point or "",
+    ])
 
 
 def _aggregate_variant_fingerprints(parts: list[str], *, domain: str) -> str:
@@ -298,10 +297,11 @@ def bundle_slot_fingerprints(bundle_root: str | Path) -> dict[str, str]:
     root = Path(bundle_root)
     manifest = load_manifest(root)
     components: dict[str, list[str]] = {}
+    closures: dict[Path, str] = {}
     try:
         for op in manifest.ops:
-            closure = _closure_norm(root, resolve_source(root, op), normalized_source)
-            blob = _op_identity(op, manifest=manifest) + "\x1e" + closure
+            closure = _entry_closure_norm(root, op, normalized_source, closures)
+            blob = _op_identity(op) + "\x1e" + closure
             components.setdefault(op.slot, []).append(
                 hashlib.sha256(blob.encode("utf-8")).hexdigest()
             )
@@ -487,6 +487,7 @@ def bundle_slot_file_fingerprints(bundle_root: str | Path) -> dict[str, list[str
     root = Path(bundle_root)
     manifest = load_manifest(root)
     out: dict[str, set[str]] = {}
+    by_entry: dict[Path, set[str]] = {}
     try:
         for op in manifest.ops:
             entry = resolve_source(root, op)
@@ -495,17 +496,21 @@ def bundle_slot_file_fingerprints(bundle_root: str | Path) -> dict[str, list[str
             # stolen singleton's set contained in a stolen+fresh multi-variant bundle,
             # which is the load-bearing relocation/padding copy signal in Ledger.reveal.
             fps = out.setdefault(op.slot, set())
-            for f in _closure_files(root, entry):
-                try:
-                    source = f.read_text(encoding="utf-8")
-                    norm = normalized_source(source)
-                except (SyntaxError, OSError, UnicodeDecodeError):
-                    if f.resolve() == entry_key:
-                        raise
-                    continue
-                if len(norm) >= _SUBSTANTIAL_NORM_LEN:
-                    fps.add(hashlib.sha256(norm.encode("utf-8")).hexdigest())
-                fps.update(_top_level_definition_fingerprints(source))
+            if entry_key not in by_entry:
+                found: set[str] = set()
+                for f in _closure_files(root, entry):
+                    try:
+                        source = f.read_text(encoding="utf-8")
+                        norm = normalized_source(source)
+                    except (SyntaxError, OSError, UnicodeDecodeError):
+                        if f.resolve() == entry_key:
+                            raise
+                        continue
+                    if len(norm) >= _SUBSTANTIAL_NORM_LEN:
+                        found.add(hashlib.sha256(norm.encode("utf-8")).hexdigest())
+                    found.update(_top_level_definition_fingerprints(source))
+                by_entry[entry_key] = found
+            fps.update(by_entry[entry_key])
             for cs in resolve_cuda_sources(root, op):
                 try:
                     raw = cs.read_bytes()
@@ -527,9 +532,10 @@ def bundle_slot_structural_fingerprints(bundle_root: str | Path) -> dict[str, st
     root = Path(bundle_root)
     manifest = load_manifest(root)
     components: dict[str, list[str]] = {}
+    closures: dict[Path, str] = {}
     try:
         for op in manifest.ops:
-            closure = _closure_norm(root, resolve_source(root, op), structural_source)
+            closure = _entry_closure_norm(root, op, structural_source, closures)
             components.setdefault(op.slot, []).append(
                 hashlib.sha256((op.slot + "\x1e" + closure).encode("utf-8")).hexdigest()
             )

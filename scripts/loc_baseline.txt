@@ -199,12 +199,16 @@
 # Sealed first-lifetime payment-bar futility (bar_futility): cacheon +14, docs +6, examples +3, scripts +5, tests +6.
 # speed_first is keyed by the speed plan and its retry runs on its own stage clock (as written it was never found
 # after a release); replay-client failures are typed holds, not adapter-epoch failures: cacheon +58, docs +11.
+# The dashboard shows the payment bar, the first-boot stop line and served goodput per boot and per load (miners
+# could not read early-stopped runs): cacheon +16 (baseline_band.py), dashboard +18.
+# Copy fingerprinting computes each entry file's closure once per bundle, not once per op (47 per-layer ops held the
+# intake flock 14 min and looped settlement), less the dead manifest parameter of _op_identity: cacheon +6, scripts +4.
 (root) 1163
 .github 338
-cacheon 92404
+cacheon 92426
 cacheon_kernels 936
-dashboard 4420
+dashboard 4438
 docs 13396
 examples 431
-scripts 4728
+scripts 4732
 tests 14184
