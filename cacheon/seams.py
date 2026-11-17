@@ -12,8 +12,8 @@ the canary all pick it up.
 No row names an operation of the model. Model code is served by the one ``nodes``
 row, which binds whatever modules a bundle named; the per-operation rows it replaced
 each pinned one sglang method and churned on every ``PINNED_SGLANG`` bump. The
-``cache`` and ``order`` rows serve the scheduler: its prefix cache object and the
-order of its waiting queue.
+``cache`` row serves the scheduler's prefix cache object and checks its content. The
+``engine`` row serves any other object of the engine a bundle names by its dotted path.
 
 Import-light on purpose (stdlib only): the ``.pth`` bootstrap imports this at
 interpreter startup, before — and without — importing torch or sglang.
@@ -54,15 +54,27 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
     # preserving the pool and transfer-worker references created by that backend.
     SeamAdapter("cache", "sglang.srt.mem_cache.registry",
                 "sglang_cache", "create_tree_cache"),
-    # Ask the candidate for the order of the waiting queue after stock has ordered it; the
-    # answer is held to a permutation and applied by stock's admission.
-    SeamAdapter("order", "sglang.srt.managers.schedule_policy",
-                "sglang_order", "SchedulePolicy.calc_priority"),
+    # Bind any class, method or function of the engine a bundle names by dotted path, at the scheduler's
+    # process entry right after the bundle loads. No call is checked; the engine boundary judges the result.
+    SeamAdapter("engine", "sglang.srt.managers.scheduler", "sglang_engine", "attr:Scheduler"),
 )
 
-# Addresses that name a scheduler object or question instead of a module of the served model.
-# The node binder skips them and SGLang serves them outside its CUDA graph.
-SCHEDULER_ADDRESSES = ("queue_order", "tree_cache")
+# Roots of addresses that name an object of the engine instead of a module of the served model. The node
+# binder skips them and SGLang serves them outside its CUDA graph. ``sglang`` roots a dotted path to any
+# class, method or function of the engine; ``tree_cache`` takes no sub-address.
+ENGINE_OBJECT = "sglang"
+SCHEDULER_ADDRESSES = (ENGINE_OBJECT, "tree_cache")
+
+
+def scheduler_address(slot: str) -> bool:
+    return slot.split(".")[0] in SCHEDULER_ADDRESSES
+
+
+def audited(slot: str) -> bool:
+    """Whether the audit role counts calls for this address: a model node against stock, the cache by content.
+    An engine object has no check per call."""
+
+    return slot.split(".")[0] != ENGINE_OBJECT
 
 
 def admit(tree, slot: str, entry: str, *, error: type[Exception]) -> None:
@@ -71,8 +83,9 @@ def admit(tree, slot: str, entry: str, *, error: type[Exception]) -> None:
     import ast
 
     address = slot.split(".")[0]
-    if slot != address:
-        raise error(f"{slot!r}: the scheduler address {address!r} has no sub-addresses")
+    if (slot != address) != (address == ENGINE_OBJECT) or "*" in slot:
+        raise error(f"{slot!r}: {address!r} takes " + ("a dotted path to one engine object"
+                                                         if address == ENGINE_OBJECT else "no sub-addresses"))
     factory = next((node for node in tree.body
                     if isinstance(node, ast.FunctionDef) and node.name == entry), None)
     if factory is None:

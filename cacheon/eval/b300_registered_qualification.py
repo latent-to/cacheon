@@ -54,6 +54,7 @@ from cacheon.eval.marginal_runtime import (
     PreparedCandidateRuntime,
     prepare_marginal_runtime,
 )
+from cacheon import seams
 from cacheon.eval import pd_engine
 from cacheon.eval.oci_session_protocol import SlotAuditPolicy
 from cacheon.eval.qualification import (
@@ -463,7 +464,7 @@ class B300RegisteredQualificationFactory:
             audit_seed,
             inputs.policy.audit_sample_rate_ppm,
             inputs.policy.audit_minimum_calls,
-            tuple(sorted(candidate.reservation.target_members)),
+            tuple(member for member in sorted(candidate.reservation.target_members) if seams.audited(member)),
             pd_engine.untimed_ranks(config.tp_size, config.engine_kwargs),
             inputs.policy.audit_row_floor_ppm,
         )

@@ -210,12 +210,15 @@
 # could not read early-stopped runs): cacheon +16 (baseline_band.py), dashboard +18.
 # Copy fingerprinting computes each entry file's closure once per bundle, not once per op (47 per-layer ops held the
 # intake flock 14 min and looped settlement), less the dead manifest parameter of _op_identity: cacheon +6, scripts +4.
+# Engine-object addresses (`sglang.<dotted path>`: any class, method or function of the engine) replace the
+# queue-order address, whose adapter is deleted (-83): cacheon +60, docs +1, scripts +3. Next deletion: the runtime
+# path of the manifest's engine-wide `setup` hook, which the catalog refuses on every target.
 (root) 1163
 .github 338
-cacheon 92515
+cacheon 92575
 cacheon_kernels 936
 dashboard 4418
-docs 13446
+docs 13447
 examples 431
-scripts 4741
+scripts 4744
 tests 14173

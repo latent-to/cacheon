@@ -26,7 +26,7 @@ integration, and releases; a target ID alone cannot reopen authority.
 |---|---|---|
 | `forward_pass` | `logits_processor`, `model` | The modules of the served model a bundle names |
 | `prefix_cache` | `tree_cache` | The scheduler's prefix cache object |
-| `engine` | every root above, `queue_order` | Any set of the addresses above and the scheduler's decisions, in one bundle |
+| `engine` | every root above, `sglang` | Any set of the addresses above and named classes, methods and functions of the engine, in one bundle |
 
 `forward_pass` is the node target. Its roots are the two top-level modules SGLang
 gives every causal LM, so it carries no model or arena identity. A bundle
@@ -45,13 +45,13 @@ a cache contribution preserves the incumbent `forward_pass` contribution. A new
 cache version replaces the previous cache version in full; the validator does not
 merge their source or combine their policies automatically.
 
-`engine` spans every root and adds the scheduler's decisions, one address per
-question, starting with `queue_order`, the
-[order of the waiting queue](../architecture/slot-contract.md#the-queue-order).
-One bundle may name model nodes, the cache and a decision, and is timed as one
-engine against the arena's single record. Each address keeps its own check:
-stock on the same call for a node, content for the cache, the legal set for a
-decision. The pieces are never timed apart and multiplied: across 43
+`engine` spans every root and adds `sglang`, under which a bundle names any class,
+method or function of the engine by its
+[dotted path](../architecture/slot-contract.md#engine-objects). One bundle may name
+model nodes, the cache and engine objects, and is timed as one engine against the
+arena's single record. A node keeps its check against stock on the same call and the
+cache its content check; an engine object has no check per call and is judged at the
+engine boundary. The pieces are never timed apart and multiplied: across 43
 GLM-5.3-Flash rows a kernel bundle's gain moved about 2% between the arena's
 three loads. An arena that composes crowned stack entries keeps `engine` closed.
 

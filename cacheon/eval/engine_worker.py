@@ -355,7 +355,7 @@ def _require_execution_completion(
 ) -> str:
     """Fail closed unless every active member completed every registered slot."""
 
-    from cacheon import receipts
+    from cacheon import receipts, seams
     from cacheon.eval.resident_execution_evidence import eager_slots
     from cacheon.integrations.sglang_cache import DECLINED
 
@@ -370,20 +370,27 @@ def _require_execution_completion(
     # its eager-warmup completion sits on disk. A slot SGLang serves outside the
     # graph, such as the scheduler's prefix cache, runs in every timed step without one,
     # and so does every slot on a prefill server, which captures no decode graph.
-    eager = eager_slots()
+    eager = eager_slots(row.get("slot") for row in completed)
     captured = [
         row for row in completed
         if row.get("captured") is True or row.get("slot") in eager or row.get("pid") in eager_members
     ]
     # A cache entry may leave one engine's cache stock (``sglang_cache._bind``). That member is covered by its
     # refusal only where another member served the address: declined everywhere is a candidate that never ran.
-    served = eager & {row.get("slot") for row in completed}
     declined = [
         row for row in receipts.collect(receipt_dir, "not_selected")
-        if row.get("slot") in served
+        if row.get("slot") in eager
         and any(reason.get("outcome") == DECLINED for reason in row.get("reasons") or ())
     ]
-    completed, captured = completed + declined, captured + declined
+    # An engine object runs only in the roles whose scheduler reaches it: a decode scheduler never orders a
+    # prefill queue. A member that loaded the bundle is covered where another completed the address, under
+    # the identity its own completions carry (an early active receipt may hold the pid alone).
+    done = {(row.get("slot"), row.get("pid")) for row in completed}
+    known = {row.get("pid"): row for row in completed}
+    bound = [{**known.get(member.get("pid"), member), "slot": slot}
+             for slot in sorted(eager) if not seams.audited(slot)
+             for member in active_receipts if (slot, member.get("pid")) not in done]
+    completed, captured = completed + declined + bound, captured + declined + bound
     passed, detail = receipts.completed_gate(
         captured if require_captured else completed, **coverage
     )

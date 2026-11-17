@@ -348,45 +348,45 @@ never in a CUDA graph, so its completions count on a graphs-on run without a
 capture; in the audit role each audited request waits for its verdict and adds one
 unit to the address's audit receipt.
 
-## The queue order
+## Engine objects
 
-The address `queue_order` names a question, not an object: before every prefill
-batch SGLang's scheduler decides in which order the waiting requests are admitted.
-It is the first decision address of the `engine` target and has no sub-addresses.
-[`sglang_order.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_order.py)
-wraps `SchedulePolicy.calc_priority`: stock orders the queue first, then the bundle's
-`entry(view)` receives one row per waiting request, in stock's order:
+An address under `sglang`, in the `engine` target, names a class, a method or a
+module-level function of the engine by its dotted path, such as
+`sglang.srt.managers.schedule_policy.SchedulePolicy.calc_priority` or
+`sglang.srt.disaggregation.decode.DecodePreallocQueue`. The path names the object
+where it is defined and takes no `*`; one that names no class or function of the
+pinned engine is refused.
 
-| Field | Meaning |
-|---|---|
-| `view[i][0]` | Tokens still to prefill for the request |
-| `view[i][1]` | Tokens the prefix cache serves for it, device and host tiers together |
-| `view[i][2]` | Prefill tokens the engine has processed since the request arrived |
+The bundle's `entry(stock)` receives the stock object and returns its replacement:
+a callable for a function or a method, a subclass for a class. `None` leaves that
+process stock, as for a decode-side object on a prefill server. Declare no `prepare`.
+[`sglang_engine.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_engine.py)
+binds the replacement once in each scheduler process, when the bundle loads and
+before SGLang builds the scheduler, so every later construction and call reaches
+it. A name another engine module imported from the defining module is rebound
+with it; a reference the engine took some other way before the bind, such as an
+entry in a registry dictionary, keeps the stock object. Only scheduler processes
+load a bundle, so an object that runs only in the HTTP server, the tokenizer or
+the detokenizer is never replaced.
 
-The view carries no token ids, no request ids and no output length. The replay
-fixes output lengths, so a policy that saw one would read the future. The third
-field is stock's own aging clock, the same on every TP rank as wall time is not.
-The cache count is stock's own match, which it runs per waiting request only under
-a cache-aware `--schedule-policy` (`lpm`, `hrrn`, `shortest-prefill-first`). Under
-the default `fcfs`, `view[i][1]` is zero and `view[i][0]` is the whole prompt, so
-an arena that opens this address seals a cache-aware policy in its baseline.
+A replacement is the object's new source: a winning bundle reads as a patch to the
+file that defines the object. Every TP rank is its own scheduler process and runs
+the replacement on the same requests, so a replacement that decides anything must
+decide the same on every rank.
 
-The entry returns the positions of the view in the order to admit. The legal set
-is the permutations: each yields the same tokens for every request and they differ
-only in who waits. Any other answer is refused, receipted as the candidate's, and
-takes the engine down; nothing returns to stock's order in a candidate's name.
-Stock's admission then applies the order under its own token and memory budgets,
-so a bundle chooses who is next and never how much is admitted. Every rank asks
-with the same view and must receive the same answer, so the entry must be a pure
-function of the view. Declare no `prepare`.
-Every legal answer produces the same tokens, so the address has no output to
-compare against stock: the legal set holds it at every call. An order moves waiting
-between requests more than total work, so an arena that opens the address scores
-a per-request quantity on the timed run, not only the elapsed time of the fixed work.
+No call to a replacement is checked, as nothing in the validator knows what a
+scheduler method should return. The engine boundary judges the result: the timed
+speed stage, quality against the teacher, and pristine T. A raise inside a
+replacement is receipted as the candidate's and takes the engine down. A
+replacement must run in at least one engine process of the lane. A process whose
+role never reaches it, such as a decode scheduler holding a prefill-side method,
+is covered by the process that does; an object declined or never called in every
+process is a candidate that never ran. The audit role counts no calls for an engine
+object, so a bundle names a model node or the cache beside its engine objects.
 
 ## Escape hatches
 
-Normal target submissions cannot request arbitrary engine-wide setup or framework mutation. Cross-cutting proposals are not submittable; dependency patches are refused, and native builds use the validator-shipped, policy-constrained build step. Successful work should be resolved into a registered target or reviewed product source without relabeling changed selected payload bytes under old evidence.
+A bundle changes the engine only through the addresses it names, and only where the arena's target opens them. The manifest's engine-wide `setup` hook is refused on every target, as are cross-cutting proposals with no address; dependency patches are refused, and native builds use the validator-shipped, policy-constrained build step. Successful work should be resolved into a registered target or reviewed product source without relabeling changed selected payload bytes under old evidence.
 
 With MTP enabled, the drafter's layer is a node address too, under the
 checkpoint's own name for it, `model.layers.<num_hidden_layers>` (for

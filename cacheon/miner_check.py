@@ -255,8 +255,10 @@ def check(args: argparse.Namespace) -> int:
             "seed": args.seed, "row_floor_ppm": args.audit_row_floor_ppm,
         }, indent=2) + "\n")
         slots = sorted({op.slot for op in manifest.ops})
+        from cacheon import seams
         from cacheon.eval import pd_engine
 
+        audited = [slot for slot in slots if seams.audited(slot)]
         ranks = pd_engine.untimed_ranks(int(config.get("tp_size", 1)), config)
         for phase in ("audit", "graph"):
             folder = root / phase
@@ -266,7 +268,7 @@ def check(args: argparse.Namespace) -> int:
                 early = _child([phase, str(root / "inputs.json"), str(folder)],
                                folder / "engine.log", timeout=args.timeout_seconds,
                                failure_check=(lambda: _early_audit_failure(
-                                   folder, slots, ranks, args.minimum_audit_windows)) if phase == "audit" else None)
+                                   folder, audited, ranks, args.minimum_audit_windows)) if phase == "audit" else None)
                 if early is not None:
                     (folder / "result.json").write_text(json.dumps(early, indent=2) + "\n")
                     print(f"FAIL: {early['detail']}")
@@ -283,7 +285,7 @@ def check(args: argparse.Namespace) -> int:
             if phase == "audit":
                 decision, detail = gate(report["receipts"]["audit"],
                                         min_calls=args.minimum_audit_windows,
-                                        expected_slots=slots, expected_member_count=ranks)
+                                        expected_slots=audited, expected_member_count=ranks)
                 # Stock raising is never a graded call: a layer pass that stock refused on
                 # every DSA layer graded only the KDA layers (G3, 2026-11-11).
                 if decision == "PASS" and any(row.get("baseline_refused") for row in report["receipts"]["audit"]):

@@ -659,7 +659,7 @@ PREFIX_CACHE_TARGET = "prefix_cache"
 # One bundle across every surface, timed as one engine: a kernel's gain moves about 2% with the operating point
 # a cache or scheduler change sets (43 GLM-5.3-Flash rows over three loads, 2026-11-16), so gains never multiply.
 ENGINE_TARGET = "engine"
-ENGINE_ROOTS = ("logits_processor", "model", "queue_order", "tree_cache")
+ENGINE_ROOTS = ("logits_processor", "model", "sglang", "tree_cache")
 
 
 def _node_contract(slot_id: str, **fields: object) -> TargetContractRef:
