@@ -272,6 +272,8 @@ def restore_origin(value, origin):
     source = replace(value.prepared.source,
         incumbent=stack(value.prepared.source.incumbent, base_launch),
         candidate=stack(value.prepared.source.candidate, candidate.launch),
+        parent=value.prepared.source.parent and EvaluationStackManifest.from_dict(
+            {**value.prepared.source.parent.to_dict(), "arena_digest": base_launch.arena_digest}),
         baseline_before=StackArmIdentity(base_launch.stack_digest, base_launch.tree_digest),
         baseline_after=StackArmIdentity(base_launch.stack_digest, base_launch.tree_digest),
         challenger=StackArmIdentity(candidate.launch.stack_digest, candidate.launch.tree_digest))

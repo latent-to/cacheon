@@ -919,15 +919,22 @@ class _Journal:
         self.sequence += 1
 
 
-def _lineage_hold_reason(
-    candidate: SettlementCandidate,
-    lineages: Mapping[str, TargetLineage],
-) -> str:
-    """Explain why an admitted result cannot beat the current target tip."""
+def _hold_reason(candidate: SettlementCandidate, lineages: Mapping[str, TargetLineage],
+                 current: EvaluationStackManifest, before: StackArmIdentity) -> str:
+    """Explain why an admitted result cannot settle over the current stack.
 
+    A row assembled on a parent stack settles only while that parent is still the stack, so the engine it measured
+    is the one adopted. Every row must beat its target's tip from the baseline it was measured against.
+    """
+
+    entry = candidate.candidate_manifest and candidate.candidate_manifest.entries.get(candidate.target_id)
+    on_parent = entry is not None and (
+        candidate.incumbent_manifest.with_contribution(entry).digest != candidate.candidate_stack_digest)
+    if on_parent and current.with_contribution(entry).digest != candidate.candidate_stack_digest:
+        return "stale_incumbent"
     lineage = lineages.get(candidate.target_id)
     if lineage is None:
-        return ""
+        return "" if on_parent or candidate.incumbent == before else "stale_incumbent"
     incumbent = candidate.incumbent_manifest.entries.get(candidate.target_id)
     incumbent_artifact = "" if incumbent is None else incumbent.artifact_digest
     if incumbent_artifact == lineage.artifact_digest:
@@ -974,17 +981,11 @@ def plan_settlement(
     rows = tuple(candidates)
     if any(type(row) is not SettlementCandidate for row in rows):
         raise SettlementError("settlement candidates are not exactly typed")
-    if len({row.digest for row in rows}) != len(rows) or len(
-        {row.reservation_digest for row in rows}
-    ) != len(rows):
+    if len({row.digest for row in rows}) != len(rows) or len({row.reservation_digest for row in rows}) != len(rows):
         raise SettlementError("settlement candidates contain duplicates")
     journal = _Journal(initial_event_sequence, previous_event_digest)
 
-    reasons = {
-        row.digest: (_lineage_hold_reason(row, tips) if row.target_id in tips
-                     else "stale_incumbent" if row.incumbent != before else "")
-        for row in rows
-    }
+    reasons = {row.digest: _hold_reason(row, tips, current_manifest, before) for row in rows}
     current = tuple(row for row in rows if not reasons[row.digest])
     stale = sorted((row for row in rows if reasons[row.digest]), key=lambda row: row.finalized_order)
     for row in stale:
@@ -997,10 +998,7 @@ def plan_settlement(
     registered = tuple(row for row in current if row.lane == "registered")
     if not registered:
         return SettlementPlan(before, before, "", tuple(journal.events), None)
-    winner = min(
-        registered,
-        key=lambda row: (-Decimal(row.speedup), row.finalized_order),
-    )
+    winner = min(registered, key=lambda row: (-Decimal(row.speedup), row.finalized_order))
     for row in sorted(
         (item for item in registered if item is not winner),
         key=lambda item: item.finalized_order,

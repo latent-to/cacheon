@@ -163,7 +163,8 @@ sealed audit policy sets `row_floor_ppm`, which the settlement binds with the re
 audit control. The audit attributes and controls: it proves the contribution ran in its
 slot on every rank and computes the same function within a bounded deviation, and output
 quality is pristine T's to judge, always against stock (a commission whose incumbent declares
-entries is refused). An arena whose twin is bitwise (GLM-5.3-Flash) gets no
+entries is refused; the record rides under a candidate as the commission's parent entries, which
+leave the baseline stock). An arena whose twin is bitwise (GLM-5.3-Flash) gets no
 noise from the twin term, so 2% admitted no lossy node there: FP8 block-scaled projections
 sat at 6–13% row error while the wrong control sits at 50%. Rows stock itself left
 non-finite (an idle data-parallel rank's padding) are not graded. The tolerance is measured because honest

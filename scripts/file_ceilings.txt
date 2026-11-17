@@ -26,7 +26,7 @@ cacheon/eval/qualification.py 974
 cacheon/eval/qualification_runner.py 2430
 cacheon/eval/runtime_preflight.py 1083
 cacheon/patchers/build_cuda_ext.py 1202
-cacheon/settlement.py 1061
+cacheon/settlement.py 1059
 dashboard/app.py 932
 tests/test_chain_intake.py 1599
 tests/test_recoverable_qualification_dispatcher.py 1063

@@ -107,14 +107,15 @@ def pod_answer(root: Path, sealed, carrier: Path, decision: QualificationDecisio
                 "finalized_event_subindex": reservation.finalized_event_subindex,
                 "hotkey": reservation.hotkey, "reservation_digest": reservation.reservation_digest,
                 "submission_digest": reservation.submission_digest}))
-        candidate = plan_candidate_stack(incumbent, contribution, catalog=catalog, expected_context=context)
+        parent = getattr(sealed, "parent", None)  # the crowned stack the candidate is assembled on, when not the baseline
+        candidate = plan_candidate_stack(parent or incumbent, contribution, catalog=catalog, expected_context=context)
         tree = materialize_engine_tree(
             candidate, context=context, catalog=catalog,
             resolver={**sealed.resolver, ("proposal", contribution.artifact_digest): publication.root},
             destination=root / "pod" / "trees" / candidate.digest)
         arm = plan_marginal_arm(incumbent, contribution, catalog=catalog,
                                 incumbent_tree_digest=sealed.incumbent_tree.tree_digest,
-                                candidate_tree_digest=tree.tree_digest, expected_context=context)
+                                candidate_tree_digest=tree.tree_digest, expected_context=context, parent=parent)
         audit = SlotAuditPolicy(pod_output("audit-seed")[:32], 100_000, 32, reservation.target_members, 1)
         settlement = SettlementQualification(
             lane="registered", arena_digest=incumbent.arena_digest,

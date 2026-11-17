@@ -98,6 +98,7 @@ def _candidate(
     speedup: str = "1.05",
     block: int = 10,
     event: int = 0,
+    parent: EvaluationStackManifest | None = None,
 ) -> SettlementCandidate:
     plan = plan_marginal_arm(
         incumbent,
@@ -106,6 +107,7 @@ def _candidate(
         incumbent_tree_digest=_h("incumbent-tree"),
         candidate_tree_digest=_h(f"candidate-tree:{label}"),
         expected_context=_context(catalog),
+        parent=parent,
     )
     members = catalog.require(replacement.target_id).members
     audit_slots = tuple(sorted(members))
@@ -598,6 +600,11 @@ def test_stale_candidate_holds_without_stack_change() -> None:
     assert plan.before == plan.after
     assert [row.event_type for row in plan.events] == [SettlementEventType.HOLD]
     assert plan.events[0].reason == "stale_incumbent"
+    # A row assembled on a parent keeps its stock baseline and settles only while that parent is the stack.
+    parent = _stack(catalog, {FORWARD: _ref(catalog, FORWARD, "crown")})
+    rider = _candidate(old, _ref(catalog, CACHE, "rider"), catalog, label="rider", parent=parent)
+    assert plan_settlement((rider,), current_manifest=parent, current_tree_digest=_h("tree")).after == rider.challenger
+    assert plan_settlement((rider,), current_manifest=current, current_tree_digest=_h("tree")).events[0].reason == "stale_incumbent"
 
 
 def test_nonoverlapping_loser_is_held_for_requalification() -> None:

@@ -64,9 +64,10 @@ def _stack(root, sealed) -> dict[str, str]:
     return {target: hotkeys[ref.artifact_digest] for target, ref in stack.manifest.entries.items()}
 
 
-def test_a_prefix_cache_crown_stands_beside_the_forward_pass_crown_and_outlives_its_replacement(
-        tmp_path, monkeypatch, supervisors):
-    root, key = e2e.deployment_root(tmp_path, "second-target", monkeypatch)
+def _arena(tmp_path, monkeypatch, name):
+    """Three revealed bundles and one commissioned, sealed arena with both targets registered."""
+
+    root, key = e2e.deployment_root(tmp_path, name, monkeypatch)
     bundles = {"miner-model": e2e.miner_bundle(root, "miner-model", e2e.labelled("miner-model")),
                "miner-cache": e2e.cache_bundle(root, "miner-cache"), "miner-nodes": _nodes(root)}
     reveals, origin = {}, {}
@@ -77,28 +78,75 @@ def test_a_prefix_cache_crown_stands_beside_the_forward_pass_crown_and_outlives_
     materialized, ready_path, ready = e2e.commission(root, e2e.PROFILES["h100-tp1"], ("forward_pass", "prefix_cache"))
     sealed = e2e.seal_authority(root, materialized, ready_path, ready)
     assert sealed.manifest["closed_targets"] == ["engine"]  # open on an arena only once its prompt registers it
+    return root, state, origin, sealed
 
+
+def _crown(root, state, origin, monkeypatch, supervisors, sealed, head, speedup):
+    """Admit the next reveal, let the pod PASS it at ``speedup`` and settle; the stack after it and its events."""
+
+    advance(state, head)
+    assert len(e2e.intake(root, state, origin, monkeypatch)) == 1
+    with e2e.relay(root, sealed):
+        supervisor = supervisors(root)
+        supervisor.until(e2e.waiting)
+        pod_answer(root, sealed, e2e.carriers(root)[-1], QualificationDecision.PASS, speedup=speedup)
+        supervisor.until(lambda status: status["last_stage"] == "settlement"
+                         and status["last_disposition"] == "committed")
+        assert supervisor.stop(signal.SIGTERM) == 0
+    return _stack(root, sealed)
+
+
+def _journal(root):
+    hotkeys = {row["reservation_id"]: row["hotkey"] for row in e2e.store_rows(root, "SELECT * FROM reservations")}
+    events = [(hotkeys[row["reservation_id"]], json.loads(row["event_json"]))
+              for row in e2e.store_rows(root, "SELECT * FROM settlement_events ORDER BY sequence")]
+    measured = {hotkeys[row["reservation_id"]]: json.loads(row["qualification_json"]) for row in e2e.store_rows(
+        root, "SELECT reservation_id, qualification_json FROM settlement_qualifications")}
+    return events, measured
+
+
+STACKS = [{"forward_pass": "miner-model"}, {"forward_pass": "miner-model", "prefix_cache": "miner-cache"},
+          {"forward_pass": "miner-nodes", "prefix_cache": "miner-cache"}]
+
+
+def test_a_change_assembled_on_the_record_is_measured_against_stock_and_joins_it(tmp_path, monkeypatch, supervisors):
+    """Stock baseline: after each crown the pod declares the crowned stack as the parent of its next candidate.
+
+    The baseline never moves, so every PASS sits on one measured baseline and one record: the cache bundle is
+    paid over the model crown it rode on, the two-node bundle over the cache PASS. Each crown adopts exactly
+    the stack its pod assembled and measured, so settlement composes nothing.
+    """
+
+    root, state, origin, sealed = _arena(tmp_path, monkeypatch, "parent-stack")
+    stacks = []
+    for (_, head, _), speedup in zip(RECORDS.values(), ("1.06", "1.1", "1.2")):
+        if stacks:
+            sealed = e2e.rotate(root, sealed, baseline=False)
+        stacks.append(_crown(root, state, origin, monkeypatch, supervisors, sealed, head, speedup))
+    assert stacks == STACKS
+    events, measured = _journal(root)
+    assert {row["incumbent_stack_digest"] for row in measured.values()} == {sealed.incumbent.digest}
+    assert [event["to_stack_digest"] for _, event in events if event["event_type"] == "STACK_TRANSITION"] == [
+        measured[hotkey]["candidate_stack_digest"] for hotkey in RECORDS]
+    sign = roles.Signer(root, state)
+    assert sign("--dry-run") == [] and sign.shares() == roles.reward_shares(
+        miner_model=roles.reward_credit(("1.06", 90), None, 120, None),
+        miner_cache=roles.reward_credit(("1.1", 105), ("1.06", 90), 120, None),
+        miner_nodes=roles.reward_credit(("1.2", 115), ("1.1", 105), 120, None))
+
+
+def test_a_prefix_cache_crown_stands_beside_the_forward_pass_crown_and_outlives_its_replacement(
+        tmp_path, monkeypatch, supervisors):
+    root, state, origin, sealed = _arena(tmp_path, monkeypatch, "second-target")
     stacks, baselines = [], []
     for hotkey, (_, head, speedup) in RECORDS.items():
         if len(stacks) == 1:  # the operator moves the baseline to the first crown; the third PASS is measured on it too
             sealed = e2e.rotate(root, sealed)
-        advance(state, head)
-        assert len(e2e.intake(root, state, origin, monkeypatch)) == 1
         baselines.append(sealed.incumbent.digest)
-        with e2e.relay(root, sealed):
-            supervisor = supervisors(root)
-            supervisor.until(e2e.waiting)
-            pod_answer(root, sealed, e2e.carriers(root)[-1], QualificationDecision.PASS, speedup=speedup)
-            supervisor.until(lambda status: status["last_stage"] == "settlement"
-                             and status["last_disposition"] == "committed")
-            assert supervisor.stop(signal.SIGTERM) == 0
-        stacks.append(_stack(root, sealed))
-    assert stacks == [{"forward_pass": "miner-model"}, {"forward_pass": "miner-model", "prefix_cache": "miner-cache"},
-                      {"forward_pass": "miner-nodes", "prefix_cache": "miner-cache"}]
+        stacks.append(_crown(root, state, origin, monkeypatch, supervisors, sealed, head, speedup))
+    assert stacks == STACKS
 
-    hotkeys = {row["reservation_id"]: row["hotkey"] for row in e2e.store_rows(root, "SELECT * FROM reservations")}
-    events = [(hotkeys[row["reservation_id"]], json.loads(row["event_json"]))
-              for row in e2e.store_rows(root, "SELECT * FROM settlement_events ORDER BY sequence")]
+    events, measured = _journal(root)
     assert [(event["event_type"], hotkey, event["target_id"], event["reason"]) for hotkey, event in events] == [
         ("CROWN", "miner-model", "forward_pass", "qualified_win"),
         *((kind, "miner-model", "forward_pass", why) for kind, why in CROWNED),
@@ -111,9 +159,8 @@ def test_a_prefix_cache_crown_stands_beside_the_forward_pass_crown_and_outlives_
     # the third on the stale {model} baseline while the stack already held the cache crown.
     transitions = [event["to_stack_digest"] for _, event in events if event["event_type"] == "STACK_TRANSITION"]
     assert [event["from_stack_digest"] for _, event in events if event["event_type"] == "CROWN"] == [baselines[0], *transitions[:2]]
-    measured = {hotkeys[row["reservation_id"]]: json.loads(row["qualification_json"])["incumbent_stack_digest"]
-                for row in e2e.store_rows(root, "SELECT reservation_id, qualification_json FROM settlement_qualifications")}
-    assert [measured[hotkey] for hotkey in RECORDS] == baselines and baselines[1] == baselines[2] != baselines[0]
+    assert [measured[hotkey]["incumbent_stack_digest"] for hotkey in RECORDS] == baselines
+    assert baselines[1] == baselines[2] != baselines[0]
 
     # The pod's rotation reproduces the validator's composition identity. This CPU proof does not execute
     # the combined stack; the rotated baseline reopens both contributions under two namespaces.

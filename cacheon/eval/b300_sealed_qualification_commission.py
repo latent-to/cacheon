@@ -15,7 +15,7 @@ construction authority; any drift fails closed.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
 from typing import Callable
 
@@ -144,6 +144,11 @@ class B300QualificationCapabilities:
     durable commit both refuse any product whose declared entries do not
     reproduce the durable stack digest, so a wrong declaration fails closed
     end to end.
+
+    ``parent_entries`` declares the crowned contributions a candidate is
+    assembled on while the baseline stays ``incumbent_entries``: on an arena
+    graded against stock the record rides under every candidate, and settlement
+    crowns only a row whose measured stack is the one it adopts.
     """
 
     secret_loader: Callable[[str], bytes]
@@ -152,17 +157,19 @@ class B300QualificationCapabilities:
     source_resolver: object
     source_resolver_digest: str
     incumbent_entries: dict[str, object]
+    parent_entries: dict[str, object] = dataclass_field(default_factory=dict)
 
     def __post_init__(self) -> None:
         from cacheon.stack_manifest import ProposalContributionRef
 
-        if type(self.incumbent_entries) is not dict or any(
-            type(target) is not str
-            or type(ref) is not ProposalContributionRef
-            for target, ref in self.incumbent_entries.items()
+        if any(
+            type(entries) is not dict
+            or any(type(target) is not str or type(ref) is not ProposalContributionRef
+                   for target, ref in entries.items())
+            for entries in (self.incumbent_entries, self.parent_entries)
         ):
             raise B300QualificationCommissionError(
-                "incumbent entries are not an exact target-to-contribution mapping"
+                "incumbent and parent entries are not exact target-to-contribution mappings"
             )
         if (
             not callable(self.secret_loader)

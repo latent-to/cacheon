@@ -215,12 +215,16 @@
 # a function (+12), paid by the runtime of the engine-wide `setup` hook no target admits (-28): cacheon -16.
 # The seed harvest boots under the lease's interpreter (a seed harvested under the image's other python was wiped and
 # recompiled in every lease boot; no deletion available, next: the rig-only parts of the tool): docs +2, scripts +6.
+# A commission declares the crowned entries as a candidate's parent while the measured baseline stays stock, so a
+# change is assembled on the record and a miner no longer rebuilds it (GLM refused any crowned entry): cacheon +33,
+# docs +10, tests +62 (the end-to-end case on the standing supervisor). settlement.py shrinks 2 lines; no other
+# deletion available, next: the audit-recovery authorization nothing in the tree or the GLM operator calls.
 (root) 1163
 .github 338
-cacheon 92559
+cacheon 92592
 cacheon_kernels 936
 dashboard 4418
-docs 13449
+docs 13459
 examples 431
-scripts 4750
-tests 14173
+scripts 4754
+tests 14235

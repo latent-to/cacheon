@@ -278,7 +278,7 @@ class B300RegisteredQualificationFactory:
     ) -> tuple[MarginalArmPlan, MaterializedArmBinding]:
         inputs = self._inputs
         candidate_stack = plan_candidate_stack(
-            inputs.incumbent_stack,
+            inputs.incumbent_stack if inputs.parent_stack is None else inputs.parent_stack,
             contribution,
             catalog=inputs.catalog,
             expected_context=inputs.expected_context,
@@ -319,6 +319,7 @@ class B300RegisteredQualificationFactory:
             incumbent_tree_digest=inputs.incumbent_binding.tree.tree_digest,
             candidate_tree_digest=tree.tree_digest,
             expected_context=inputs.expected_context,
+            parent=inputs.parent_stack,
         )
         try:
             trusted = inputs.candidate_binding_builder(tree)

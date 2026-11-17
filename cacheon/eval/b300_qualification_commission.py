@@ -295,6 +295,7 @@ def compose_commissioned_qualifications(
 
     _require_replay_quality(policy, session_block)
     # T grades against the baseline's stored rollouts; stock keeps stacked wins from compounding drift (owner, 2026-11-11).
+    # The record rides under a candidate as ``parent_entries``, which leave this baseline stock.
     if capabilities.incumbent_entries:
         raise B300QualificationCommissionError("replay quality is graded against stock: the incumbent declares entries")
 
@@ -396,6 +397,10 @@ def _compose_locked(
         entries=capabilities.incumbent_entries, resolver=capabilities.source_resolver,
         replay=replay,
     )
+    # Crowned entries a candidate rides on while B, the speed reference and T's rollouts stay the incumbent's.
+    parent = incumbent
+    for ref in capabilities.parent_entries.values():
+        parent = parent.with_contribution(ref)
     incumbent_tree = incumbent_binding.tree
     incumbent_launch = incumbent_arm.launch
     baseline_session_plan = incumbent_arm.session_plan
@@ -517,6 +522,7 @@ def _compose_locked(
                 executor.device_policy.configuration_sha256
             ),
             seal=_COMMISSION_SEAL,
+            parent_stack=None if parent is incumbent else parent,
         )
         factory = build_b300_registered_qualification_factory(factory_inputs)
     except B300RegisteredQualificationError as exc:
