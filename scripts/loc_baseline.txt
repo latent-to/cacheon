@@ -203,12 +203,14 @@
 # could not read early-stopped runs): cacheon +16 (baseline_band.py), dashboard +18.
 # Copy fingerprinting computes each entry file's closure once per bundle, not once per op (47 per-layer ops held the
 # intake flock 14 min and looped settlement), less the dead manifest parameter of _op_identity: cacheon +6, scripts +4.
+# The seed harvest boots under the lease's interpreter (a seed harvested under the image's other python was wiped and
+# recompiled in every lease boot; no deletion available, next: the rig-only parts of the tool): docs +2, scripts +6.
 (root) 1163
 .github 338
 cacheon 92426
 cacheon_kernels 936
 dashboard 4438
-docs 13396
+docs 13398
 examples 431
-scripts 4732
+scripts 4738
 tests 14184
