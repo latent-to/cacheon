@@ -114,9 +114,13 @@ the pod transport. One directory holds them:
 | `replay_load` | the sealed replay session concurrency: one count, or an ascending list (low, mid, high) a PD pair replays in every lifetime, highest first, and scores as a geometric mean |
 | `decode_floors` | required with several loads, else optional: each load's per-user decode floor in tokens/s, keyed by the load as a string, as canonical decimals; written into the packet's goodput policy |
 | `load_margin` | optional, with `decode_floors`: a canonical decimal in (0, 1); a load whose throughput-ratio upper bound is below 1 minus it fails the candidate; written into the packet's goodput policy |
-| `replay_windows` | optional: the scored windows per load, replacing the packet's (one keeps a three-load lifetime within a one-load lifetime's replay time) |
 | `pause_order` | optional, `true`: the replay keeps every session open and gives a freed slot to the turn whose recorded pause ends first ([finite agent replay](qualification.md)); the pressure it puts on the cache grows with the sealed pool over the highest `replay_load` |
+| `bar_futility` | optional, with `decode_floors`: `true` measures the packet's `futility_margin` from the request's payment bar, so a first candidate lifetime reading more than the margin below the bar fails without the second; written into the packet's goodput policy |
+| `steady_span` | optional, with `decode_floors`: a canonical decimal in (0, 1); each load is scored in seconds per warm turn until its active sessions fall below this share of the load, so the drain tail of the longest sessions does not set the window; written into the packet's goodput policy. A stock reference imports into a recommissioned pair across a change of this key or of `decode_floors` |
+| `replay_windows` | optional: the scored windows per load, replacing the packet's |
+| `replay_warm_windows` | optional: the untimed windows before the scored ones, 0 to 2, replacing the packet's; time one stock lifetime on the node before sealing, since each window lasts as long as the slice's longest session at the model's per-user speed |
 | `tokens_per_prompt` | the largest recorded output budget of one turn in the sessions the replay serves; the commission refuses any other value |
+| `quality` | optional teacher policy with a selected turn count, severity threshold, paired metric limits and stock drift limits; the operator render requires the measured control receipt |
 | `tokenizer_asset` | the tokenizer directory name inside the replay inputs archive |
 | `model_in_ram` | whether the checkpoint is served from a RAM mount or from its storage path |
 | `owner` | the dispatcher owner name of the commissioned pair |
@@ -145,6 +149,23 @@ from `cacheon.engine_tree` and `cacheon.target_catalog`; the render writes the
 list into the sealed policy of the packet's fixed capabilities, replacing the
 previous arena's controls as it replaces the replay load.
 
+For an arena declaring `quality`, build its control receipt from keyed token logprobs.
+The baseline, independent stock, faithful optimization and damaged control must
+cover the same prompts and token budgets. Fit and validation panels have disjoint
+prompt IDs. The supplied speed witness contributes only its stored stock boots.
+The command exits if either panel fails to distinguish the controls.
+
+```bash
+PYTHONPATH=. python scripts/arena/seal_quality_controls.py \
+  --operator examples/arena_inputs/glm53flashpd/operator.json --baseline stock.json \
+  --stock stock-repeat.json --positive faithful.json --negative damaged.json \
+  --speed-witness qualification-attempt.json --out quality-controls.json
+```
+
+Pass `--quality-controls quality-controls.json` to `scripts/arena/render_operator.py`.
+The derived manifest binds the measured observations to the new commission. Verify the
+controls on the commissioned workload and run its off-chain twin before connecting it.
+
 ## 4. Render and review
 
 ```bash
@@ -171,7 +192,16 @@ render still produces the bytes that commissioned it.
 
 On the validator VM, from a task directory that holds the retained artifacts,
 with the replay inputs archive (`replay-inputs-<slug>.tar`: the sealed workload
-slice and the tokenizer) placed beside the rendered `launch_stage.py`:
+slice and the tokenizer) placed beside the rendered `launch_stage.py`. The
+archive unpacks into the pod's `assets/` directory and must hold
+`workload/manifest.json` with the slice directory it names beside it, plus
+`tokenizer-<asset>/`; the commission's replay-tokenizer preflight loads that
+manifest and checks its digest against the packet's `slice_digest`. The
+`--known-hosts` file holds exactly one line, the pod's active ed25519 key:
+
+```bash
+ssh-keyscan -p <port> -t ed25519 <pod> > known_hosts
+```
 
 ```bash
 python3 -B scripts/arena/launch_node.py --operator /path/to/operator-dsv41pd \

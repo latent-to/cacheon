@@ -126,9 +126,9 @@ Truth is the stock node in the running engine, on the same call:
    node with supported fused ops on SGLang's native reference paths, giving the
    same math with different rounding. Ordinary residual RMSNorm uses an unfused
    addition in the input dtype before native normalization; explicit FP32-residual
-   and other semantic overrides retain their native path. The DSA indexer has no native implementation
-   and retains hardware dispatch; its children and surrounding ops still use
-   native paths where called;
+   and other semantic overrides retain their native path. The DSA indexer has no native implementation, and
+   unquantized experts on FlashInfer's TRT-LLM runner hold a BF16 block layout no native path reads (the GLM-5.3-Flash
+   draft MoE); both retain hardware dispatch, and their children and surrounding ops still use native paths where called;
 5. the candidate runs on the same call, and each row of its result and state rows
    (a token, a cache row, a request's state) is graded by its relative error
    against stock's.
@@ -388,10 +388,21 @@ a per-request quantity on the timed run, not only the elapsed time of the fixed 
 
 Normal target submissions cannot request arbitrary engine-wide setup or framework mutation. Cross-cutting proposals are not submittable; dependency patches are refused, and native builds use the validator-shipped, policy-constrained build step. Successful work should be resolved into a registered target or reviewed product source without relabeling changed selected payload bytes under old evidence.
 
-With MTP enabled, contributions still optimize the registered target computation.
-The validator owns the draft model, speculative schedule, sampling and acceptance
-rules, and request batching. A contribution may not change those controls or
-manipulate draft proposals or acceptance decisions to manufacture throughput.
+With MTP enabled, the drafter's layer is a node address too, under the
+checkpoint's own name for it, `model.layers.<num_hidden_layers>` (for
+GLM-5.3-Flash, `model.layers.45.mlp` is the draft layer's MoE). No target layer
+carries that index, so those slots bind only on the draft worker, where the
+layer loads as `model.decoder`, and a wildcard such as `model.layers.*.mlp`
+still names target layers alone. Verification stays
+exact, so a draft node changes only how many proposals are accepted, and the
+speed score counts that. The validator owns the speculative schedule, sampling
+and acceptance rules, and request batching. A contribution may not change those
+controls or manipulate acceptance decisions to manufacture throughput.
+
+For an explicit MTP-layer claim, the timed candidate and its eager audit mount
+the commissioned controller's node adapter read-only in the pinned engine image.
+The runtime command binds the adapter's SHA-256. Stock and target-only trees
+use the image's installed adapter, preserving the retained stock measurement.
 
 This keeps experimentation possible without widening every ordinary submission's authority.
 

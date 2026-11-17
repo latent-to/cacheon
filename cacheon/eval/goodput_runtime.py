@@ -3,8 +3,9 @@
 A stock reference campaign is measured once per lane identity and retained; each candidate reads whole
 lifetimes against it, and a PASS takes its quality controls from it (Shiv deleted the post-PASS stock bracket
 2026-11-05: 25.5 node-minutes, no PD verdict changed). Stock and candidate are read only as the first two engine
-lifetimes of their own evaluator process, so the reference is two stock pairs (version 21; version 20's
-four-lifetime references stay readable).
+lifetimes of their own evaluator process; a retry that reopens a retained first candidate lifetime reads the second
+in a new process. Version 22 retains one stock pair and version 21 retains two.
+Version 20's four-lifetime references stay readable.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import asyncio
 import gc
 import hashlib
 import json
+import logging
 import math
 import os
 import time
@@ -72,11 +74,17 @@ class GoodputPolicy:
     decode_floors: tuple[tuple[int, float], ...] = field(default=(), metadata={"wire_optional": True})
     # A load fails when its throughput ratio's upper bound is below 1 - load_margin (0 = off; owner 2026-11-11).
     load_margin: float = field(default=0.0, metadata={"wire_optional": True})
+    # Each load scores warm turns per second until active sessions fall below this share of the load, so the drain
+    # tail of one long session no longer sets the window (0 = whole fixed-work span; owner 2026-11-12).
+    steady_span: float = field(default=0.0, metadata={"wire_optional": True})
+    # 1 measures the first lifetime's futility margin from the request's payment bar instead of from stock: a first
+    # lifetime reading more than the margin below the speedup settlement pays ends the stage (owner 2026-11-14).
+    bar_futility: float = field(default=0.0, metadata={"wire_optional": True})
 
     def __post_init__(self):
         values = (self.required, self.null_noise, self.attainment_tolerance, self.attainment_margin,
                   self.error_rate, self.boot_noise, self.futility_margin, self.attainment_pooled,
-                  self.decode_floor, self.load_margin)
+                  self.decode_floor, self.load_margin, self.steady_span, self.bar_futility)
         floors = self.decode_floors
         if (type(self.contract) is not ServiceContract
             or any(type(v) not in (int, float) or not math.isfinite(v) for v in values)
@@ -85,9 +93,10 @@ class GoodputPolicy:
             or not 0 <= self.error_rate < 0.5
             or (self.error_rate > 0 and self.null_noise == self.boot_noise == 0)
             or (self.error_rate == 0 and (self.boot_noise or self.futility_margin or self.load_margin))
-            or not 0 <= self.futility_margin < 1 or not 0 <= self.load_margin < 1
+            or not 0 <= self.futility_margin < 1 or not 0 <= self.load_margin < 1 or not 0 <= self.steady_span < 1
             or not 0 <= self.attainment_tolerance <= 1 or not 0 <= self.attainment_margin < 1
             or self.attainment_pooled not in (0, 1) or self.decode_floor not in (0, 1)
+            or self.bar_futility not in (0, 1) or (self.bar_futility and not self.futility_margin)
             or type(floors) is not tuple or (floors and not self.decode_floor)
             or any(type(row) is not tuple or len(row) != 2 or type(row[0]) is not int or row[0] < 1
                    or type(row[1]) not in (int, float) or not 0 < row[1] < math.inf for row in floors)
@@ -115,8 +124,8 @@ class GoodputPolicy:
         return {"contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
                 **{key: format(getattr(self, key), ".17g") for key in self.__dataclass_fields__
                    if key not in ("contract", "decode_floors") and (self.error_rate or key not in ("error_rate", "boot_noise"))
-                   and (key not in ("futility_margin", "attainment_pooled", "decode_floor", "load_margin")
-                        or getattr(self, key))},
+                   and (key not in ("futility_margin", "attainment_pooled", "decode_floor", "load_margin", "steady_span",
+                                    "bar_futility") or getattr(self, key))},
                 **({"decode_floors": {str(load): format(floor, ".17g") for load, floor in self.decode_floors}}
                    if self.decode_floors else {})}
 
@@ -126,7 +135,8 @@ class GoodputPolicy:
         fields = set(cls.__dataclass_fields__)
         if type(value) is dict and "error_rate" not in value:
             fields -= {"error_rate", "boot_noise"}
-        for optional in ("futility_margin", "attainment_pooled", "decode_floor", "decode_floors", "load_margin"):
+        for optional in ("futility_margin", "attainment_pooled", "decode_floor", "decode_floors", "load_margin",
+                         "steady_span", "bar_futility"):
             if type(value) is dict and optional not in value:
                 fields -= {optional}
         if (type(value) is not dict or set(value) != fields or type(value["contract"]) is not dict
@@ -179,7 +189,7 @@ class GoodputReadSet:
         order = [(load, window) for load in self.loads for window in range(1, self.window_limit + 1)]
         size = len(order)
         if (type(self.boots) is not int or type(self.reference_boots) is not int or self.orientations
-            or not 2 <= self.boots <= CANDIDATE_BOOTS or self.reference_boots != REFERENCE_BOOTS
+            or self.boots != CANDIDATE_BOOTS or self.reference_boots not in (CANDIDATE_BOOTS, REFERENCE_BOOTS)
             or len(self.incumbent) not in (self.reference_boots * size, (self.reference_boots + 1) * size)
             or len(self.candidate) % size or len(self.candidate) > self.boots * size
             or any((read.load, read.window) != order[index % size] for reads in (self.incumbent, self.candidate)
@@ -217,7 +227,8 @@ class GoodputReadSet:
             boots=self.boots, futility_margin=policy.futility_margin, sentinel=self.incumbent[split:],
             decode_floors=policy.floors(self.loads), attainment_tolerance=policy.attainment_tolerance,
             attainment_margin=policy.attainment_margin, reference_lane=self.reference_lane,
-            load_margin=policy.load_margin,
+            load_margin=policy.load_margin, steady_span=policy.steady_span,
+            futility_bar=float(self.payment_bar) if policy.bar_futility and self.payment_bar else 1.0,
         )
         if type(result) is not ServiceVerdict or not math.isfinite(result.ratio) or result.ratio <= 0:
             raise ValueError("service scorer returned another policy or result type")
@@ -285,7 +296,13 @@ def _boot(executor, arm, lane, model_mount, *, prefix, deadline, tokenizer):
             task = run_replay(controller, read_plan, tokenizer=tokenizer)
             return await asyncio.wait_for(task, timeout=read_plan.max_work_seconds or None)
 
-        asyncio.run(bounded_replay())
+        try:
+            asyncio.run(bounded_replay())
+        except asyncio.TimeoutError:
+            from cacheon.eval.oci_outer_session import OuterSessionTimeoutError
+
+            # Typed, so the row is held and the worker serves the next one; untyped it closed the adapter epoch.
+            raise OuterSessionTimeoutError("replay exceeded its sealed work bound") from None
         return controller.finish(require_all=False)
 
     try:
@@ -297,11 +314,12 @@ def _boot(executor, arm, lane, model_mount, *, prefix, deadline, tokenizer):
 
 
 def _reference_pointer(plan, evidence_root) -> Path:
+    boots = plan.policy.reference_boots
     identity = canonical_digest(REFERENCE_SCHEMA, {
-        "boots": REFERENCE_BOOTS, "lane": plan.baseline_lane_digest, "launch": plan.baseline.launch.digest,
+        "boots": boots, "lane": plan.baseline_lane_digest, "launch": plan.baseline.launch.digest,
         "runtime": plan.baseline.binding.runtime_preflight_receipt.sha256,
         "workload": marginal_workload_digest(plan.baseline.session_plan),
-        **({"pair_boots": CANDIDATE_BOOTS, "pair_processes": REFERENCE_BOOTS // CANDIDATE_BOOTS}
+        **({"pair_boots": CANDIDATE_BOOTS, "pair_processes": boots // CANDIDATE_BOOTS}
            if plan.policy.version >= 21 else {}),
     })
     # A dot name can never be an evidence domain directory.
@@ -333,6 +351,10 @@ def _reference_arm(plan, origin):
     for policy in (old, new):
         policy.pop("calibration_digest")
         policy.pop("calibration_context_digest")
+        # Floors, the window's scored span and the first-lifetime bar only grade the retained records; the stock
+        # measurement is unchanged.
+        policy["goodput"] = {key: value for key, value in policy["goodput"].items()
+                             if key not in ("decode_floors", "steady_span", "bar_futility")}
     if old != new:
         raise CrossoverRuntimeError("stock reference import changed its scoring policy")
     arm = restore_speed_arm(plan.baseline, row["arm"])
@@ -349,13 +371,14 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
     again on this lane, never borrowed from another lane, image, launch or workload. A missing reference
     measures one stock pair as the first lifetimes of this evaluator process, as every candidate pair
     is read, then ends the qualification without a candidate read (infrastructure, never a candidate
-    FAIL); the second such pair completes the reference.
+    FAIL). The sealed policy determines how many pairs complete the reference.
     """
     from cacheon.eval.crossover_runtime import _lane_digest
     from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence, reopen_evidence
     from cacheon.eval.oci_backend import EngineExecutionEvidence
 
     codec = ContinuationCodec((EngineExecutionEvidence,))
+    boots = plan.policy.reference_boots
     pointer = _reference_pointer(plan, evidence_root)
     first = pointer.with_name(f"{pointer.stem}.first-pair.json")
     lane = _lane_digest(executor, plan.baseline)
@@ -381,9 +404,9 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
         tokenizer = _tokenizer(plan)
         measured = tuple(_boot(executor, plan.baseline, lane, model_mount, prefix="incumbent", deadline=deadline,
                                tokenizer=tokenizer)[0] for _ in range(CANDIDATE_BOOTS))
-        executions = (reopen(first) if first.exists() else ()) + measured
-        target = pointer if len(executions) == REFERENCE_BOOTS else first
-    if (len(executions) != (CANDIDATE_BOOTS if target == first else REFERENCE_BOOTS)
+        executions = (reopen(first) if boots > CANDIDATE_BOOTS and first.exists() else ()) + measured
+        target = pointer if len(executions) == boots else first
+    if (len(executions) != (CANDIDATE_BOOTS if target == first else boots)
             or any(type(row) is not EngineExecutionEvidence for row in executions)):
         raise CrossoverRuntimeError("stock reference lacks its sealed lifetimes")
     reference_arm = _reference_arm(plan, getattr(executions, "origin", ""))
@@ -394,7 +417,7 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
             "identity": pointer.stem, "executions": [codec.encode(row) for row in executions],
         }), domain=REFERENCE_DOMAIN, media_type="application/json", schema=REFERENCE_SCHEMA,
             max_bytes=_REFERENCE_BYTES)
-        if target == pointer:
+        if target == pointer and boots > CANDIDATE_BOOTS:
             # Before the pointer exists, so a reference retired later never lends its first pair.
             first.rename(first.with_name(f"{first.stem}.merged-{time.time_ns()}.json"))
         target.parent.mkdir(mode=0o700, exist_ok=True)
@@ -423,31 +446,75 @@ def _work(replay):
 
 
 def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root, deadline, clock,
-                        quality_control, payment_bar=""):
-    """Read whole candidate lifetimes against the reference; a PASS draws its quality controls from it."""
+                        quality_control, payment_bar="", continuation=None):
+    """Read whole candidate lifetimes against the reference; a PASS draws its quality controls from it.
+
+    An undecided first lifetime is retained in the continuation. A retry on the same host clock reopens it and
+    boots only the second lifetime, as the first of its own evaluator process: ``gc.freeze`` gives each lifetime
+    the first one's heap, and the GLM PD stock pair 88ad50ad read its second lifetime 0.6% faster over its three
+    loads, not slower (2026-11-14). The retry's stage clock starts at the retry and its budget is the stage's less
+    what the first lifetime used: a retry is released minutes to hours after the failure, so a stage that kept its
+    first start could never fit its second lifetime. A record the stage cannot use (another plan, host clock or
+    stock reference, a lifetime that no longer validates, or less budget left than the first lifetime took) is
+    removed and both lifetimes are measured: as a HOLD it repeated on every release, since nothing else removes it.
+    """
     from cacheon.eval.crossover_runtime import ResidentCrossoverEvidence, _lane_digest
+    from cacheon.eval.qualification_continuation import QualificationContinuationError
+    from cacheon.eval.qualification_worker_checkpoint import _clock_domain
 
     if not callable(quality_control):
         raise ValueError("the quality producer must be installed before engine launch")
     tokenizer = _tokenizer(plan)
-    started = float(clock())
-    deadline = min(deadline, started + plan.policy.max_stage_seconds)
-    if not math.isfinite(deadline) or deadline <= started:
-        raise ValueError("goodput stage has no remaining execution budget")
     lane = _lane_digest(executor, plan.candidate)
     replay = plan.candidate.session_plan.replay
     stock = tuple(read for row in reference for read in row.session.replay_reads)
-    boots = []
-    for _ in range(CANDIDATE_BOOTS):
-        boots.append(_boot(executor, plan.candidate, lane, model_mount, prefix="candidate",
-                           deadline=deadline, tokenizer=tokenizer))
+    sessions = tuple(row.session.session_id for row in reference)
+    domain = None if continuation is None else _clock_domain()
+    started, used, boots = float(clock()), 0.0, []
+
+    def graded():
         reads = GoodputReadSet(stock, tuple(read for row in boots for read in row[0].session.replay_reads),
                                window_limit=replay.windows, boots=CANDIDATE_BOOTS, **_work(replay),
-                               reference_boots=REFERENCE_BOOTS, payment_bar=payment_bar,
+                               reference_boots=plan.policy.reference_boots, payment_bar=payment_bar,
                                reference_lane=stock[0].lane if getattr(reference, "origin", "") else "")
-        grade = reads.grade(plan.policy.goodput)
+        return reads, reads.grade(plan.policy.goodput)
+
+    try:
+        retained = None if continuation is None else continuation.load_speed_first(plan.digest, domain, sessions)
+        if retained is not None:
+            first_started, execution, quiet = retained
+            _validate_replay_sessions([(execution.session.replay_reads, execution, plan.candidate, ())], replay)
+            used = quiet.observed_monotonic_s - first_started
+            boots.append((execution, quiet, None))
+            if (quiet.namespace_digest != plan.candidate.executor_namespace_digest
+                    or (quiet.container_ids, quiet.lease_records, quiet.resource_entries) != ((), (), ())
+                    or not first_started <= execution.session.ready_completed_at
+                    <= execution.session.session_completed_at <= quiet.observed_monotonic_s <= started
+                    or plan.policy.max_stage_seconds < 2 * used
+                    or graded()[1].decision is not SpeedStageDecision.NO_DECISION):
+                raise QualificationContinuationError("retained first speed lifetime left its stage clock, budget or rule")
+    except Exception:  # whatever makes the record unusable, the stage's own two lifetimes remain the requested path
+        logging.getLogger(__name__).exception("speed_first removed; both candidate lifetimes are measured")
+        continuation.discard_speed_first(plan.digest)
+        used, boots = 0.0, []
+    deadline = min(deadline, started + plan.policy.max_stage_seconds - used)
+    if not math.isfinite(deadline) or deadline <= started:
+        raise ValueError("goodput stage has no remaining execution budget")
+    while len(boots) < CANDIDATE_BOOTS:
+        boots.append(_boot(executor, plan.candidate, lane, model_mount, prefix="candidate",
+                           deadline=deadline, tokenizer=tokenizer))
+        reads, grade = graded()
         if grade.decision is not SpeedStageDecision.NO_DECISION:
             break
+        if continuation is not None and len(boots) == 1:
+            try:
+                continuation.record_speed_first(plan.digest, domain, sessions, started, *boots[0][:2])
+            except Exception:  # the record only spares a retry its first lifetime; this stage does not need it
+                logging.getLogger(__name__).exception("speed_first was not retained")
+    if continuation is not None:
+        # Decided: the record is keyed by the plan alone, so left behind a later request for the plan would reopen
+        # it, and one that failed after this point would fail every such request the same way.
+        continuation.discard_speed_first(plan.digest)
     candidate, candidate_quiet, candidate_directory = boots[-1]
     pairs, controls, entropy = ((), (), None)
     if grade.decision is SpeedStageDecision.PASS:
@@ -470,8 +537,9 @@ def regrade_reference_speed(evidence, plan):
 
     replay = plan.candidate.session_plan.replay
     lane = _expected_lane_digest(plan.candidate)
-    reference = evidence.prior_executions[:REFERENCE_BOOTS]
-    candidates = (*evidence.prior_executions[REFERENCE_BOOTS:], evidence.candidate_execution)
+    boots = plan.policy.reference_boots
+    reference = evidence.prior_executions[:boots]
+    candidates = (*evidence.prior_executions[boots:], evidence.candidate_execution)
     bracket = evidence.baseline_execution
     reference_arm = _reference_arm(plan, evidence.reference_origin)
     quiet = (evidence.candidate_quiescence, *((evidence.baseline_quiescence,) if bracket else ()))
@@ -479,7 +547,7 @@ def regrade_reference_speed(evidence, plan):
         or evidence.selected_delta_digest != plan.selected_delta_digest
         or evidence.workload_digest != marginal_workload_digest(plan.baseline.session_plan)
         or (evidence.baseline_lane_digest, evidence.candidate_lane_digest) != (lane, lane)
-        or len(reference) != REFERENCE_BOOTS or len(candidates) > CANDIDATE_BOOTS
+        or len(reference) != boots or len(candidates) > CANDIDATE_BOOTS
         or (bracket is None) != (evidence.baseline_quiescence == evidence.candidate_quiescence)
         or any(row.namespace_digest != plan.candidate.executor_namespace_digest
                or (row.container_ids, row.lease_records, row.resource_entries) != ((), (), ()) for row in quiet)):
@@ -491,7 +559,9 @@ def regrade_reference_speed(evidence, plan):
     ], replay)
     stage = (*candidates, *((bracket,) if bracket else ()))
     marks = [evidence.started_monotonic_s]
-    for row, receipt in zip(stage, (*(None,) * (len(candidates) - 1), *quiet)):
+    # A first lifetime retained from an interrupted attempt closed before the retry's stage clock started.
+    retained = len(candidates) > 1 and candidates[0].session.session_completed_at <= evidence.started_monotonic_s
+    for row, receipt in list(zip(stage, (*(None,) * (len(candidates) - 1), *quiet)))[retained:]:
         marks += [row.session.ready_completed_at, row.session.session_completed_at]
         marks += [] if receipt is None else [receipt.observed_monotonic_s]
     if marks + [evidence.completed_monotonic_s] != sorted(marks + [evidence.completed_monotonic_s]):
@@ -499,7 +569,7 @@ def regrade_reference_speed(evidence, plan):
     stock = tuple(read for row in reference for read in row.session.replay_reads)
     rebuilt = GoodputReadSet(stock + (bracket.session.replay_reads if bracket else ()),
                              tuple(read for row in candidates for read in row.session.replay_reads),
-                             window_limit=replay.windows, boots=CANDIDATE_BOOTS, reference_boots=REFERENCE_BOOTS, **_work(replay),
+                             window_limit=replay.windows, boots=CANDIDATE_BOOTS, reference_boots=boots, **_work(replay),
                              payment_bar=evidence.goodput.payment_bar,
                              reference_lane=stock[0].lane if evidence.reference_origin else "")
     if rebuilt != evidence.goodput:

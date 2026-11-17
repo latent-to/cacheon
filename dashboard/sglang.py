@@ -26,6 +26,12 @@ def sglang_build(runtime: str, source) -> dict:
             ready = json.loads(path.read_text())
             if ready["receipt_digest"] != registration["ready_receipt_digest"]:
                 continue
+            overlay_path = path.with_name("sglang-build.json")
+            if overlay_path.is_file():
+                overlay = json.loads(overlay_path.read_text())
+                if overlay["worker_image"] != ready["worker_image"] or overlay["runtime_digest"] != runtime:
+                    raise ValueError("SGLang overlay metadata differs from the commissioned runtime")
+                return {"commit": overlay["commit"], "version": overlay["version"]}
             return _image_build(registration["pod_host"], registration["pod_port"],
                                 registration["pod_user"], registration["known_hosts_path"],
                                 ready["worker_image"], int(time.time() // 300))

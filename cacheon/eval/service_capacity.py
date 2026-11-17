@@ -168,6 +168,34 @@ def fixed_work_rate(read: LoadRead, expected: dict[str, tuple[int, int]]) -> Wor
     return WorkRate(len(warm), latency, len(warm) / latency)
 
 
+def steady_span_cost(read: LoadRead, expected: dict[str, tuple[int, int]], share: float) -> float:
+    """Seconds per warm turn until active sessions fall below ``share`` of the load after the last session starts.
+
+    The fixed work must still complete. A closed loop holds the load until the slice runs out of sessions; the drain
+    after it runs on the longest few sessions, so their tails set the whole-span cost (four GLM stock lifetimes,
+    2026-11-12: per-lifetime geometric-mean spread 1.45% whole span, 0.58% at half the load)."""
+    fixed_work_rate(read, expected)
+    cold = min(record.credit_issued_ns for record in read.records)
+    warm = [record for record in read.records if record.credit_issued_ns != cold]
+    sessions: dict[str, list[int]] = {}
+    for record in read.records:
+        span = sessions.setdefault(record.root_session_id, [record.credit_issued_ns, record.request_end_ns])
+        span[0], span[1] = min(span[0], record.credit_issued_ns), max(span[1], record.request_end_ns)
+    last_start = max(start for start, _ in sessions.values())
+    end, active = max(record.request_end_ns for record in warm), 0
+    for time_ns, step in sorted([(start, 1) for start, _ in sessions.values()]
+                                + [(stop, -1) for _, stop in sessions.values()]):
+        active += step
+        if step < 0 and time_ns > last_start and active < share * read.load:
+            end = time_ns
+            break
+    start = min(record.credit_issued_ns for record in warm)
+    turns = sum(record.request_end_ns <= end for record in warm)
+    if end <= start or not turns:
+        raise ServiceEvidenceError("read has no steady warm turns")
+    return (end - start) / 1e9 / turns
+
+
 def attainment(read: LoadRead, contract: ServiceContract) -> float:
     """Fraction of attempted turns meeting the contract; errors and cancels are misses."""
     return sum(1 for r in read.records if r.meets(contract)) / len(read.records)
@@ -203,8 +231,8 @@ class ServiceVerdict:
     lower_ratio: float = 0.0
 
 
-def _boot_costs(reads: Sequence[LoadRead], arm: str,
-                expected: dict[int, dict[str, tuple[int, int]]]) -> list[dict[int, list[float]]]:
+def _boot_costs(reads: Sequence[LoadRead], arm: str, expected: dict[int, dict[str, tuple[int, int]]],
+                steady_span: float = 0.0) -> list[dict[int, list[float]]]:
     """Split one arm's reads into engine lifetimes; a lifetime replays each load once, numbering its windows from 1."""
     boots: list[dict[int, list[float]]] = []
     for read in reads:
@@ -216,7 +244,8 @@ def _boot_costs(reads: Sequence[LoadRead], arm: str,
             if not boots or read.load in lifetime:
                 boots.append({})
             boots[-1][read.load] = []
-        boots[-1][read.load].append(fixed_work_rate(read, expected[read.load]).elapsed_s)
+        boots[-1][read.load].append(steady_span_cost(read, expected[read.load], steady_span) if steady_span
+                                    else fixed_work_rate(read, expected[read.load]).elapsed_s)
     return boots
 
 
@@ -254,7 +283,7 @@ def reference_grade(
     window_noise: float, boot_noise: float, error_rate: float, boots: int,
     attainment_tolerance: float, attainment_margin: float, futility_margin: float = 0.0,
     sentinel: Sequence[LoadRead] = (), decode_floors: dict[int, float] | None = None, reference_lane: str = "",
-    load_margin: float = 0.0,
+    load_margin: float = 0.0, steady_span: float = 0.0, futility_bar: float = 1.0,
 ) -> ServiceVerdict:
     """Grade candidate engine lifetimes against a retained stock reference campaign on the same lane.
 
@@ -262,7 +291,11 @@ def reference_grade(
     against those reads; window correlation between concurrent lanes cancelled only 4-8% of window
     variance (149 retained evaluations, 2026-10-24). The reference variance is shared and never
     divides by the candidate's boot count. Looks fall at candidate boot boundaries under v17's
-    alpha-spending table: the first boot can only end the stage on the sealed futility margin. A lifetime
+    alpha-spending table: the first boot can only end the stage on the sealed futility margin, measured from
+    ``futility_bar`` (stock at 1; the request's payment bar when the policy seals ``bar_futility``: a row whose
+    first lifetime reads more than the margin below the bar would need its second to read twice that margin
+    faster to be paid; the two lifetimes of GLM PD's six retained candidate pairs differed by at most 1.07%,
+    2026-11-14). A lifetime
     that replays several sealed loads scores the geometric mean of their throughput ratios (``_boot_term``),
     so no single batch size carries the verdict.
 
@@ -288,7 +321,7 @@ def reference_grade(
             or len(set(starts)) != len(starts)
             or any(shapes.setdefault(read.load, shape) != shape for read in every for shape in (_work_shapes(read),))):
         raise ServiceEvidenceError("reference and candidate reads differ in lane, work or identity")
-    lifetimes = [_boot_costs(arm, role, expected)
+    lifetimes = [_boot_costs(arm, role, expected, steady_span)
                  for arm, role in ((reference, "incumbent"), (candidate, "candidate"), (sentinel, "incumbent"))]
     if any(list(lifetime) != list(lifetimes[0][0]) for rows in lifetimes for lifetime in rows):
         raise ServiceEvidenceError("reference and candidate lifetimes replay different loads")
@@ -331,6 +364,10 @@ def reference_grade(
             f"load_regression: load {load} ratio upper bound {upper:.3f} < {1 - load_margin:.4g}")
     elif look < 2 and futility_margin and estimate < math.log1p(-futility_margin):
         decision, detail = SpeedStageDecision.FAIL, "first candidate boot is slower than the sealed futility margin"
+    elif look < 2 and futility_margin and estimate < math.log(futility_bar) + math.log1p(-futility_margin):
+        decision, detail = SpeedStageDecision.FAIL, (
+            f"below_payment_bar: first candidate boot {ratio:.4f} is more than the sealed futility margin "
+            f"{futility_margin:.4g} below the payment bar {futility_bar:.6g}")
     elif look < 2:
         decision, detail = SpeedStageDecision.NO_DECISION, "two candidate boots are required"
     elif lower > 1:

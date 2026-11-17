@@ -516,20 +516,25 @@ def _native_forward(module):
 
 @contextmanager
 def _native(module):
-    """Use native paths, except on ops whose pinned native forward is a raising stub.
+    """Use native paths, except on ops whose pinned native forward is a raising stub or cannot read its weights.
 
     The DSA Indexer has none, and GLM-5.3-Flash's IndexerKPool inherits the
     MultiPlatformOp stub; their children and surrounding ops still take native paths.
     Forcing the Indexer stub refused 6,048 references in the first full GLM
     layer-bundle audit (B300, 2026-09-20); forcing IndexerKPool's refused stock on
-    every DSA layer, so only KDA layers were graded (G3, 2026-11-11).
+    every DSA layer, so only KDA layers were graded (G3, 2026-11-11). Unquantized
+    experts on FlashInfer's TRT-LLM runner hold its BF16 block layout, which the native
+    per-expert ``F.linear`` cannot read: GLM-5.3-Flash's draft layer refused every
+    reference, so each claim on it ended NO_DECISION (miner repro, 2026-11-13).
     """
 
     stubs = [getattr(getattr(sys.modules.get(name), cls, None), "forward_native", None)
              for name, cls in (("sglang.srt.layers.attention.dsa.dsa_indexer", "Indexer"),
                                ("sglang.srt.layers.utils.multi_platform", "MultiPlatformOp"))]
+    blocked = getattr(sys.modules.get("sglang.srt.layers.quantization.unquant"), "UnquantizedFusedMoEMethod", ())
     sites = [m for m in module.modules()
-             if "_forward_method" in vars(m) and type(m).forward_native not in stubs]
+             if "_forward_method" in vars(m) and type(m).forward_native not in stubs
+             and not (isinstance(m, blocked) and getattr(m, "use_flashinfer_trtllm_moe", False))]
     saved = [m._forward_method for m in sites]
     for m in sites:
         m._forward_method = _native_forward(m)
@@ -742,17 +747,25 @@ def make_node_dispatcher(
     return dispatched
 
 
-def bind(runner, registry: KernelRegistry = REGISTRY) -> list[str]:
-    """Bind every registered node slot to the served model; return the bound names."""
+def bind(runner, registry: KernelRegistry = REGISTRY, *, draft: bool = False) -> list[str]:
+    """Bind every registered node slot to the served model; return the bound names.
+
+    The MTP drafter is addressed by the checkpoint's own name for its layer,
+    ``model.layers.<num_hidden_layers>``, which no target layer carries; the drafter loads that
+    layer as ``model.decoder``. Those slots bind only on the draft worker, the rest only on the
+    target, so wildcard slots such as ``model.layers.*.mlp`` keep naming target layers alone.
+    """
 
     # Every path, each module once per slot, and one module two slots reach is an overlap:
     # the DeepSeek-V4.1 fork registers each decoder layer's successor as its ``_next_layer``
     # child (upstream #42245), and the deduplicating listing named 37 of 40 layers only
     # through that chain, so ``model.layers.*`` bound 3 of 40 (B300, 2026-10-12 and 10-15).
     named = dict(runner.model.named_modules(remove_duplicate=False))
+    config = runner.model_config.hf_config
+    layer = f"model.layers.{getattr(config, 'text_config', config).num_hidden_layers}."
     bound: dict[str, str] = {}
-    for slot in sorted(s for s in registry.slots() if s not in _SCHEDULER):
-        pattern = node_pattern(slot)
+    for slot in sorted(s for s in registry.slots() if s not in _SCHEDULER and s.startswith(layer) == draft):
+        pattern = node_pattern("model.decoder." + slot.removeprefix(layer) if draft else slot)
         names = [name for name in named if pattern.match(name)]
         names = [n for i, n in enumerate(names) if all(named[m] is not named[n] for m in names[:i])]
         error = None
@@ -777,7 +790,8 @@ def bind(runner, registry: KernelRegistry = REGISTRY) -> list[str]:
     for name, slot in bound.items():
         module = named[name]
         module.forward = make_node_dispatcher(
-            slot, module, module.forward, runner, seals[name], registry=registry, node_name=name
+            slot, module, module.forward, runner, seals[name], registry=registry,
+            node_name=layer + name.removeprefix("model.decoder.") if draft else name,
         )
     for name in bound:
         seals[name].extend(_seal(named[name]))
@@ -795,9 +809,10 @@ def install(registry: KernelRegistry = REGISTRY) -> None:
 
     def load_model(self, *args, **kwargs):
         result = load(self, *args, **kwargs)
-        # Node addresses belong to the target model, not its speculative drafter.
-        if not self.is_draft_worker:
-            bind(self, registry)
+        # Shiv opened the MTP drafter as a target on 2026-11-12: its BF16 routed experts were the
+        # largest unquantized decode item (~6.5% of a GLM-5.3-Flash verify cycle). Verification
+        # stays exact, so a draft node moves acceptance only.
+        bind(self, registry, draft=bool(self.is_draft_worker))
         return result
 
     setattr(runner, _STOCK_LOAD, load)

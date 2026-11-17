@@ -190,12 +190,32 @@
 # Queue-order address, the scheduler target's first (new seam row, adapter, catalog row, contract page):
 # cacheon +107, docs +46, tests +1, scripts +3. No deletion was available in this change; the next one is the
 # per-target bundle resolution that multi-target submissions replace.
+# GLM-5.3-Flash PD go-live: steady-span load scoring and its import exemption, the pair T GPU-count fix, the twin
+# payment bar, the dashboard per-load view and the commissioned pin tables: cacheon +110, dashboard +9, docs +18,
+# examples +13, scripts +29, tests +9. The branch stays net -3,234 lines against main (retired arenas deleted).
+# File ceilings: qualification_runner.py 2430 (the T check; still 24 under main), oci_outer_session.py 906
+# (12e0a9c7 sizes a pair's audit members by its one-engine form).
+# Live dashboard patches folded in for the GLM cutover: closed-arena submissions_open and the fork SGLang overlay,
+# less the dead OKC selector entry (no /okc route in this tree): dashboard +18.
+# Measured GLM teacher controls replace synthetic control observations in this operator render. Document the
+# quality metrics, sealed sample count and command, and exercise severity and historical evidence reopening.
+# Audit twin keeps TRT-LLM BF16 experts fused so the GLM draft node audits: cacheon +5 (sglang_nodes.py has no dead code).
+# Explicit MTP claims mount the commissioned adapter. The shared file-mount helper replaces the inline worker mount.
+# Every replay AIPerf run (prime and timed windows) drops its unread default collectors; a reaped one cost two qualifications: cacheon +3.
+# A retry reopens an undecided first candidate lifetime (speed_first) and boots only the second: cacheon +74, docs +7.
+# Sealed first-lifetime payment-bar futility (bar_futility): cacheon +14, docs +6, examples +3, scripts +5, tests +6.
+# speed_first is keyed by the speed plan and its retry runs on its own stage clock (as written it was never found
+# after a release); replay-client failures are typed holds, not adapter-epoch failures: cacheon +58, docs +11.
+# The dashboard shows the payment bar, the first-boot stop line and served goodput per boot and per load (miners
+# could not read early-stopped runs): cacheon +16 (baseline_band.py), dashboard +18.
+# Copy fingerprinting computes each entry file's closure once per bundle, not once per op (47 per-layer ops held the
+# intake flock 14 min and looped settlement), less the dead manifest parameter of _op_identity: cacheon +6, scripts +4.
 (root) 1163
 .github 338
-cacheon 92176
+cacheon 92515
 cacheon_kernels 936
-dashboard 4373
-docs 13378
-examples 390
-scripts 4517
-tests 14081
+dashboard 4418
+docs 13446
+examples 431
+scripts 4741
+tests 14173

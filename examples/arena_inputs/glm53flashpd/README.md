@@ -29,14 +29,21 @@ measured under confidential computing.
 
 ## Speed policy
 
-Speed policy 21 replays the sealed agent-trace pool in a closed loop at three session
+Speed policy 22 replays the sealed agent-trace pool in a closed loop at three session
 concurrencies in each engine lifetime, low, mid and high (`replay_load` in
 `operator.json`), and scores the geometric mean of the three served-throughput ratios
-against the retained stock reference. One warm window at the high load precedes one
-scored window per load (`replay_windows`), highest first; a lower load replays the
-first sessions of the pool in proportion to its concurrency, so the three windows
-together replay less work than the three whole-pool windows of a one-load lifetime and
-the bundle's wall clock does not grow. Each load also holds the candidate's pooled
+against the retained stock reference. One scored window per load (`replay_windows`)
+runs highest first, with no warm window (`replay_warm_windows` 0); a lower load replays
+the first sessions of the pool in proportion to its concurrency. On the commissioned pod
+(2026-11-12) a stock lifetime's first 224-session window ran 691 s against 690 s for its
+third, so the seeded engine needs no warm-up, while the packet's two warm windows had
+cost 23 of the lifetime's 58 minutes. A window lasts as long as the slice's longest
+session at this model's per-user decode speed: 690 s at 224 sessions, 535 s at 160 and
+338 s at 96. A load is scored in seconds per warm turn only until its active sessions fall
+below half the load after the last session start (`steady_span` 0.5), so the drain tail of
+the few longest sessions does not set the cost: over four stock lifetimes of the
+commissioned pair the per-boot spread of the geometric mean fell from 1.45% (whole span)
+to 0.58%. Each load also holds the candidate's pooled
 per-user decode median to its own floor (`decode_floors`). A candidate cannot win by
 tuning one batch size: a gain at one load is diluted by the other two, and a loss in
 per-user speed at any load fails it. The high load saturates prefill, so it rewards
@@ -45,17 +52,37 @@ prefill and time-to-first-token gains.
 The sealed slice is the DeepSeek PD packet's 247-session pool (b318b740; its largest
 recorded turn output, `tokens_per_prompt`, is 22,484), so the high load is at most 247 sessions. Stock's session ramps (2026-11-11) peaked at 256
 sessions and saturated prefill near 200-220, so the loads are 96, 160 and 224 sessions
-with floors 130, 100 and 90 tokens/s, 10-18% under stock's rig decode medians (143.8, 113.0, 110.5 on 2026-11-11)
-for production-path overhead, to recalibrate from the commissioned pair's stock reference. Stock must hold each floor at its load, or the
-reference campaign refuses the commission as mis-sealed before any candidate runs. The `node` block is the
-commissioned Nebius B300 VM's pin table (2026-11-12): eight fast scheduler vCPUs, each GPU's helper on the next
-physical core (this VM numbers SMT siblings adjacently), the remaining eight fast vCPUs as the client set, and no
-`engine_cpus` with DP 1 everywhere.
+with floors 85, 82 and 80 tokens/s, about 10% under the commissioned pair's stock reference (pooled decode medians
+95.2, 91.3 and 89.2 over four boots, 2026-11-12). The production replay's first-turn cold wave keeps decode near its
+128-request cap at every load, so these sit well under the 11-11 rig medians (143.8, 113.0, 110.5). Stock must hold each
+floor at its load. The `node` block uses the replacement B300 pod's measured pin table (2026-11-17).
+Each GPU has a fast scheduler vCPU and a helper on a separate physical core. The client uses eight more fast
+vCPUs. DP 1 requires no `engine_cpus`. A replacement measures one fresh stock pair on its physical
+GPUs before scoring candidates. The operator seals this schedule with `speed_policy_version: 22`.
+The speed scorer uses both stock boots in its uncertainty estimate. A first candidate lifetime reading more than
+1.5% below the payment bar ends the stage as `below_payment_bar` (`bar_futility`): the two lifetimes of the six
+candidate pairs retained by 2026-11-14 differed by at most 1.07%, against the 3% such a row would need.
 
 The node audit's row floor is 15% (`audit_row_floor_ppm` 150000), not the 2% default: this
 model's honest twin is bitwise, FP8 block-scaled projections sit at 6-13% row error at layer
 0 and the wrong control at 50% (pod, 2026-11-11). It holds once `cacheon check
 --audit-row-floor-ppm 150000` passes the validator-built FP8 control and fails the wrong one.
+
+## Replay quality
+
+The GLM quality policy selects 32 replay turns before seeing their teacher scores. Each arm
+has the same input and output budget on a selected turn. Pristine T scores each arm's own
+completion. The two metrics are mean negative log-likelihood and mean excess loss above
+5 nats, calculated as `sum(max(0, token_nll - 5)) / token_count` on each turn.
+The candidate limits on the mean paired increases are 0.08 and 0.01 nats per token,
+respectively. Positive excesses retain their magnitude. The separate stock drift
+limits are 0.15 and 0.015. Each bound uses the variation across the paired turns.
+
+With valid stock controls, quality passes when both upper bounds are at or below
+their limits and fails when either upper bound exceeds its limit. Invalid stock
+controls yield `NO_DECISION`. The first stock boot supplies the baseline and the second supplies the control.
+The commissioned prompt count is fixed for all entrants. An older qualification
+reopens with its original thresholds and prompt selection.
 
 ## Development check
 

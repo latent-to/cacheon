@@ -44,10 +44,11 @@ Retained attempts identify the speed policy that created them:
 
 | Version | Timed reads | Purpose |
 |---|---|---|
+| v22 | Up to two candidate boots against one fresh pair of stock boots on the same physical lane | GLM-5.3-Flash PD uses both stock reads for speed and the two separately booted stock engines for quality |
 | v21 | Up to two fresh prefill/decode pair boots of N windows per sealed load against a retained stock reference of two pairs on one lane | New commissions: log mean elapsed serving cost per boot with statistical eligibility and per-load decode floors |
 | v20 | The same, against a four-boot reference measured in one evaluator process | Retained evidence of the DeepSeek-V4.1-Flash PD arena (2026-10-28): regrades and settles from its retained reads |
 
-Both are described in [Finite agent replay](#finite-agent-replay).
+See [Finite agent replay](#finite-agent-replay).
 
 Versions 16–19 (paired windows on two lanes, then one engine per node) served
 retired arenas, versions 8–15 measured batch cells, and versions 1–7 preceded
@@ -109,15 +110,15 @@ store under the commissioned root that later boots of the same tree reuse.
 
 1. **Stock reference.** The first qualification that finds no current reference
    for the stock identity (lane digest, stock launch digest, runtime preflight
-   SHA-256, workload digest, boot schedule) measures four fresh stock boots as
-   two pairs, each the first two engine lifetimes of
+   SHA-256, workload digest, boot schedule) measures one fresh stock pair under v22
+   or two fresh pairs under v21. Each pair occupies the first two engine lifetimes of
    its own evaluator process, the position every candidate pair holds: replay
    rates fall with each lifetime one evaluator process runs and recover in the
    next qualification's process, not after idle GPUs
    ([measurement](../results/deepseek-v41-flash-pd.md#reference-position)). A
    qualification that measures a stock pair retains it and ends `NO_DECISION`
-   (infrastructure, never a candidate FAIL) without reading its candidate; the
-   next such qualification completes the reference. Policy 20 retains its
+   (infrastructure, never a candidate FAIL) without reading its candidate. With v22
+   the pair completes the reference. With v21 the next pair completes it. Policy 20 retains its
    historical consecutive reference campaign. The producer
    publishes them to the evidence store (domain
    `cacheon.qualification.stock-reference`, schema
@@ -276,9 +277,27 @@ normal grader, evidence import and settlement still consume the completed result
 
 ### Interrupted replay controllers
 
-Continuation is stage-level. The speed stage commits once, complete, after the
-selected quality controls and normal engine teardown; a speed stage
-interrupted before that commit reruns whole. There are no per-window replay
+Continuation is stage-level, with one record inside the speed stage. A failure
+of the validator's own replay client (an AIPerf exit, a prime that sends no
+request, a replay past its deadline) is an infrastructure error: the row is held
+as `resident_evidence_unavailable` and the worker serves the next one. A first
+candidate lifetime that leaves the stage undecided is retained as `speed_first`
+before the second boots, in the worker's continuation root under the speed plan
+digest, bound to the host clock domain
+(boot ID and time namespace) and the session IDs of the stock lifetimes it was
+graded against. A released HOLD is dispatched under a new lease and request, so the
+record is keyed by the plan, which names the candidate, launch, lane and policy.
+The next request for that plan on the same worker reopens it, regrades it from its raw
+session, and boots only the second lifetime, as the first lifetime of its own
+evaluator process; the completed stage removes the record. The retry's stage clock starts at the retry, so the retained
+lifetime precedes the stage start in the evidence, and its budget is
+`max_stage_seconds` less what the first lifetime used. A record the retry cannot
+use (a changed plan, host clock or reference, a lifetime that no longer validates,
+or less budget left than the first lifetime took) is removed and the stage measures
+both lifetimes; the worker log names the reason. The record
+never enters a relay checkpoint, so a replacement worker measures both lifetimes.
+The speed stage itself commits once, complete, after the selected quality
+controls and normal engine teardown. There are no per-window replay
 checkpoints. The retained stock reference is not part of the stage: a replacement
 reuses it only when its lane, launch, runtime, workload and boot-count identity
 matches, and otherwise measures its own. Acknowledged execution of completed
@@ -801,7 +820,10 @@ V20 and V21 seal `required=1`, `error_rate=0.125`, per-window log-cost standard
 deviation `null_noise`, per-boot standard deviation `boot_noise`, and
 `attainment_pooled=1` and `decode_floor=1`. An optional `futility_margin` fails a stage whose first
 candidate boot reads more than that fraction slower than the reference, without
-booting the second. At the final look, the candidate's service attainment over
+booting the second. With `bar_futility=1` the margin is measured from the request's
+payment bar instead: a first boot reading below `payment_bar × (1 - futility_margin)`
+fails as `below_payment_bar`, since its second boot would have to read twice the
+margin faster for the pair to be paid. At the final look, the candidate's service attainment over
 all its turns less the reference's over all its turns, less `attainment_margin`,
 must be at least minus `attainment_tolerance`; one window's attainment over a few
 hundred turns can move by more than the band between windows of a single engine.

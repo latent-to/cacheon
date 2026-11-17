@@ -44,6 +44,7 @@ from cacheon.eval.oci_session_protocol import (
     validate_preflight,
     validate_ready,
 )
+from cacheon.eval.pd_engine import untimed_ranks
 from cacheon.stack_identity import require_sha256_hex
 from cacheon.eval.service_capacity import LoadRead
 
@@ -305,7 +306,8 @@ class SessionExecutionPlan:
             raise OuterSessionInfrastructureError("engine_config is not typed")
         if self.audit_policy is not None and (
             type(self.audit_policy) is not SlotAuditPolicy
-            or self.audit_policy.expected_member_count != self.engine_config.tp_size
+            or self.audit_policy.expected_member_count
+            != untimed_ranks(self.engine_config.tp_size, self.engine_config.engine_kwargs)
         ):
             raise OuterSessionInfrastructureError(
                 "audit policy is not typed or differs from engine TP"

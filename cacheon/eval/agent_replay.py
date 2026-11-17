@@ -27,6 +27,9 @@ from uuid import UUID
 from cacheon.eval import aiperf_client, pd_engine
 from cacheon.eval.agent_slice import SliceManifest, load_slice_manifest
 from cacheon.eval.oci_session_protocol import BatchRequest, MAX_BATCH_REQUEST_BYTES
+# The validator's own replay client failing is infrastructure: untyped, one AIPerf exit closed the worker's
+# adapter epoch and parked the queue behind a transport hold (2026-11-13 and 2026-11-14).
+from cacheon.eval.oci_outer_session import OuterSessionInfrastructureError, OuterSessionTimeoutError
 from cacheon.eval.oci_request_exchange import flush_cache
 from cacheon.eval.phase_latency import _cache_report
 from cacheon.eval.service_capacity import (
@@ -110,7 +113,8 @@ class AgentReplayPlan:
             "contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
             "client": "aiperf-0.13.0", "scenario": None, "ignore_trace_delays": True,
             "cache_bust_identity": "sealed-slice-digest",
-            "cache_boundary": "flush_device_and_host_before_each_load",
+            "cache_boundary": ("flush_device_and_host_before_each_load" if len(self.loads) == 1
+                               else "flush_device_and_host_before_top_load_windows"),
         }
 
 
@@ -524,6 +528,9 @@ def _aiperf_argv(plan: AgentReplayPlan, current: SliceManifest, output: Path, po
             "--dataset-sampling-strategy", "sequential",
             "--cache-bust", "first_turn_prefix", "--ignore-trace-delays", "--use-server-token-count",
             "--random-seed", str(current.rules["seed"]), "--ui", "none",
+            # AIPerf 0.13.0 collectors are on by default and unread; one missing two heartbeats exits 1 after the work
+            # completed and cost the whole qualification (GLM PD prime 2026-11-13 19:22Z, timed window 11-14 06:26Z).
+            "--no-server-metrics", "--no-gpu-telemetry",
             "--zmq-ipc-path", str(ipc), "--output-artifact-dir", str(output / "aiperf")]
     if context is not None:
         argv.extend(("--max-context-length", str(context)))
@@ -553,6 +560,8 @@ async def _prime(plan: AgentReplayPlan, context_length: int | None, load: int) -
     current = _current_slice(plan)
     loop = asyncio.get_running_loop()
     pending: dict[bytes, asyncio.Future] = {}
+    # A lower load replays the first sessions of the higher load's pool, so its bodies are all primed already and
+    # `pending` stays empty; the guard reads the requests received (GLM-5.3-Flash PD, three loads, 2026-11-12).
     seen: dict[str, bytes] = {}
     # Short paths: AIPerf's Unix sockets live under both (see _run_load_read).
     work = Path(tempfile.mkdtemp(prefix="cacheon-prime-", dir="/tmp"))
@@ -592,12 +601,14 @@ async def _prime(plan: AgentReplayPlan, context_length: int | None, load: int) -
                 client = await asyncio.create_subprocess_exec(
                     *argv, stdout=log, stderr=log, start_new_session=True, env={**os.environ, "TMPDIR": str(ipc)},
                 )
-                code = await asyncio.wait_for(client.wait(), _PRIME_CLIENT_S)
+                try:
+                    code = await asyncio.wait_for(client.wait(), _PRIME_CLIENT_S)
+                except asyncio.TimeoutError:
+                    raise OuterSessionTimeoutError(f"AIPerf did not finish priming the replay; see {work / 'aiperf.log'}") from None
             if code:
-                raise RuntimeError(f"AIPerf exited {code} priming the replay; see {work / 'aiperf.log'}")
-            # A lower load replays a prefix of the top load's sessions, so its bodies are already tokenized.
+                raise OuterSessionInfrastructureError(f"AIPerf exited {code} priming the replay; see {work / 'aiperf.log'}")
             if not seen:
-                raise RuntimeError(f"AIPerf sent no request priming the replay; see {work / 'aiperf.log'}")
+                raise OuterSessionInfrastructureError(f"AIPerf sent no request priming the replay; see {work / 'aiperf.log'}")
             places = _places(current, work / "aiperf" / "profile_export.jsonl", seen)
             for key, future in pending.items():
                 ids, digest = await future
@@ -649,12 +660,12 @@ async def _run_load_read(session, plan: AgentReplayPlan, load: int, *, tokenizer
                 done, _ = await asyncio.wait(waiters, timeout=max(0, session.deadline - session.clock()),
                                              return_when=asyncio.FIRST_COMPLETED)
                 if not done:
-                    raise TimeoutError("AIPerf exceeded the engine session deadline")
+                    raise OuterSessionTimeoutError("AIPerf exceeded the engine session deadline")
             if bridge.failure is not None:
                 raise bridge.failure
             code = waiters[0].result()
             if code:
-                raise RuntimeError(f"AIPerf exited {code}; see {output / 'aiperf.log'}")
+                raise OuterSessionInfrastructureError(f"AIPerf exited {code}; see {output / 'aiperf.log'}")
             read = collect_read(plan, bridge, load)
             rows = sorted(bridge.rows.values(), key=lambda row: row.batch_index)
             session.batch_rows.extend(rows)
@@ -679,7 +690,7 @@ async def _run_load_read(session, plan: AgentReplayPlan, load: int, *, tokenizer
 
 
 async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None) -> tuple[LoadRead, ...]:
-    """Execute the sealed windows of each load, highest first, flushing cache before each window's read.
+    """Execute the sealed windows of each load, highest first, flushing cache before each top-load window's read.
 
     The warm windows replay once, at the top load, each into its own retained directory; their reads never reach
     the session's evidence or the grader. Every window is a fresh read of its load's fixed work, so the sealed
@@ -694,10 +705,14 @@ async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None) -> tuple
         await flush_cache(session)
         await _run_load_read(session, replace(plan, window=warm, output_directory=plan.output_directory / f"warm{warm}"),
                              top, tokenizer=tokenizer)
+    # A lower load replays the first sessions of the top load's pool, so it keeps their prefixes in the device and
+    # host tiers: flushing before it made each lower load cold-prefill the same sessions again, 375 of 533 s at 160
+    # and 196 of 337 s at 96 on GLM-5.3-Flash PD, whose HiCache holds them (2026-11-12). Both arms run the same rule.
     for load in plan.loads:
         directory = plan.output_directory / ("" if load == top else f"load{load}")
         for window in range(1, plan.windows + 1):
-            await flush_cache(session)
+            if load == top:
+                await flush_cache(session)
             read_plan = replace(plan, window=window, output_directory=directory / f"window{window}")
             read = await _run_load_read(session, read_plan, load, tokenizer=tokenizer)
             session.replay_reads.append(read)
