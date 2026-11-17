@@ -134,11 +134,6 @@ class _Guard:
         self.bigram = int(bool(params.is_eagle) and not ctx.is_hybrid_ssm)
         self.device = self.requests.req_to_token.device  # with its index, unlike a flag string
         cuda = self.device.type == "cuda"
-        # The forward pass writes KV on its own stream; the check reads behind it.
-        runner = getattr(ctx.tp_worker, "model_runner", None)
-        self.forward = getattr(runner, "forward_stream", None) if cuda else None
-        if cuda and self.forward is None:
-            raise RuntimeError(f"{ADDRESS}: the scheduler's model runner has no forward stream")
         seed = int.from_bytes(os.urandom(8), "little") >> 1
         draws = torch.Generator().manual_seed(seed)
         self.draws = torch.Generator(device=self.device).manual_seed(seed // 3)
@@ -325,8 +320,11 @@ class _Guard:
             if served % self.page:
                 self.refuse(f"it served a prefix of {served} tokens, which ends inside a page")
             held = self.held[req.rid] = _Held(own=min(served, n))
-        if self.forward is not None:
-            torch.cuda.current_stream().wait_stream(self.forward)
+        # No wait on the forward stream. The scheduler hands a request over after it has synchronized on the
+        # batch that computed these pages (``copy_done``); the pass in flight belongs to the next batch. A wait on
+        # the whole stream held the schedule stream behind that pass 30 s per prefill rank over a 930 s replay
+        # (GLM-5.3-Flash PD, 2026-11-17). A page read before its write records a pair that its later reads
+        # cannot match, which is a refusal and never a pass.
         row = self.requests.req_to_token[req.kv.req_pool_idx, :n].to(torch.int64)
         if self.hybrid is not None:
             self.hybrid.record(req, ids, row, held, finished=finished)
