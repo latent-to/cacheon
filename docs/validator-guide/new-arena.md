@@ -77,7 +77,9 @@ python3 scripts/arena/harvest_runtime_seed.py --arena-inputs examples/arena_inpu
 ```
 
 The tool boots the stock engine once in the exact image with the sealed flags
-and the production cache environment, stops it, seals the cache's regular files
+and the production cache environment, under the interpreter a lease runs
+(`--python`, the deployment's `python_executable`: a kernel cache keyed by
+import path misses under any other), stops it, seals the cache's regular files
 as the seed with the receipt the commissioner recomputes, and with `--verify`
 boots once more from the seed and records both boot times. For a prefill/decode
 pair it boots each role in turn, in its one-engine form (the shared options under

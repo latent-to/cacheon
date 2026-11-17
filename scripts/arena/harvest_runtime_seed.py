@@ -16,7 +16,10 @@ The engine flags are the sealed engine config translated the way ``cacheon.eval.
 translates it for ``sglang.Engine`` (same keys, same precedence); ``launch_server`` takes the same
 fields as flags. A prefill/decode pair's lease seeds both of its engines from one tree, so each role
 boots in turn, in its one-engine form (``cacheon.eval.pd_engine``: the shared options under the role's
-own), into the same cache.
+own), into the same cache. The boot runs under the interpreter a lease runs (``--python``, isolated
+mode): FlashInfer keys its CuTe-DSL kernels by the path their source was imported from, and the image's
+``python3`` imports the same files under another path, so a seed harvested with it was wiped and
+recompiled in every lease boot (GLM-5.3-Flash PD, 2026-11-17: 251 kernels per stock boot).
 """
 
 import argparse
@@ -112,7 +115,7 @@ def boot(args, cache: Path, name: str, log: Path, flags: list[str], env: dict[st
     command += ["--mount", f"type=bind,src={args.model},dst={CONTAINER_MODEL},readonly",
                 "--mount", f"type=bind,src={cache},dst={CONTAINER_CACHE}",
                 "--mount", f"type=bind,src={work},dst=/work",
-                "--entrypoint=python3", args.image, "-m", "sglang.launch_server", "--model-path", CONTAINER_MODEL,
+                f"--entrypoint={args.python}", args.image, "-I", "-m", "sglang.launch_server", "--model-path", CONTAINER_MODEL,
                 "--host", "127.0.0.1", "--port", str(args.port), "--served-model-name", "arena", *flags]
     (log.with_suffix(".argv.json")).write_text(json.dumps(command, indent=1) + "\n")
     subprocess.run(command, check=True, stdout=subprocess.DEVNULL)
@@ -187,6 +190,7 @@ def main() -> None:
     parser.add_argument("--memory", default="900g")
     parser.add_argument("--shm", default="128g")
     parser.add_argument("--port", type=int, default=30011)
+    parser.add_argument("--python", default="/usr/bin/python3.12", help="the deployment's sealed python_executable")
     parser.add_argument("--boot-limit-seconds", type=int, default=7200)
     parser.add_argument("--work", required=True, type=Path, help="new directory for the cache, logs and argv")
     parser.add_argument("--out", required=True, type=Path, help="new seed directory; <out>.json is its receipt")

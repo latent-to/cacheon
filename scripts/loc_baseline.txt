@@ -199,6 +199,8 @@
 # Sealed first-lifetime payment-bar futility (bar_futility): cacheon +14, docs +6, examples +3, scripts +5, tests +6.
 # speed_first is keyed by the speed plan and its retry runs on its own stage clock (as written it was never found
 # after a release); replay-client failures are typed holds, not adapter-epoch failures: cacheon +58, docs +11.
+# The seed harvest boots under the lease's interpreter (a seed harvested under the image's other python was wiped and
+# recompiled in every lease boot; no deletion available, next: the rig-only parts of the tool): docs +2, scripts +6.
 (root) 1163
 .github 338
 cacheon 92404
@@ -206,5 +208,5 @@ cacheon_kernels 936
 dashboard 4420
 docs 13396
 examples 431
-scripts 4728
+scripts 4734
 tests 14184
