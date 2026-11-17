@@ -156,7 +156,7 @@ def _engine(config: dict, bundle: str, requests: list[dict], root: Path,
     receipt_dir = root / "receipts"
     receipt_dir.mkdir()
     os.environ.update(
-        CACHEON_ACTIVE="1", CACHEON_BUNDLE_PATH=bundle, CACHEON_FRAMEWORK_MODE="0",
+        CACHEON_ACTIVE="1", CACHEON_BUNDLE_PATH=bundle,
         CACHEON_SEAM_RECEIPT_DIR=str(receipt_dir), SGLANG_PLUGINS="cacheon",
         CACHEON_SLOT_AUDIT="1" if phase == "audit" else "0",
         CACHEON_SLOT_AUDIT_SEED=str(seed), CACHEON_SLOT_AUDIT_FLOOR_PPM=str(row_floor_ppm),

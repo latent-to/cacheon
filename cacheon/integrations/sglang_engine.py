@@ -4,7 +4,9 @@ An address under ``sglang`` names what the engine itself calls by that path, suc
 ``sglang.srt.managers.schedule_policy.SchedulePolicy.calc_priority`` or
 ``sglang.srt.disaggregation.decode.DecodePreallocQueue``. The bundle supplies ``entry(stock)``: it
 receives the stock object and returns its replacement, a callable for a function or a method and a
-subclass for a class. ``None`` leaves this process stock, which is how a decode-side object is declined on
+subclass for a class. A name the engine does not define yet receives ``None`` and takes a function, so
+a replacement can call a method or a helper its patch adds. ``None`` leaves this process stock, which is
+how a decode-side object is declined on
 a prefill server. The replacement is bound once, when the bundle loads at a scheduler's process entry and
 before SGLang builds the scheduler, so every later construction and call reaches it; a name another engine
 module imported from the defining module is rebound with it. A replacement is the object's new source, so
@@ -77,9 +79,9 @@ def _bind(address: str, impl) -> None:
     owner, name, raw = _resolve(address)
     descriptor = type(raw) if isinstance(raw, (staticmethod, classmethod)) else None
     stock = raw.__func__ if descriptor else raw
-    if not (inspect.isclass(stock) or inspect.isfunction(stock)):
+    if stock is not None and not (inspect.isclass(stock) or inspect.isfunction(stock)):
         _refuse(address, "names neither a class nor a function defined on that path", LookupError)
-    if inspect.ismodule(owner) and stock.__module__ != owner.__name__:  # one object, one address
+    if stock is not None and inspect.ismodule(owner) and stock.__module__ != owner.__name__:  # one object, one address
         _refuse(address, f"that object is defined in {stock.__module__}; name it there", LookupError)
     try:
         new = impl.entry(stock)
@@ -89,7 +91,16 @@ def _bind(address: str, impl) -> None:
     if new is None:
         _receipts.not_selected(address, DECLINED, ())
         return
-    if inspect.isclass(stock):
+    if stock is None:
+        # A name the engine does not define yet: a method or a function a replacement calls.
+        descriptor = type(new) if isinstance(new, (staticmethod, classmethod)) and inspect.isclass(owner) else None
+        new = new.__func__ if descriptor else new
+        if not inspect.isfunction(new):
+            _refuse(address, "the engine defines no such name, so entry must return a function")
+        new = _receipted(address, new)
+        new.__name__, new.__module__ = name, owner.__name__ if inspect.ismodule(owner) else owner.__module__
+        new.__qualname__ = name if inspect.ismodule(owner) else f"{owner.__qualname__}.{name}"
+    elif inspect.isclass(stock):
         if not inspect.isclass(new) or new is stock or not issubclass(new, stock):
             _refuse(address, "entry must return a subclass of the stock class")
         for key, value in list(vars(new).items()):
@@ -104,7 +115,7 @@ def _bind(address: str, impl) -> None:
     else:
         new = functools.wraps(stock)(_receipted(address, new))
     setattr(owner, name, descriptor(new) if descriptor else new)
-    if inspect.ismodule(owner):
+    if stock is not None and inspect.ismodule(owner):
         for module in list(sys.modules.values()):
             if getattr(module, "__name__", "").split(".")[0] == ROOT and module is not owner:
                 for key, value in list(vars(module).items()):

@@ -283,13 +283,9 @@ def _load_bundle_into_registry(bundle: str) -> None:
     from cacheon.sandbox import callable_from, load_module, scan_path, scan_tree
 
     manifest = load_manifest(bundle)
-    if any(op.setup for op in manifest.ops) and not _truthy(
-        os.environ.get("CACHEON_FRAMEWORK_MODE")
-    ):
-        raise RuntimeError(
-            "bundle declares setup() but CACHEON_FRAMEWORK_MODE is not armed; "
-            "refusing engine-wide mutation"
-        )
+    if any(op.setup for op in manifest.ops):
+        # No target admits it (target_catalog). A bundle names the engine objects it changes instead.
+        raise RuntimeError("bundle declares setup(); refusing engine-wide mutation")
     # Recursive vendored-tree guard: a bundle can carry a whole vendored library; every .py
     # must clear the policy scan, not just the declared entries. Fail closed (load nothing).
     # Pass declared CUDA sources so runtime load enforces the same strict allowlist
@@ -327,9 +323,6 @@ def _load_bundle_into_registry(bundle: str) -> None:
     # workspace in module globals) must not get two module instances — each would
     # re-init its own comm state and the second barrier could interleave across ranks.
     loaded_by_src: dict[Path, object] = {}
-    # Variant deduplication only; framework admission was enforced above. This set
-    # does not make candidate execution trusted—the later OCI/no-egress boundary does.
-    setup_done: set[tuple[Path, str]] = set()
     for op in manifest.ops:
         src = resolve_source(bundle, op)
         scan = scan_path(src)
@@ -337,7 +330,7 @@ def _load_bundle_into_registry(bundle: str) -> None:
             logger.warning("cacheon: skip %s, failed scan: %s", op.slot, scan.violations)
             continue
         meta = json.loads((Path(bundle) / op.metadata).read_text()) if op.metadata else {}
-        # ONE module instance per op source: loading entry/prepare/setup separately
+        # ONE module instance per op source: loading entry and prepare separately
         # would re-execute the module body per callable and split
         # them across different module namespaces (module-global state shared between
         # prepare and entry would vanish; sys.modules would point at the last copy
@@ -361,16 +354,3 @@ def _load_bundle_into_registry(bundle: str) -> None:
                 variant=op.variant,
             )
         )
-        # FRAMEWORK MODE: an optional setup() runs ONCE here (candidate scheduler only —
-        # the driver/timer process returns before this). It may patch the engine
-        # (monkeypatch a backend, register a custom op, set flags) — that is how a
-        # surface-opening change (e.g. fixing a broken backend on new hardware) is expressed. It is
-        # untrusted, so correctness is gated by token-match vs the stock baseline
-        # (framework_mode) and it MUST run in the no-egress isolation worker before the
-        # subnet opens to untrusted miners.
-        if getattr(op, "setup", None):
-            setup_key = (src_key, op.setup)
-            if setup_key not in setup_done:
-                callable_from(module, op.setup)()
-                setup_done.add(setup_key)
-                logger.info("cacheon: ran setup() for %s", op.slot)

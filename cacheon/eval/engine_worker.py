@@ -253,7 +253,6 @@ def build_session_environment(
     *,
     active: bool,
     bundle_path: str,
-    framework_mode: bool,
     receipt_dir: str,
     audit_policy: object,
     install_seams: bool,
@@ -273,7 +272,6 @@ def build_session_environment(
         **(engine_env or {}),
         "CACHEON_ACTIVE": "1" if active else "0",
         "CACHEON_BUNDLE_PATH": bundle_path if active else "",
-        "CACHEON_FRAMEWORK_MODE": "1" if framework_mode else "0",
         "CACHEON_SEAM_RECEIPT_DIR": receipt_dir,
         "CACHEON_SLOT_AUDIT": (
             format(audit_policy.sample_rate_ppm / 1_000_000, ".17g") if audited else ""
@@ -382,13 +380,14 @@ def _require_execution_completion(
         if row.get("slot") in eager
         and any(reason.get("outcome") == DECLINED for reason in row.get("reasons") or ())
     ]
-    # An engine object runs only in the roles whose scheduler reaches it: a decode scheduler never orders a
-    # prefill queue. A member that loaded the bundle is covered where another completed the address, under
+    # An engine object changes the engine where it is bound, and a bind that fails stops the scheduler at its
+    # entry. Which of its methods a workload reaches is the engine's business: a decode scheduler never orders
+    # a prefill queue and an abort path may never run. Every member that loaded the bundle is covered, under
     # the identity its own completions carry (an early active receipt may hold the pid alone).
     done = {(row.get("slot"), row.get("pid")) for row in completed}
     known = {row.get("pid"): row for row in completed}
     bound = [{**known.get(member.get("pid"), member), "slot": slot}
-             for slot in sorted(eager) if not seams.audited(slot)
+             for slot in expected_slots if not seams.audited(slot)
              for member in active_receipts if (slot, member.get("pid")) not in done]
     completed, captured = completed + declined + bound, captured + declined + bound
     passed, detail = receipts.completed_gate(
@@ -598,7 +597,6 @@ def isolated_engine_session(
     *,
     bundle_path: str,
     active: bool,
-    framework_mode: bool,
     install_seams: bool = True,
     audit_policy: object | None = None,
 ) -> Iterator[EngineWorkerHandle]:
@@ -613,7 +611,6 @@ def isolated_engine_session(
             _egress_is_blocked(),
             _process_sandbox_is_hardened(),
         ))
-        or (framework_mode and not active)
         or (active and not install_seams)
     ):
         raise RuntimeError("isolated engine session lacks its trusted OCI fence")
@@ -652,7 +649,6 @@ def isolated_engine_session(
         session_environment = build_session_environment(
             active=active,
             bundle_path=bundle_path,
-            framework_mode=framework_mode,
             receipt_dir=receipt_dir,
             audit_policy=audit_policy,
             install_seams=install_seams,

@@ -354,12 +354,13 @@ An address under `sglang`, in the `engine` target, names a class, a method or a
 module-level function of the engine by its dotted path, such as
 `sglang.srt.managers.schedule_policy.SchedulePolicy.calc_priority` or
 `sglang.srt.disaggregation.decode.DecodePreallocQueue`. The path names the object
-where it is defined and takes no `*`; one that names no class or function of the
-pinned engine is refused.
+where it is defined and takes no `*`. A name the engine does not define yet takes
+a function, so a patch can add the method or helper its replacements call.
 
-The bundle's `entry(stock)` receives the stock object and returns its replacement:
-a callable for a function or a method, a subclass for a class. `None` leaves that
-process stock, as for a decode-side object on a prefill server. Declare no `prepare`.
+The bundle's `entry(stock)` receives the stock object, or `None` for a new name, and
+returns its replacement: a callable for a function or a method, a subclass for a class.
+`None` leaves that process stock, as for a decode-side object on a prefill server.
+Declare no `prepare`.
 [`sglang_engine.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_engine.py)
 binds the replacement once in each scheduler process, when the bundle loads and
 before SGLang builds the scheduler, so every later construction and call reaches
@@ -377,11 +378,10 @@ decide the same on every rank.
 No call to a replacement is checked, as nothing in the validator knows what a
 scheduler method should return. The engine boundary judges the result: the timed
 speed stage, quality against the teacher, and pristine T. A raise inside a
-replacement is receipted as the candidate's and takes the engine down. A
-replacement must run in at least one engine process of the lane. A process whose
-role never reaches it, such as a decode scheduler holding a prefill-side method,
-is covered by the process that does; an object declined or never called in every
-process is a candidate that never ran. The audit role counts no calls for an engine
+replacement is receipted as the candidate's and takes the engine down, and a bind
+that fails stops the scheduler at its entry. An engine object is covered in every
+process that loaded the bundle: which of its methods a workload reaches, on which
+server, is the engine's business. The audit role counts no calls for an engine
 object, so a bundle names a model node or the cache beside its engine objects.
 
 ## Escape hatches
