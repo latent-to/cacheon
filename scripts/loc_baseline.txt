@@ -213,12 +213,14 @@
 # Engine-object addresses (`sglang.<dotted path>`: any class, method or function of the engine) replace the
 # queue-order address, whose adapter is deleted (-83): cacheon +60, docs +1, scripts +3. Names the engine lacks take
 # a function (+12), paid by the runtime of the engine-wide `setup` hook no target admits (-28): cacheon -16.
+# The seed harvest boots under the lease's interpreter (a seed harvested under the image's other python was wiped and
+# recompiled in every lease boot; no deletion available, next: the rig-only parts of the tool): docs +2, scripts +6.
 (root) 1163
 .github 338
 cacheon 92559
 cacheon_kernels 936
 dashboard 4418
-docs 13447
+docs 13449
 examples 431
-scripts 4744
+scripts 4750
 tests 14173
