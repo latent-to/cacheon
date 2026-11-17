@@ -350,8 +350,8 @@ class _Guard:
                                 content)
             k = len(check)
             self._flag(_FAKE, ~(self.table[cells[0][:k]] & self.table[cells[1][:k]]))
-            for cell in cells:
-                self.table[cell[k:]] = True
+            for cell in cells:  # scalar fill: a host value here waits out the forward pass in flight (2026-11-17)
+                self.table.index_fill_(0, cell[k:], True)
         held.recorded = max(held.recorded, end * self.page)
         self.publish()
         return row
