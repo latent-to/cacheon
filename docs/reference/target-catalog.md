@@ -26,7 +26,7 @@ integration, and releases; a target ID alone cannot reopen authority.
 |---|---|---|
 | `forward_pass` | `logits_processor`, `model` | The modules of the served model a bundle names |
 | `prefix_cache` | `tree_cache` | The scheduler's prefix cache object |
-| `scheduler` | `queue_order` | A decision of the scheduler: the order of its waiting queue |
+| `engine` | every root above, `queue_order` | Any set of the addresses above and the scheduler's decisions, in one bundle |
 
 `forward_pass` is the node target. Its roots are the two top-level modules SGLang
 gives every causal LM, so it carries no model or arena identity. A bundle
@@ -45,15 +45,19 @@ a cache contribution preserves the incumbent `forward_pass` contribution. A new
 cache version replaces the previous cache version in full; the validator does not
 merge their source or combine their policies automatically.
 
-`scheduler` owns the scheduler's decisions, one address per question. Its first
-address is `queue_order`, the [order of the waiting queue](../architecture/slot-contract.md#the-queue-order).
-A decision has no output to compare with stock: every answer in the legal set
-yields the same tokens. The target is closed on an arena until the arena's prompt
-registers it.
+`engine` spans every root and adds the scheduler's decisions, one address per
+question, starting with `queue_order`, the
+[order of the waiting queue](../architecture/slot-contract.md#the-queue-order).
+One bundle may name model nodes, the cache and a decision, and is timed as one
+engine against the arena's single record. Each address keeps its own check:
+stock on the same call for a node, content for the cache, the legal set for a
+decision. The pieces are never timed apart and multiplied: across 43
+GLM-5.3-Flash rows a kernel bundle's gain moved about 2% between the arena's
+three loads. An arena that composes crowned stack entries keeps `engine` closed.
 
-The two targets have disjoint roots, so they never compete for the same live
-region: a transition replaces its own stack entry and leaves the other
-byte-identical.
+`forward_pass` and `prefix_cache` have disjoint roots, so they never compete for
+the same live region: a transition replaces its own stack entry and leaves the
+other byte-identical.
 
 Catalog registration defines identity and admission; it does not by itself
 prove that an arena opens the target. See
@@ -69,8 +73,8 @@ target = "forward_pass"
 mode = "slot"
 ```
 
-Without the table, the resolver infers the target whose roots hold every
-declared address. Inference never creates a target or broadens allowed
+Without the table, the resolver infers the narrowest target whose roots hold
+every declared address. Inference never creates a target or broadens allowed
 features. Legacy `mode = "atomic"` and `mode = "system"` manifests remain
 parseable so retained bundles stay readable, but do not resolve to a current
 reward title.
@@ -93,9 +97,5 @@ rows from the retired operation-slot catalog, without loading retired admission
 or provider registries. A changed installed catalog does not require
 re-crowning; changed retained bytes or a substituted target-spec digest still
 fail their existing evidence bindings.
-
-The operation-slot targets (twelve hand-written slot contracts and two atomic
-families) were retired once both arenas served node addresses. The two current
-targets kept their target-spec and contract digests byte-for-byte.
 
 Source: [`cacheon/target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).

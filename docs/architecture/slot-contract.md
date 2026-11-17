@@ -352,7 +352,7 @@ unit to the address's audit receipt.
 
 The address `queue_order` names a question, not an object: before every prefill
 batch SGLang's scheduler decides in which order the waiting requests are admitted.
-It is the first address of the `scheduler` target and has no sub-addresses.
+It is the first decision address of the `engine` target and has no sub-addresses.
 [`sglang_order.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_order.py)
 wraps `SchedulePolicy.calc_priority`: stock orders the queue first, then the bundle's
 `entry(view)` receives one row per waiting request, in stock's order:
