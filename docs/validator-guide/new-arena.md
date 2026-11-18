@@ -8,7 +8,8 @@ arena-specific value in one `operator.json` beside the arena's inputs, and the
 tools that produce the arena's own inputs: the prompt pools and authority, the
 retained image proof and the warm runtime seed. Bringing up an arena is
 therefore: write its inputs, build and retain, render the operator, review the
-render against the previous arena's, launch, prove off-chain, and connect. The
+render against the previous arena's, launch, prove off-chain, and connect; a
+running arena moves to a replacement pod with one command (step 7). The
 DeepSeek-V4.1-Flash and GLM-5.3-Flash prefill/decode arenas render from the same
 templates; their rendered operators differ only where their `operator.json` files differ.
 
@@ -176,13 +177,16 @@ python scripts/arena/render_operator.py --arena dsv41pd \
 
 The output is the task-directory layout the validator VM launches from:
 `operator/` and `cpu-operator-<slug>.tar` (the scripts the pod and the VM run,
-with the off-chain twin; `bootstrap_worker.py` is copied from `scripts/`),
+with the off-chain twin and `stock_reference.py`; `bootstrap_worker.py` is copied from `scripts/`),
 `inputs/` and `retained-bootstrap-inputs-<slug>.tar` (the commission inputs
-extracted into the pod's shared root), the rendered `launch_stage.py`, a copy
-of `launch_node.py` and `render-receipt.json`, which digests every template,
+extracted into the pod's shared root), the rendered `launch_stage.py`, copies
+of `launch_node.py` and `pod_move.py`, and `render-receipt.json`, which digests every template,
 retained input and output and records the source commit. Every rendered file
 is parsed in the language it runs as before it is written, and a placeholder
 left unfilled is an error.
+
+`--pins pins.json` (`scheduler_starts`, `helper_starts` and `client_cpus`)
+replaces the `node` block's pin table with a replacement pod's measured one.
 
 Review a new arena's render against the previous arena's with `diff -r` over
 the two output directories: the only differences are the parameters. The same
@@ -252,9 +256,57 @@ handoff is a separate, deliberate step; nothing in the launch does it.
 `connect_worker.py` without `--start` fetches the handoff and prepares the
 pair's stage on the validator VM together with the arena's plane: its own
 intake unit, intake database and fee, created by the arena's first pair and
-found by later ones. Nothing is installed or started until `--start`, which
-`await_commission.py` passes once the commission completes.
+found by later ones. Nothing is installed or started until `--start`.
 The start step installs and starts the intake unit first, waits up to 120 seconds
 for its first finalized cursor, and checks queued identities before starting
 the worker. A missing cursor stops the start with the intake log as the recovery
 point; an existing plane keeps its database and cursor.
+
+## 7. Move to a replacement pod
+
+A running arena moves to a replacement pod with one command,
+[`scripts/arena/pod_move.py`](https://github.com/latent-to/cacheon/blob/main/scripts/arena/pod_move.py).
+Its inputs are the pod's address and its measured CPU table: `--fast` lists
+one scheduler vCPU per GPU in GPU order followed by the client vCPUs, and
+`--helpers` lists one helper vCPU per GPU. Run `launch` from a clean checkout
+of the commit to deploy, where the arena's retained render inputs and SSH
+access to the pod are:
+
+```bash
+python3 scripts/arena/pod_move.py launch --arena glm53flashpd \
+  --host <pod> --port <ssh port> --fast <16 vCPUs> --helpers <8 vCPUs> \
+  --tag <arena>-p<n> --validator root@<validator> --move-dir /path/to/new/move \
+  --previous-launch /path/to/task/stage-launch-<previous tag>-started.json \
+  --state-root /path/to/state --seed-archive /mnt/<bucket>/<seed>.tar \
+  --retained-inputs /path/to/retained --quality-controls quality-controls.json
+```
+
+`launch` renders the operator with `render_operator.py --pins`, which replaces
+the `node` block's pin table: only rendered scripts carry pins, so the source
+revision does not change between pods. It exports that revision, appends the
+validator's public key to the pod's `authorized_keys`, copies the render, the
+source and `move.json` to the new move directory on the validator, and starts
+`run` there detached, logging to `run.log`. The previous mainnet stage's
+launch receipt supplies the deployment's fixed inputs: the key base, image
+proof, shared root, lane, model input and token, and the runtime seed path.
+The seed archive sits on the pod's provider bucket with a `SHA256SUMS` file
+beside it, and the pod's Docker is logged in to the image's registry.
+
+`run` takes these steps in order on the validator, each through the existing
+tool; `run <move-dir> --from <step>` continues a stopped move at that step:
+
+| step | effect |
+|---|---|
+| `access` | pins the pod's ed25519 host key, adds the pod's port to the validator's SSH config (`connect_worker.py` and the relay carry no port), links the previous render's replay inputs |
+| `prepare-pod` | pulls the worker image from its published registry by digest and checks its image ID, links `/usr/bin/docker`, restores the runtime seed after checking its digest |
+| `stock-commission` | `launch_node.py` commissions the stock stage `<tag>a`; the worker bootstrap downloads the model into RAM |
+| `stock-start`, `stock-verify`, `stock-stop` | `stock_reference.py` submits the identity control as one twin request, whose qualification measures the fresh stock pair (about 70 minutes on GLM-5.3-Flash) and ends `NO_DECISION`; verification reopens the pair through the production reader and requires every sealed per-load decode floor on the first lifetime and on both pooled; the pod service is then drained |
+| `mainnet-commission` | `launch_node.py` commissions the mainnet stage `<tag>b` |
+| `import` | `stock_reference.py import` publishes the pair into the mainnet stage with its original stock arm bound to that stage's launch (the explicit import in [Qualification](qualification.md)); both stages run one source revision |
+| `connect` | `connect_worker.py` prepares the stage |
+| `continuation` | maps the stage's `arena:stack` reward group onto the previous stage's in `reward_group_continuations` ([emissions policy](../reference/emissions-policy.md)) after checking, on an in-memory copy of the intake, that every queued row reads the same payment bar; it snapshots the intake beside `move.json` before the write |
+| `start` | stops the previous stage's supervisor and relay units, whose in-flight lease the intake returns to the queue, runs `connect_worker.py --start`, and requires the new units active and the intake unit enabled |
+
+Every step stops the move at its first error with that command's own output;
+nothing is retried, skipped or substituted. A different pod's stock is a new
+measurement: the stock reference of one pod is never reused on another.

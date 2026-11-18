@@ -44,21 +44,23 @@ KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size
 OPTIONAL_KEYS = {"decode_floors", "replay_windows", "audit_row_floor_ppm", "load_margin", "replay_warm_windows",
                  "steady_span", "quality", "speed_policy_version", "bar_futility"}
 NODE_KEYS = {"name", "scheduler_starts", "helper_starts", "client_cpus"}
+# A replacement pod's measured pin table (--pins): only rendered scripts carry it, so the source revision is unchanged.
+PIN_KEYS = {"scheduler_starts", "helper_starts", "client_cpus"}
 # engine_cpus: an engine's first GPU -> [DP controller vCPU, frontend vCPU] (oci_cpuset.canonical_cpu_roles).
 OPTIONAL_NODE_KEYS = {"engine_cpus", "lifetime_memory_gib"}
 PACKET = ("cacheon_b300_qualification_adapter.py", "finalize-authority.py", "numeric_answer_judge.py",
           "prompt-authority.current.json", "qualification_capabilities.py")
-# The cpu-operator archive: commission_worker, prepare_worker and runtime_uid_preflight run on the pod;
-# await_commission, connect_worker, prepare_cpu_pair and worker_runtime run on the validator VM;
+# The cpu-operator archive: commission_worker, prepare_worker, runtime_uid_preflight and stock_reference run on the pod;
+# connect_worker, prepare_cpu_pair and worker_runtime run on the validator VM;
 # runtime_service is installed beside the pod transport.
 OPERATOR = {
-    "await_commission.py": "await_commission.py",
     "commission_worker.py.tmpl": "commission_worker.py",
     "connect_worker.py.tmpl": "connect_worker.py",
     "prepare_cpu_pair.py.tmpl": "prepare_cpu_pair_{slug}.py",
     "prepare_worker.py.tmpl": "prepare_worker.py",
     "runtime_service.py": "runtime_service.py",
     "runtime_uid_preflight.py": "runtime_uid_preflight.py",
+    "stock_reference.py.tmpl": "stock_reference.py",
     "twin.sh.tmpl": "twin_{slug}.sh",
     "worker_runtime.py.tmpl": "worker_runtime.py",
 }
@@ -88,9 +90,13 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def load_operator(path: Path) -> dict:
-    """Read and shape-check one arena's operator.json; policy stays with the owner."""
+def load_operator(path: Path, pins: dict | None = None) -> dict:
+    """Read and shape-check one arena's operator.json, with a replacement pod's pin table; policy stays with the owner."""
     operator = json.loads(path.read_bytes())
+    if pins is not None:
+        if set(pins) != PIN_KEYS:
+            raise SystemExit(f"--pins names exactly {sorted(PIN_KEYS)}")
+        operator["node"].update(pins)
     if set(operator) - OPTIONAL_KEYS != KEYS or operator["schema"] != SCHEMA:
         raise SystemExit(f"{path}: expected keys {sorted(KEYS)}, optionally {sorted(OPTIONAL_KEYS)}, and schema {SCHEMA}")
     if set(operator["node"]) - OPTIONAL_NODE_KEYS != NODE_KEYS:
@@ -223,10 +229,11 @@ def main() -> None:
                         help="packet/, model-receipts/ and pod-remote-worker-service.py of this arena")
     parser.add_argument("--out", required=True, type=Path, help="new task directory layout to write")
     parser.add_argument("--quality-controls", type=Path, help="receipt from seal_quality_controls.py")
+    parser.add_argument("--pins", type=Path, help="JSON scheduler_starts, helper_starts and client_cpus of a replacement pod")
     args = parser.parse_args()
     os.umask(0o077)
     arena = ROOT / "examples" / "arena_inputs" / args.arena
-    operator = load_operator(arena / "operator.json")
+    operator = load_operator(arena / "operator.json", json.loads(args.pins.read_bytes()) if args.pins else None)
     fill = values(operator, args.arena)
     slug = operator["slug"]
     retained = args.retained_inputs.resolve(strict=True)
@@ -243,6 +250,7 @@ def main() -> None:
     copy(ROOT / "scripts" / "bootstrap_worker.py", operator_dir / "bootstrap_worker.py", 0o600)
     render(TEMPLATES / "launch_stage.py.tmpl", out / "launch_stage.py", fill, 0o600)
     copy(Path(__file__).with_name("launch_node.py"), out / "launch_node.py", 0o600)
+    copy(Path(__file__).with_name("pod_move.py"), out / "pod_move.py", 0o600)
     for name, target in INPUTS.items():
         render(TEMPLATES / name, inputs / target.format(slug=slug), fill, MODES.get(target, 0o644))
     for name in PACKET:

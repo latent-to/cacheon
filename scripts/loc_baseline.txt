@@ -205,12 +205,16 @@
 # intake flock 14 min and looped settlement), less the dead manifest parameter of _op_identity: cacheon +6, scripts +4.
 # The seed harvest boots under the lease's interpreter (a seed harvested under the image's other python was wiped and
 # recompiled in every lease boot; no deletion available, next: the rig-only parts of the tool): docs +2, scripts +6.
+# One command moves the GLM arena to a replacement pod (pod_move.py, stock_reference.py.tmpl, --pins); it deletes
+# await_commission.py (-74, no caller, started without the off-chain proof) and launch_stage's dead command (-6), and
+# replaces the untracked fresh_stock (316), import_stock (123) and contin_extend (68) scripts and the hand pod prep
+# of pods 217-221: docs +52, scripts +659.
 (root) 1163
 .github 338
 cacheon 92426
 cacheon_kernels 936
 dashboard 4438
-docs 13398
+docs 13450
 examples 431
-scripts 4738
+scripts 5397
 tests 14184
