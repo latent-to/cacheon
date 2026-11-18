@@ -11,7 +11,6 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
-import sys
 
 parser = argparse.ArgumentParser(description=__doc__)
 for name in ('base','state-root','host','user','known-hosts','image-proof','shared','tag',
@@ -132,9 +131,4 @@ result = subprocess.check_output(ssh+[shlex.join(['sudo','-n','python3','-c',rem
 print(result,flush=True)
 state.mkdir(mode=0o700,parents=True,exist_ok=True)
 (state/(args.tag+'-started.json')).write_text(result)
-command = [sys.executable,'-B','-u',str(helper/'await_commission.py'),'--pod-root',root,'--',
-    '--base',args.base,'--state-root',args.state_root,'--host',args.host,'--user',args.user,
-    '--pod-stage',root+'/node/pair-'+args.tag,'--known-hosts',args.known_hosts,
-    '--image-proof',args.image_proof,'--tag',args.tag,'--owner','@OWNER@',
-    '--source',args.source,'--source-metadata',args.source_metadata]
 print('COMMISSIONING_ONLY: retain the handoff; do not install or activate it yet.', flush=True)

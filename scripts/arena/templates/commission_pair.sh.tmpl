@@ -26,7 +26,10 @@ test ! -e "$STAGE"
 test -d "$SEED" && test -d "$SRC" && test -f "$RECEIPT" && test -d "$MODEL"
 umask 077
 step 0-layout
-mkdir -m 700 -p "$NODE" "$STAGE" "$QA" "$L" "$STAGE/controller-cwd" "$STAGE/remote-worker" "$STAGE/remote-worker/tmp" "$STAGE/remote-worker/logs" "$STAGE/worker-bootstrap" "$STAGE/worker-bootstrap/bin"
+# The whole pod-serve spool (remote_worker_pod_service.pod_serve): a twin request accepted before the first pod-serve
+# found no incoming/ (pod219, 2026-11-17).
+mkdir -m 700 -p "$NODE" "$STAGE" "$QA" "$L" "$STAGE/controller-cwd" "$STAGE/worker-bootstrap" "$STAGE/worker-bootstrap/bin"
+for d in completed inbox incoming logs outgoing processing results tmp verify; do mkdir -m 700 -p "$STAGE/remote-worker/$d"; done
 for f in qualification_capabilities.py numeric_answer_judge.py finalize-authority.py prompt-authority.current.json; do cp "$PACKET/$f" "$QA/$f"; chmod 400 "$QA/$f"; done
 cp "$PACKET/cacheon_b300_qualification_adapter.py" "$A"; chmod 500 "$A"
 mkdir -p -m 700 "$OPS"; test ! -e "$CRED"; head -c 48 /dev/urandom > "$CRED"; chmod 400 "$CRED"; test "$(stat -c %s "$CRED")" = 48

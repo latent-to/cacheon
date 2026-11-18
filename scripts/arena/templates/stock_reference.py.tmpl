@@ -1,0 +1,341 @@
+"""Measure a replacement pod's stock reference off-chain, then import it into the pod's mainnet stage.
+
+Runs on the pod under the controller python from a commissioned worker's recovery-operator directory
+(``pod_move.py run`` calls it). ``start`` submits the identity control as one scratch twin request on the stock
+stage and starts its pod service: the production qualification finds no current reference, measures the fresh stock
+pair and ends NO_DECISION. ``verify`` waits for that request, reopens the pair through the production reader and holds
+the first lifetime to every sealed per-load decode floor. ``stop`` drains that pod service. ``import`` publishes the
+pair into the mainnet stage with its original stock arm bound to that stage's launch, the explicit reference import
+of docs/validator-guide/qualification.md: both stages run one source revision, so the measured runtime and timing
+client are the same bytes. Nothing here reads an intake database or touches a mainnet unit.
+"""
+import argparse
+import hashlib
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+LABEL = "stock-reference"
+
+
+def read(path):
+    return json.loads(Path(path).read_bytes())
+
+
+def sha(path):
+    with Path(path).open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def write_new(path, document):
+    with Path(path).open("x") as stream:
+        json.dump(document, stream, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def quiet():
+    assert not subprocess.check_output(["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader"],
+                                       text=True).strip(), "GPU processes remain; do not run a concurrent stock campaign"
+
+
+def service_pids():
+    found = []
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdecimal():
+            continue
+        try:
+            argv = (proc / "cmdline").read_bytes().split(b"\0")
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        if b"pod-serve" in argv and any(value.endswith(b"/remote_worker_service.py") for value in argv):
+            found.append((int(proc.name), argv))
+    return found
+
+
+class Worker:
+    """One commissioned worker generation under the shared root."""
+
+    def __init__(self, shared, tag):
+        self.root = Path(shared) / "workers" / tag
+        self.stage = self.root / "node" / ("pair-" + tag)
+        self.remote = self.stage / "remote-worker"
+        self.out = self.root / LABEL
+        self.ready = read(self.stage / "ready-receipt.json")
+        self.revision = (self.root / "source-revision.txt").read_text().strip()
+        assert self.ready["source"]["revision"] == self.revision
+        assert Path(self.ready["source"]["path"]).resolve() == (self.root / "build/src").resolve()
+        assert (self.root / ("commission-" + tag + ".exit")).read_text().strip() == "0", "the commission did not succeed"
+
+    def verified(self):
+        from cacheon.chain.remote_worker_registration import verify_ready_receipt, verify_registration
+        ready = verify_ready_receipt(self.ready)
+        registration = verify_registration(read(self.stage / "registration.json"))
+        assert registration["worker_epoch"] == ready["worker_epoch"]
+        assert registration["ready_receipt_digest"] == ready["receipt_digest"]
+        return ready, registration
+
+    def carrier(self):
+        jobs = [p for p in (self.stage / "twin" / LABEL / "work/spool/outbox").iterdir() if (p / "REQUEST_READY").is_file()]
+        assert len(jobs) == 1, "expected one authenticated scratch carrier"
+        return jobs[0]
+
+
+def open_runtime(requester, job, worker):
+    """``worker``'s adapter runtime planning ``requester``'s authenticated request (the teacher_first.py construction)."""
+    from cacheon.arena_service import ArenaCandidateBinding
+    from cacheon.chain.remote_evaluation_dispatcher import RemoteEvaluationRequest
+    from cacheon.chain.remote_worker_registration import (
+        registration_credential, registration_transport_identity, verify_registration,
+    )
+    from cacheon.chain.remote_worker_spool import authenticated_wire_request, load_json, verify_request
+    from cacheon.eval.b300_publication_intake import resolve_cohort_publications
+    from cacheon.eval.b300_remote_worker_adapter import AdapterPaths, AdapterRuntime, _load_qualification_capabilities
+    from cacheon.eval.qualification_intake import QualificationReservation
+    registration = verify_registration(load_json(requester.stage / "registration.json"))
+    identity = registration_transport_identity(registration)
+    credential = registration_credential(registration, requester.remote / "credential.secret")
+    outer = verify_request(load_json(job / "request.json"), job, registration, identity=identity, credential=credential)
+    wire = RemoteEvaluationRequest.from_dict(authenticated_wire_request(outer, job, identity=identity, credential=credential))
+    epoch = verify_registration(load_json(worker.stage / "registration.json"))["worker_epoch"]
+    capabilities = _load_qualification_capabilities(
+        "qualification_capabilities:build_capabilities",
+        sha(worker.stage / "qualification-authority/qualification_capabilities.py"),
+    ).capabilities
+    runtime = AdapterRuntime(AdapterPaths(
+        worker.stage / "registration.json", worker.stage / "ready-receipt.json", worker.remote / "credential.secret",
+        worker.remote / "publications", worker.remote / "processing", worker.remote / "results",
+        worker.remote / "continuations" / epoch, worker.stage / "commissioned",
+    ), qualification_capabilities=capabilities)
+    try:
+        publications = resolve_cohort_publications(outer, job, wire.body["candidates"], requester.remote / "publications")
+        adapter = runtime.qualification_adapter_for(publications, wire.body["screen_lane"])
+        candidates = tuple(ArenaCandidateBinding(
+            QualificationReservation.from_dict(row["reservation"]),
+            adapter.publications.resolve(row["publication"]), row["attempt"],
+        ) for row in wire.body["candidates"])
+        work = adapter.worker.service.plan_qualification(candidates, state=None)
+        return runtime, work, work.factory.build(), wire
+    except BaseException:
+        runtime.close()
+        raise
+
+
+def plan_receipt(worker, value, ready, registration):
+    """The stock identity this campaign measures; it must not change between start and verify."""
+    from cacheon.eval.goodput_runtime import _reference_pointer
+    plan = value.resident_speed_plan
+    replay = plan.baseline.session_plan.replay
+    return {
+        "source": worker.revision, "epoch": registration["worker_epoch"], "ready": ready["receipt_digest"],
+        "reference_pointer": str(_reference_pointer(plan, value.evidence_root)),
+        "evidence_root": str(value.evidence_root), "launch": plan.baseline.launch.digest,
+        "lane": plan.baseline_lane_digest, "runtime": plan.baseline.binding.runtime_preflight_receipt.sha256,
+        "fixed_work": {str(load): replay.slice.turns(replay.sessions_at(load)) for load in replay.loads},
+        "policy_version": plan.policy.version, "reference_boots": plan.policy.reference_boots,
+        "calibration": value.calibration_manifest.digest,
+    }
+
+
+def start(shared, tag, stock):
+    ready, registration = stock.verified()
+    quiet()
+    assert not service_pids(), "another pod service exists; inspect it before starting"
+    assert not list((stock.stage / "commissioned/qualification-evidence/.stock-references").glob("*")), \
+        "this commission already holds stock evidence"
+    stock.out.mkdir(mode=0o700)
+    twin = stock.root / "recovery-operator/twin_@SLUG@.sh"
+    control = stock.root / "build/src/examples/miner_node_identity"
+    proc = subprocess.run(["bash", str(twin), str(shared), tag, "submit", str(control), LABEL],
+                          capture_output=True, text=True, timeout=180)
+    (stock.out / "submission.log").write_text(proc.stdout + proc.stderr)
+    if proc.returncode:
+        raise SystemExit(f"twin submit exited {proc.returncode}:\n{proc.stdout[-3000:]}{proc.stderr[-3000:]}")
+    ids = re.findall(r"^REQUEST_ID=([0-9a-f]{64})$", (stock.stage / "twin" / LABEL / "req.log").read_text(), re.M)
+    assert len(ids) == 1, "the twin request driver named no single request"
+    (stock.out / "request-id").write_text(ids[0] + "\n")
+    runtime, work, value, _ = open_runtime(stock, stock.carrier(), stock)
+    try:
+        sealed = plan_receipt(stock, value, ready, registration)
+        assert not Path(sealed["reference_pointer"]).exists()
+        write_new(stock.out / "fresh-stock-plan.json", sealed)
+    finally:
+        runtime.close()
+    quiet()
+    subprocess.run(["bash", str(twin), str(shared), tag, "serve"], check=True, timeout=60)
+    print("FRESH_STOCK_STARTED", ids[0], registration["worker_epoch"], flush=True)
+
+
+def verify(stock, wait_seconds):
+    ready, registration = stock.verified()
+    request = (stock.out / "request-id").read_text().strip()
+    deadline = time.monotonic() + wait_seconds
+    while not ((stock.remote / "outgoing" / (request + ".ready.json")).is_file()
+               and (stock.remote / "completed" / request).is_dir()):
+        if time.monotonic() >= deadline:
+            raise TimeoutError("the stock request did not finish; its logs and partial evidence are retained")
+        time.sleep(min(60, max(1, deadline - time.monotonic())))
+    assert not list((stock.remote / "processing").iterdir())
+    quiet()
+    from cacheon.eval.evidence_store import EvidenceArtifactRef, reopen_evidence
+    from cacheon.eval.goodput_runtime import _REFERENCE_BYTES, open_reference
+    from cacheon.eval.scoring import marginal_workload_digest
+    from cacheon.eval.service_capacity import decode_p50
+    runtime, work, value, _ = open_runtime(stock, stock.carrier(), stock)
+    try:
+        sealed = plan_receipt(stock, value, ready, registration)
+        assert sealed == read(stock.out / "fresh-stock-plan.json"), "the stock plan changed during the campaign"
+        pointer = Path(sealed["reference_pointer"])
+        assert pointer.is_file(), "the request completed without a complete stock reference"
+        assert [p for p in pointer.parent.glob("*.json") if re.fullmatch(r"[0-9a-f]{64}\.json", p.name)] == [pointer], \
+            "several reference identities exist in this commission"
+        reference = EvidenceArtifactRef.from_dict(read(pointer))
+        document = json.loads(reopen_evidence(value.evidence_root, reference, max_bytes=_REFERENCE_BYTES))
+        assert document["identity"] == pointer.stem and "reference_origin" not in document
+        plan = value.resident_speed_plan
+        # The pointer exists, so the production reader reopens it; it cannot measure new stock here.
+        boots = open_reference(plan, executor=work.executor, model_mount=value.model_mount,
+                               evidence_root=value.evidence_root, deadline=time.monotonic() + 600)
+        assert len(boots) == plan.policy.reference_boots and not getattr(boots, "origin", "")
+        lifetimes = [boot.session.session_id for boot in boots]
+        assert len(set(lifetimes)) == len(lifetimes)
+        loads = plan.baseline.session_plan.replay.loads
+        for boot in boots:
+            assert [row.load for row in boot.session.replay_reads] == list(loads)
+            assert all(len(row.records) == sealed["fixed_work"][str(row.load)] for row in boot.session.replay_reads)
+        floors = plan.policy.goodput.floors(loads)
+        first = {row.load: decode_p50([row]) for row in boots[0].session.replay_reads}
+        pooled = {load: decode_p50([row for boot in boots for row in boot.session.replay_reads if row.load == load])
+                  for load in loads}
+        missed = {load: rate for rates in (first, pooled) for load, rate in rates.items() if floors and rate < floors[load]}
+        assert not missed, f"stock misses a sealed decode floor: {missed} against {floors}"
+        blob = Path(value.evidence_root) / reference.domain / reference.sha256[:2] / reference.sha256
+        assert sha(blob) == reference.sha256 and blob.stat().st_size == reference.size
+        quiet()
+        result = {
+            "request": request, "source": stock.revision, "epoch": registration["worker_epoch"],
+            "ready": ready["receipt_digest"], "reference_identity": pointer.stem, "pointer": str(pointer),
+            "stock_artifact": reference.to_dict(), "stock_lifetimes": lifetimes,
+            "first_lifetime_decode_p50": {str(k): v for k, v in first.items()},
+            "decode_p50": {str(k): v for k, v in pooled.items()}, "floors": {str(k): v for k, v in floors.items()},
+            "physical_gpu_uuids": list(plan.baseline.binding.physical_hardware.physical_gpu_ids),
+            "workload": marginal_workload_digest(plan.baseline.session_plan), "fresh_stock_plan": sealed,
+        }
+        write_new(stock.out / "reopened.json", result)
+        print("FRESH_STOCK_VERIFIED", json.dumps(result, sort_keys=True), flush=True)
+    finally:
+        runtime.close()
+
+
+def stop(stock):
+    _, registration = stock.verified()
+    assert read(stock.out / "reopened.json")["epoch"] == registration["worker_epoch"], "verify this stage's stock first"
+    assert not list((stock.remote / "processing").iterdir())
+    quiet()
+    service = bytes(stock.stage / "worker-bootstrap/bin/remote_worker_service.py")
+    processes = service_pids()
+    assert all(service in argv for _, argv in processes), "a pod service of another stage is running"
+    for pid, _ in processes:
+        os.kill(pid, signal.SIGINT)
+        bound = time.monotonic() + 90
+        while Path("/proc", str(pid)).exists():
+            if time.monotonic() >= bound:
+                raise TimeoutError("the stock stage's pod service did not drain")
+            time.sleep(0.5)
+    quiet()
+    print("STOCK_SERVICE_STOPPED", registration["worker_epoch"], [pid for pid, _ in processes], flush=True)
+
+
+def import_reference(stock, live):
+    assert stock.revision == live.revision, "the stock stage and the mainnet stage run different sources"
+    ready, registration = live.verified()
+    quiet()
+    from cacheon.chain.remote_worker_spool import load_json
+    from cacheon.eval.evidence_store import EvidenceArtifactRef, publish_evidence, reopen_evidence
+    from cacheon.eval.goodput_runtime import (
+        REFERENCE_DOMAIN, REFERENCE_SCHEMA, _REFERENCE_BYTES, _reference_arm, _reference_pointer, open_reference,
+    )
+    from cacheon.eval.qualification_worker_checkpoint import read_snapshot
+    from cacheon.eval.scoring import marginal_workload_digest
+    from cacheon.stack_identity import canonical_json_bytes
+    verified = read(stock.out / "reopened.json")
+    runtime, work, value, wire = open_runtime(stock, stock.remote / "completed" / verified["request"], live)
+    try:
+        checkpoints = stock.remote / "checkpoints"
+        index = load_json(checkpoints / (wire.digest + ".json"))
+        origin = read_snapshot(checkpoints / (index["sha256"] + ".json.gz"), index["sha256"])["origin"]
+        assert origin["request"] == wire.digest
+        plan = value.resident_speed_plan
+        assert plan.baseline.launch.image_digest == origin["arms"][0]["launch"]["image_digest"]
+        prior = EvidenceArtifactRef.from_dict(verified["stock_artifact"])
+        original = Path(verified["pointer"])
+        assert load_json(original) == prior.to_dict()
+        contents = reopen_evidence(original.parent.parent, prior, max_bytes=_REFERENCE_BYTES)
+        copied = publish_evidence(value.evidence_root, contents, domain=prior.domain, media_type=prior.media_type,
+                                  schema=prior.schema, max_bytes=_REFERENCE_BYTES)
+        assert copied == prior
+        del contents
+        imported_origin = canonical_json_bytes({
+            "arm": origin["arms"][0], "replacement_launch": plan.baseline.launch.digest, "reference": prior.to_dict(),
+            "reference_identity": original.stem, "workload": marginal_workload_digest(plan.baseline.session_plan),
+            "speed_policy": origin["speed_policy"],
+        }).decode("ascii")
+        arm = _reference_arm(plan, imported_origin)
+        assert list(arm.binding.physical_hardware.physical_gpu_ids) == verified["physical_gpu_uuids"]
+        target = _reference_pointer(plan, value.evidence_root)
+        imported = publish_evidence(value.evidence_root, canonical_json_bytes({
+            "identity": target.stem, "reference_origin": imported_origin}),
+            domain=REFERENCE_DOMAIN, media_type="application/json", schema=REFERENCE_SCHEMA)
+        target.parent.mkdir(mode=0o700, exist_ok=True)
+        if target.exists():
+            assert load_json(target) == imported.to_dict()
+        else:
+            write_new(target, imported.to_dict())
+        try:
+            boots = open_reference(plan, executor=work.executor, model_mount=value.model_mount,
+                                   evidence_root=value.evidence_root, deadline=time.monotonic() + 900)
+            assert tuple(b.session.session_id for b in boots) == tuple(verified["stock_lifetimes"])
+            assert boots.origin == imported_origin
+        except BaseException:
+            # A pointer the production reader refuses must not stay where the mainnet stage looks for it.
+            target.rename(target.with_name(target.name + ".rejected-" + str(time.time_ns())))
+            raise
+        live.out.mkdir(mode=0o700)
+        result = {
+            "source": live.revision, "worker_epoch": registration["worker_epoch"], "ready": ready["receipt_digest"],
+            "service": registration["service_identity"], "original_stock": prior.to_dict(), "import": imported.to_dict(),
+            "stock_lifetimes": verified["stock_lifetimes"], "physical_gpu_uuids": verified["physical_gpu_uuids"],
+            "stock_p50": verified["decode_p50"], "new_gpu_executions": 0, "timed_image": plan.baseline.launch.image_digest,
+            "calibration_digest": value.calibration_manifest.digest,
+        }
+        write_new(live.out / "import.json", result)
+        print("STOCK_IMPORTED", prior.sha256, registration["worker_epoch"], flush=True)
+    finally:
+        runtime.close()
+
+
+if __name__ == "__main__":
+    os.umask(0o077)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("start", "verify", "stop", "import"))
+    parser.add_argument("--shared", required=True)
+    parser.add_argument("--tag", required=True, help="the stock stage; for import, the mainnet stage")
+    parser.add_argument("--stock-tag", help="import: the stage whose fresh stock pair is imported")
+    parser.add_argument("--wait-seconds", type=int, default=14400)
+    args = parser.parse_args()
+    worker = Worker(args.shared, args.tag)
+    sys.path[:0] = [str(worker.stage / "qualification-authority"), str(worker.root / "build/src")]
+    if args.action == "start":
+        start(args.shared, args.tag, worker)
+    elif args.action == "verify":
+        verify(worker, args.wait_seconds)
+    elif args.action == "stop":
+        stop(worker)
+    else:
+        import_reference(Worker(args.shared, args.stock_tag), worker)
