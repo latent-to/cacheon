@@ -382,8 +382,12 @@ speed stage, quality against the teacher, and pristine T. A raise inside a
 replacement is receipted as the candidate's and takes the engine down, and a bind
 that fails stops the scheduler at its entry. An engine object is covered in every
 process that loaded the bundle: which of its methods a workload reaches, on which
-server, is the engine's business. The audit role counts no calls for an engine
-object, so a bundle names a model node or the cache beside its engine objects.
+server, is the engine's business. A scheduler-only submission can claim just
+its engine methods. On a served parent with audited model or cache slots, the
+validator derives numerical audit coverage from those actual parent slots.
+The scheduler receives the assembled engine's speed and output-quality checks.
+An arena requiring a numerical audit needs at least one model or cache slot in
+the assembled stack.
 
 ## Escape hatches
 

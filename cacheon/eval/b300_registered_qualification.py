@@ -55,6 +55,7 @@ from cacheon.eval.marginal_runtime import (
     prepare_marginal_runtime,
 )
 from cacheon import seams
+from cacheon.manifest import load_manifest
 from cacheon.eval import pd_engine
 from cacheon.eval.oci_session_protocol import SlotAuditPolicy
 from cacheon.eval.qualification import (
@@ -96,6 +97,17 @@ from cacheon.eval.b300_registered_qualification_inputs import (
     registered_b300_member_contract_projection,
     registered_b300_profile_resolver_digest,
 )
+
+
+def _audit_members(selected, tree):
+    """Audit the submitted numerical slots, or the real numerical slots under a scheduler-only change."""
+    members = tuple(sorted(member for member in selected if seams.audited(member)))
+    if members:
+        return members
+    inherited = tuple(sorted({op.slot for op in load_manifest(tree.root).ops if seams.audited(op.slot)}))
+    if not inherited:
+        raise B300RegisteredQualificationError("the serving stack has no model or cache slot for its registered numerical audit")
+    return inherited
 
 
 @dataclass(frozen=True)
@@ -465,7 +477,7 @@ class B300RegisteredQualificationFactory:
             audit_seed,
             inputs.policy.audit_sample_rate_ppm,
             inputs.policy.audit_minimum_calls,
-            tuple(member for member in sorted(candidate.reservation.target_members) if seams.audited(member)),
+            _audit_members(candidate.reservation.target_members, candidate_binding.tree),
             pd_engine.untimed_ranks(config.tp_size, config.engine_kwargs),
             inputs.policy.audit_row_floor_ppm,
         )

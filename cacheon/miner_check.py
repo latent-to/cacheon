@@ -260,7 +260,7 @@ def check(args: argparse.Namespace) -> int:
 
         audited = [slot for slot in slots if seams.audited(slot)]
         ranks = pd_engine.untimed_ranks(int(config.get("tp_size", 1)), config)
-        for phase in ("audit", "graph"):
+        for phase in (("audit", "graph") if audited else ("graph",)):
             folder = root / phase
             folder.mkdir()
             print(f"Running {phase}; log: {folder / 'engine.log'}", flush=True)
@@ -295,8 +295,12 @@ def check(args: argparse.Namespace) -> int:
                 print(f"{decision}: {detail}")
                 if decision != "PASS":
                     return 2 if decision == "FAIL" else 3
-        print(f"Development audit and capture checks passed. Evidence: {root}. "
-              "This is not end-to-end quality, a speed win or qualification.")
+        if not audited:
+            observed = {row.get("slot") for row in report["receipts"]["completed"]}
+            if not observed.intersection(slots):
+                print(f"No submitted scheduler method was called by these development requests. Evidence: {root}")
+                return 3
+        print(f"Development serving checks passed. Evidence: {root}.")
         return 0
     except Exception as exc:
         print(f"[ERROR] {type(exc).__name__}: {exc}", file=sys.stderr)

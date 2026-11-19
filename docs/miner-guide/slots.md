@@ -1,10 +1,9 @@
 # Slots and contribution targets
 
-An execution slot is either an address in the served model's module tree,
-admitted by the `forward_pass` target, or `tree_cache`, the scheduler's prefix
-cache, admitted by the `prefix_cache` target. A bundle changes one target, so
-kernels and a cache are separate submissions. The arena still owns its model,
-workload, evaluation policy and supported nodes.
+The registered targets determine which parts of the serving engine a miner can
+change. `forward_pass` accepts model modules, `prefix_cache` accepts the
+scheduler's `tree_cache`, and an arena with `engine` open accepts a named
+SGLang class, function or method. The arena owns the workload and evaluation.
 
 ## Current slot catalog
 
@@ -52,6 +51,24 @@ entry = "forward"
 
 The bundle uses that node's stock `forward` interface, with its module or
 prepared state as the first argument. See [Kernel ABI](kernel-abi.md).
+
+## Changing the scheduler
+
+The prefill scheduler example changes one method,
+`sglang.srt.managers.schedule_policy.SchedulePolicy.calc_priority`. Its
+`entry(stock)` returns a function that chooses the order of waiting requests
+from the remaining input work and the amount of work processed since arrival.
+The existing scheduler still allocates pages, forms batches and runs the model.
+On a commission with a kernel parent, the validator assembles those kernels
+with the scheduler proposal. The example contains the manifest and queue
+policy needed for a submission in `examples/miner_prefill_scheduler`.
+
+Run the interface checks in the arena image.
+
+```bash
+python -m cacheon.cli scan examples/miner_prefill_scheduler
+python -m cacheon.cli verify examples/miner_prefill_scheduler
+```
 
 ## The prefix cache
 
