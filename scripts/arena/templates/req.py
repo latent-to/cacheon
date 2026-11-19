@@ -80,6 +80,7 @@ carrier = transport.publish_planned_qualification(plan).carrier_path
 (carrier / "transport").mkdir(mode=0o700, exist_ok=True)
 archive = carrier / "transport" / f"{plan.request_id}.tar"
 sha = pack_directory(carrier, "request.json", load_json(carrier / "request.json")["artifacts"], archive)
+(R / "incoming").mkdir(mode=0o700, exist_ok=True)
 shutil.copyfile(archive, R / "incoming" / f".{plan.request_id}.{sha}.tar.part")
 accept_request(paths, request_id=plan.request_id, archive_sha256=sha, archive_size=archive.stat().st_size)
 print("REQUEST_ID=" + plan.request_id)

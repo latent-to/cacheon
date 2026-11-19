@@ -121,7 +121,7 @@ class AgentReplayPlan:
 class _Placement:
     """Balanced session-to-rank placement for one read: each DP rank owns its own radix cache.
 
-    A sealed session's every request, its subagents' included, goes to the rank chosen at its first turn. A new
+    Requests sharing the replay's session key go to the rank chosen at the first turn. A new
     session takes the rank with the fewest turns in flight, then the fewest sessions placed, then the lowest
     index, so a read's roots land 0,1,2,3,... whatever the arrival timing. Hashing the opening
     instead re-randomised placement per run and cost 5-7% of the fixed-work rate at loads 12-16
@@ -186,6 +186,25 @@ _Place = tuple[int, int | None, float | None]
 _PROMPTS: dict[bytes, tuple[tuple[int, ...], str, _Place]] = {}
 _PRIMED: set[str] = set()
 _TOKEN_INTS: tuple[int, ...] = ()
+
+
+def _request_place(messages, trace_place: _Place, *, pause_order: bool) -> _Place:
+    """Use the public conversation opening for ordinary replays and trace coordinates for recorded pauses."""
+    if pause_order:
+        return trace_place
+    # Sorting by the dataset ordinal instead kept all 96 opening positions on the same warm
+    # replica across loads. Only 56 opening positions kept their parity on the retained mainnet node.
+    head = [("system", json.dumps(m.get("content"), sort_keys=True)[:4096])
+            for m in messages if m.get("role") == "system"]
+    for msg in messages:
+        if msg.get("role") == "user":
+            content = msg.get("content")
+            text = content if isinstance(content, str) else json.dumps(content, sort_keys=True)
+            if text.startswith("[rid:") and "\n\n" in text[:80]:
+                text = text.split("\n\n", 1)[1]
+            head.append(("user", text[:4096]))
+            break
+    return int.from_bytes(hashlib.sha256(json.dumps(head).encode()).digest(), "big"), None, None
 
 
 def _shared(ids: list[int]) -> tuple[int, ...]:
@@ -368,6 +387,7 @@ class ReplayBridge:
             if body.get("stream") is not True:
                 raise ValueError("agent replay requires streaming requests")
             ids, digest, place = _prompt_ids(raw)
+            place = _request_place(body["messages"], place, pause_order=self.rounds.limit is not None)
             count = body.get("max_tokens", body.get("max_completion_tokens"))
             self.rows[external_id] = None
             stamp, ordinal = await self.rounds.hold(external_id, place)
@@ -431,7 +451,7 @@ class ReplayBridge:
             self.rows[external_id], self.cached[external_id] = row, cache.get("cached_tokens")
             self.raw.write(json.dumps({
                 "x_request_id": external_id, "batch_index": index,
-                "input_sha256": digest, "output_ids": list(prompt.output_ids),
+                "input_sha256": digest, "output_ids": list(prompt.output_ids), "requested_dp_rank": rank,
                 "request_start_ns": self._ns(row.request_started_at),
                 "first_token_ns": self._ns(row.request_started_at + row.prompt_latencies[0][0]),
                 "request_end_ns": self._ns(row.response_completed_at),

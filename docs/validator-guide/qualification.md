@@ -778,6 +778,11 @@ policy appropriate for token-ID requests. The pinned HTTP router uses request
 text for `cache_aware` and receives no routing text on token-ID replays. A
 changed routing contract has its own engine configuration identity.
 
+Ordinary replays order the initial wave by a digest of the visible conversation
+opening and use that key for replica affinity. The raw bridge records the rank
+requested by the client. The recorded-pause experiment orders openings by their
+trace session and keeps its subagents with that root.
+
 The driver uses the executable's sibling Python interpreter to call AIPerf's
 single-run API. The sealed slice digest supplies its benchmark identity, keeping
 cache-buster tokens identical between arms and windows. Each
