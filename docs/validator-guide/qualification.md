@@ -881,14 +881,12 @@ dispatcher seals that bar into each new request, so a PASS below it stops at the
 checks the exact stopping point, all engine identities, host timings, and
 controls.
 
-The dashboard lists a replay per engine boot — "Stock reference boot k",
-"Candidate boot k" and, on older evidence, "Stock bracket after PASS" — with each boot's mean
-same-work seconds, decode rate, first-token time and service attainment; its
-`score_basis` is `retained_reference_boots`. The detail adds the operating load,
-windows per boot, workload identity, required gain, unsuccessful request count
-and speed-stage duration. The attempt's retained workload and policy identify its
-regime, regardless of submission date. Retained evaluations under retired
-policies show their verdict only.
+The dashboard groups mean same-work seconds, decode rate, first-token time and attainment by stock reference
+boot, candidate boot and, on older evidence, stock bracket after PASS. Its `score_basis` is `retained_reference_boots`.
+The detail gives the load, windows per boot, workload identity, required gain, unsuccessful requests and speed-stage
+duration. At each load, service goodput counts successful turns meeting both sealed latency and decode limits and
+their output tokens over the full replay, including openings and drain. The retained workload and policy identify
+the regime. Evaluations under retired policies show their verdict only.
 
 The economic interpretation assumes identical billable work, fixed GPU
 allocation and cost, and demand for the measured capacity. At fixed basket

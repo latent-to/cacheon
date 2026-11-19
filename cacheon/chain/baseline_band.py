@@ -173,12 +173,14 @@ def _per_load(reads, policy) -> list[dict[str, Any]]:
     for load in reads.loads:
         base, cand = ([read for read in arm if read.load == load] for arm in (stock, reads.candidate))
         logs = [sum(math.log(cost(read)) for read in arm) / len(arm) for arm in (base, cand)]
-        rows.append({"load": load, "stock_cost": math.exp(logs[0]), "candidate_cost": math.exp(logs[1]),
-                     "gain": math.exp(logs[0] - logs[1]), "stock_decode_tps": decode_p50(base),
-                     "candidate_decode_tps": decode_p50(cand), "decode_floor_tps": floors.get(load),
-                     **{f"{name}_goodput_tps": sum(map(_output_tokens, arm)) / sum(
-                         fixed_work_rate(read, reads.work(read.load)).elapsed_s for read in arm)
-                        for name, arm in (("stock", base), ("candidate", cand))}})
+        row = {"load": load, "stock_cost": math.exp(logs[0]), "candidate_cost": math.exp(logs[1]),
+               "gain": math.exp(logs[0] - logs[1]), "stock_decode_tps": decode_p50(base),
+               "candidate_decode_tps": decode_p50(cand), "decode_floor_tps": floors.get(load)}
+        for name, arm in (("stock", base), ("candidate", cand)):
+            row[f"{name}_goodput_tps"] = sum(map(_output_tokens, arm)) / sum(
+                fixed_work_rate(read, reads.work(load)).elapsed_s for read in arm)
+            row[f"{name}_service"] = _service_goodput(arm, policy.contract)
+        rows.append(row)
     return rows
 
 
@@ -186,6 +188,16 @@ def _output_tokens(read) -> int:
     """Output tokens served by a window's timed warm turns: goodput is these over the warm wall span."""
     cold = min(row.credit_issued_ns for row in read.records)
     return sum(row.output_tokens for row in read.records if row.credit_issued_ns != cold)
+
+
+def _service_goodput(reads, contract) -> dict[str, float]:
+    """Pool successful turns meeting both service limits over the full observed time of each window."""
+    seconds = sum((max(r.request_end_ns for r in read.records) - min(r.credit_issued_ns for r in read.records))
+                  / 1e9 for read in reads)
+    qualified = [r for read in reads for r in read.records if r.meets(contract)]
+    return {"turns_per_second": len(qualified) / seconds,
+            "output_tps": sum(r.output_tokens for r in qualified) / seconds,
+            "attainment": len(qualified) / sum(len(read.records) for read in reads)}
 
 
 def _replay_diagnostics(read) -> dict[str, Any]:

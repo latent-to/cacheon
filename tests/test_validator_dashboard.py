@@ -369,6 +369,8 @@ def test_the_dashboard_serves_both_arenas_from_what_production_wrote(
         assert (attempt["decision"], attempt["reason"]) == (decision, reason)
         assert attempt["speed"] == json.loads(json.dumps(replay_measurements(WITNESS[hotkey])))
         assert attempt["speed"]["grading"]["decision"] == decision
+        assert attempt["speed"]["per_load"][0]["stock_service"] == pytest.approx(
+            {"turns_per_second": 4 / 50, "output_tps": 16 / 50, "attainment": 4 / 6})
     passed = details["miner-pass"]
     assert passed["result"]["detail"] == passed["qualification_attempts"][0]["speed"]["grading"]["detail"]
     assert {key: passed["settlement"][key] for key in ("status", "speedup_primary", "relative_improvement_pct")} == {
