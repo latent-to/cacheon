@@ -768,6 +768,16 @@ runs one colocated engine with the prefill role's settings on the first prefill
 server's GPUs, and the pristine reference the same engine from the first decode
 GPU; the audit's final-warmup device check requires active processes only on its
 GPUs.
+
+An arena can instead seal `pd_prefill.routing_policy`, for example `power_of_two`.
+Timed requests then go to SGLang's native PD router at one loopback endpoint.
+The router receives the actual prompt and sampling budget and chooses a prefill
+replica and a decode worker. The validator measures the token stream and
+flushes each physical cache at the existing cold boundaries. Select a native
+policy appropriate for token-ID requests. The pinned HTTP router uses request
+text for `cache_aware` and receives no routing text on token-ID replays. A
+changed routing contract has its own engine configuration identity.
+
 The driver uses the executable's sibling Python interpreter to call AIPerf's
 single-run API. The sealed slice digest supplies its benchmark identity, keeping
 cache-buster tokens identical between arms and windows. Each

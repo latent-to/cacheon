@@ -24,11 +24,16 @@ def _claims_draft_layer(tree: MaterializedEngineTree, model: Path) -> bool:
 
 
 def worker_policy_files(
-    tree: MaterializedEngineTree, model: Path, worker_destination: str, error: type[Exception],
+    tree: MaterializedEngineTree, model: Path, worker_destination: str, error: type[Exception], *, native_router=False,
 ) -> tuple[list[str], dict[str, str]]:
-    """Bind the corrected node adapter only to a tree claiming the checkpoint's MTP layer."""
+    """Bind the commissioned policy files that this engine will actually import inside the image."""
     worker = Path(__file__).with_name("engine_worker.py")
     files = [(worker, worker_destination, "CACHEON_CONTROLLER_ENGINE_WORKER_SHA256")]
+    if native_router:
+        for name in ("pd_engine", "oci_engine_options"):
+            filename = name + ".py"
+            files.append((worker.with_name(filename), str(Path(worker_destination).with_name(filename)),
+                          f"CACHEON_CONTROLLER_{name.upper()}_SHA256"))
     if _claims_draft_layer(tree, model):
         module = Path("integrations/sglang_nodes.py")
         files.append((worker.parents[1] / module, str(Path(worker_destination).parents[1] / module),

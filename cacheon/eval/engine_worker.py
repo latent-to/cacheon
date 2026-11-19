@@ -548,7 +548,7 @@ def _pin_engine_processes(plan: str | None, *, pinned: int, lane_engines: int, f
     if roles is not None and len(roles) != lane_engines:
         raise RuntimeError(f"CPU pin plan names {len(roles)} engines; the lane runs {lane_engines}")
     owner = {pid: side for side, (root, *_) in enumerate(engines) if root for pid in _process_tree(root)}
-    local = next(side for side, (root, *_) in enumerate(engines) if root is None)
+    local = next((side for side, (root, *_) in enumerate(engines) if root is None), len(engines) - 1)
     ranks: dict[int, list[int]] = {}
     controllers = [0] * len(engines)
     for pid in _process_tree(os.getpid()):
@@ -640,8 +640,10 @@ def isolated_engine_session(
     prefills = []
     # Only timed lifetimes run the pair; the eager audit and the seamless pristine reference run one engine.
     if pd_engine.is_pair(kwargs) and audit_policy is None and install_seams:
+        routing_policy = kwargs["pd_prefill"].get("routing_policy")
         prefills, kwargs, role_env = pd_engine.split(kwargs, {})
     else:
+        routing_policy = None
         kwargs, role_env = pd_engine.colocated(kwargs, {})
     tp = int(kwargs.get("tp_size", 1) or 1)
     companions: list = []
@@ -684,25 +686,32 @@ def isolated_engine_session(
                 _bind_engine_boot(plan, slice(server["base_gpu_id"], server["base_gpu_id"] + prefill_tp))
                 companions.append(pd_engine.start_prefill(server, server_env))
             _bind_engine_boot(plan, slice(decode_gpu, None) if prefills or lone else slice(0, tp))
+            prefill_processes = tuple(companions)
+            decode_pid = None
             with _environment(**role_env):
-                engine = sgl.Engine(**kwargs)
+                if routing_policy:
+                    engine, decode_pid = pd_engine._gateway(routing_policy, prefills, kwargs, companions)
+                else:
+                    engine = sgl.Engine(**kwargs)
             active_receipts: list[dict] = []
             expected_slots: list[str] = []
             expected_members = pinned if prefills else tp
             eager_members: frozenset[int] = frozenset()
             try:
-                _report_running_engine_failures(engine)
+                if not routing_policy:
+                    _report_running_engine_failures(engine)
                 dp = int(kwargs.get("dp_size") or 1)
-                running = ((None, decode_gpu if prefills or lone else 0, tp, dp),)
-                if prefills:
+                running = ((decode_pid, decode_gpu if prefills or lone else 0, tp, dp),)
+                if prefills and not routing_policy:
                     routes = [(pd_engine.wait_ready(process, server, time.monotonic() + 1800),
                                server["disaggregation_bootstrap_port"])
                               for process, (server, _) in zip(companions, prefills, strict=True)]
                     prefill_dp = int(prefills[0][0].get("dp_size") or 1)
                     engine = pd_engine.PrefillDecodePair(engine, routes, companions, prefill_dp, dp)
-                    eager_members = frozenset(pid for process in companions for pid in _process_tree(process.pid))
+                if prefills:
+                    eager_members = frozenset(pid for process in prefill_processes for pid in _process_tree(process.pid))
                     running = (*((process.pid, server["base_gpu_id"], prefill_tp, prefill_dp)
-                                 for process, (server, _) in zip(companions, prefills)), *running)
+                                 for process, (server, _) in zip(prefill_processes, prefills)), *running)
                 _pin_engine_processes(plan, pinned=pinned, lane_engines=servers + 1 if servers else 1,
                                       first=servers if lone else 0, engines=running)
                 if active:

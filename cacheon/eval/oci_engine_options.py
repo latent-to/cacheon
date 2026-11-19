@@ -60,7 +60,7 @@ ENGINE_ENV_KINDS: Mapping[str, str] = dict.fromkeys(
      # throughput as NIXL, a 165 s faster boot, and no whole-pool descriptor registration the first time a decode
      # rank meets a prefill rank, which cost NIXL ~500 s of every boot's first window (8xB300, 2026-10-27).
      "MC_INTRANODE_NVLINK", "MC_TCP_ENABLE_CONNECTION_POOL", "SGLANG_MOONCAKE_CUSTOM_MEM_POOL"), "token")
-_ROLE_FIELDS = frozenset({"engine_kwargs", "engine_env", "servers"})
+_ROLE_FIELDS = frozenset({"engine_kwargs", "engine_env", "servers", "routing_policy"})
 
 _TOKEN = re.compile(r"[A-Za-z0-9_.:+/@-]{1,256}\Z")
 _MODEL_SUBDIR = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,63}\Z")
@@ -136,12 +136,16 @@ def _validate_options(value: object, kinds: Mapping[str, str], *, label: str,
                     or ("servers" in item and (key != "pd_prefill" or type(item["servers"]) is not int
                                                or not 1 <= item["servers"] <= 8))):
                 raise error(f"{field_name} must hold engine_kwargs and/or engine_env, and prefill servers")
+            if "routing_policy" in item and (key != "pd_prefill" or not isinstance(item["routing_policy"], str)
+                                             or not re.fullmatch(r"[a-z][a-z0-9_]*", item["routing_policy"])):
+                raise error(f"{field_name}.routing_policy must name a prefill routing policy")
             # A role overrides only scalar options, its own TP degree and running-request cap among them; it
             # never nests another role or carries a float. Prefill may run several servers (pd_engine.layout).
             scalar = {**{name: k for name, k in kinds.items() if k != "role"},
                       "max_running_requests": "positive_int", "tp_size": "positive_int"}
             result[key] = {
                 **({"servers": item["servers"]} if "servers" in item else {}),
+                **({"routing_policy": item["routing_policy"]} if "routing_policy" in item else {}),
                 **({"engine_kwargs": _validate_options(item["engine_kwargs"], scalar, label=f"{field_name}.engine_kwargs",
                                                        error=error)} if "engine_kwargs" in item else {}),
                 **({"engine_env": _validate_options(item["engine_env"], ENGINE_ENV_KINDS, label=f"{field_name}.engine_env",
