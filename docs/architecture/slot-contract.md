@@ -372,19 +372,44 @@ never in a CUDA graph, so its completions count on a graphs-on run without a
 capture; in the audit role each audited request waits for its verdict and adds one
 unit to the address's audit receipt.
 
+## The queue order
+
+The address `queue_order` names a question, not an object: before every prefill
+batch SGLang's scheduler decides in which order the waiting requests are admitted.
+It belongs to the `engine` target and has no sub-addresses.
+[`sglang_order.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_order.py)
+wraps `SchedulePolicy.calc_priority`: stock orders the queue first, then the bundle's
+`entry(view)` receives one row per waiting request, in stock's order: tokens still to
+prefill, tokens the prefix cache serves (stock's own match, zero where stock does not
+match waiting requests), and prefill tokens the engine processed since the request
+arrived (stock's aging clock, equal on every TP rank). The view carries no token ids,
+no request ids and no output length: the replay fixes output lengths, so a policy that
+saw one would read the future.
+
+The entry returns the positions of the view in the order to admit. Each permutation
+yields the same tokens for every request; answers differ only in who waits. Any other
+answer is refused, receipted as the candidate's, and takes the engine down. Stock's
+admission then applies the order under its own budgets, so the address chooses who is
+next, never how much is admitted. Every rank must receive the same answer, so the entry
+is a pure function of the view. Declare no `prepare`.
+
 ## Engine objects
 
-An address under `sglang`, in the `engine` target, names a class, a method or a
-module-level function of the engine by its dotted path, such as
-`sglang.srt.managers.schedule_policy.SchedulePolicy.calc_priority` or
-`sglang.srt.disaggregation.decode.DecodePreallocQueue`. The path names the object
-where it is defined and takes no `*`. A name the engine does not define yet takes
-a function, so a patch can add the method or helper its replacements call.
+An address under `sglang`, in the `engine` target, names one of the scheduler
+decisions the validator lists in
+[`ENGINE_OBJECTS`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py),
+or a method of a listed class, by its dotted path where SGLang defines it, such as
+`sglang.srt.managers.schedule_policy.PrefillAdder.add_one_req` or
+`sglang.srt.mem_cache.prefill_budget.SWAPrefillBudget`. The list covers prefill
+admission and chunking, the token, row and KV budgets, the decode reserve,
+prefill/decode interleaving, and under KV pressure the decode memory check,
+retraction and its order; the [target catalog](../reference/target-catalog.md#registered-targets)
+names each. Every other SGLang object is refused at intake. The path takes no `*`,
+and a name the engine does not define on that path is refused at bind.
 
-The bundle's `entry(stock)` receives the stock object, or `None` for a new name, and
-returns its replacement: a callable for a function or a method, a subclass for a class.
-`None` leaves that process stock, as for a decode-side object on a prefill server.
-Declare no `prepare`.
+The bundle's `entry(stock)` receives the stock object and returns its replacement:
+a callable for a method, a subclass for a class, which may add methods. `None` leaves
+that process stock. Declare no `prepare`.
 [`sglang_engine.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_engine.py)
 binds the replacement once in each scheduler process, when the bundle loads and
 before SGLang builds the scheduler, so every later construction and call reaches
@@ -405,12 +430,12 @@ speed stage, quality against the teacher, and pristine T. A raise inside a
 replacement is receipted as the candidate's and takes the engine down, and a bind
 that fails stops the scheduler at its entry. An engine object is covered in every
 process that loaded the bundle: which of its methods a workload reaches, on which
-server, is the engine's business. A scheduler-only submission can claim just
-its engine methods. On a served parent with audited model or cache slots, the
-validator derives numerical audit coverage from those actual parent slots.
-The scheduler receives the assembled engine's speed and output-quality checks.
-An arena requiring a numerical audit needs at least one model or cache slot in
-the assembled stack.
+server, is the engine's business. A submission that names the queue order or an
+engine object is audited on every model and cache slot of the stack it is assembled
+on, so a node named beside it cannot narrow the audit, and receives the assembled
+engine's speed and output-quality checks. One that names no model or cache slot is
+parked as `target_unavailable:engine` at its first claim until a `forward_pass` or
+`prefix_cache` crown exists to assemble it on.
 
 ## Escape hatches
 

@@ -129,7 +129,8 @@ two rows may overlap, and the bundle resolves to `forward_pass` whether or not
 For prepare/forward slots, `prepare` names the registered one-time weight
 transformation while `entry` names the runtime call. `setup` is a retired
 engine-wide hook: no target admits it and the loader refuses it. A bundle that
-changes the engine names the [engine objects](../architecture/slot-contract.md#engine-objects) it replaces.
+changes the scheduler names the [queue order](../architecture/slot-contract.md#the-queue-order) or the
+[listed decisions](../architecture/slot-contract.md#engine-objects) it replaces.
 
 ### Variants
 

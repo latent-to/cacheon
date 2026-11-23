@@ -2,8 +2,9 @@
 
 The registered targets determine which parts of the serving engine a miner can
 change. `forward_pass` accepts model modules, `prefix_cache` accepts the
-scheduler's `tree_cache`, and an arena with `engine` open accepts a named
-SGLang class, function or method. The arena owns the workload and evaluation.
+scheduler's `tree_cache`, and an arena with `engine` open accepts the waiting
+queue's order and the scheduler decisions the validator lists. The arena owns the
+workload and evaluation.
 
 ## Current slot catalog
 
@@ -18,7 +19,8 @@ that every model contains or admits each address:
 | `model.layers.*.self_attn.q_b_proj` | Matching attention projection modules |
 | `model` | Whole decoder stack, only where the arena can grade it |
 | `tree_cache` | The scheduler's runtime cache object (see below) |
-| `sglang.<dotted path>` | One class, method or module-level function of the engine ([contract](../architecture/slot-contract.md#engine-objects)); `entry(stock)` returns its replacement, target `engine` |
+| `queue_order` | The order in which waiting requests are admitted ([contract](../architecture/slot-contract.md#the-queue-order)); `entry(view)` returns a permutation, target `engine` |
+| `sglang.<dotted path>` | One listed scheduler decision or a method of a listed class ([contract](../architecture/slot-contract.md#engine-objects)); `entry(stock)` returns its replacement, target `engine` |
 
 `*` matches exactly one segment. The binder refuses addresses that match no
 module and parent/child claims that overlap. Binding succeeds only when the
@@ -54,11 +56,11 @@ prepared state as the first argument. See [Kernel ABI](kernel-abi.md).
 
 ## Changing the scheduler
 
-The prefill scheduler example changes one method,
-`sglang.srt.managers.schedule_policy.SchedulePolicy.calc_priority`. Its
-`entry(stock)` returns a function that chooses the order of waiting requests
-from the remaining input work and the amount of work processed since arrival.
-The existing scheduler still allocates pages, forms batches and runs the model.
+The prefill scheduler example names `queue_order`. Its `entry(view)` moves a cheap
+returning turn ahead of a long opening until the opening has aged, from the
+remaining input work and the work processed since arrival. The existing scheduler
+still allocates pages, forms batches and runs the model; admission, chunking,
+interleaving and retraction are the [listed decisions](../architecture/slot-contract.md#engine-objects).
 On a commission with a kernel parent, the validator assembles those kernels
 with the scheduler proposal. The example contains the manifest and queue
 policy needed for a submission in `examples/miner_prefill_scheduler`.

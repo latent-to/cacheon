@@ -65,14 +65,16 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
 
 # The scheduler decisions an ``engine`` bundle may replace by dotted path, each a class or a method where SGLang
 # defines it: prefill admission and chunking, the token, row and KV budgets, the decode reserve, prefill/decode
-# interleaving and the retraction order. The queue's order is asked through ``queue_order``, whose view hides output
-# lengths: the replay fixes them, so ``SchedulePolicy.calc_priority`` or ``Scheduler.init_req_max_new_tokens`` would
-# read the future. Nothing else is listed (audit #3, 2026-11-23): configuration publication, ``Scheduler.__init__``
-# and ``flush_cache``, speculative verification, the sampler and logits processor, cache classes and their handoffs
-# (``tree_cache``), model and layer code (node addresses), the CUDA graph runner, ``ModelRunner`` and these seams'
-# own chokepoints stay stock.
+# interleaving, and under KV pressure the decode memory check, retraction and its order. The queue's order is asked
+# through ``queue_order``, whose view hides output lengths: the replay fixes them, so ``SchedulePolicy.calc_priority``
+# or ``Scheduler.init_req_max_new_tokens`` would read the future. Nothing else is listed (audit #3, 2026-11-23):
+# configuration publication, ``Scheduler.__init__`` and ``flush_cache``, speculative verification, the sampler and
+# logits processor, cache classes and their handoffs (``tree_cache``), model and layer code (node addresses), the CUDA
+# graph runner, ``ModelRunner`` and these seams' own chokepoints stay stock.
 ENGINE_OBJECTS = (
     "sglang.srt.managers.schedule_batch.ScheduleBatch._get_decode_retraction_order",
+    "sglang.srt.managers.schedule_batch.ScheduleBatch.check_decode_mem",
+    "sglang.srt.managers.schedule_batch.ScheduleBatch.retract_decode",
     "sglang.srt.managers.schedule_policy.PrefillAdder",
     "sglang.srt.managers.schedule_policy.SchedulePolicy.prefill_token_budget",
     "sglang.srt.managers.schedule_policy.SchedulePolicy.shortest_prefill_chunk_limit",

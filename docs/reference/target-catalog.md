@@ -54,8 +54,9 @@ where SGLang defines it: `PrefillAdder` (admission, chunking, preemption to
 schedule), `SchedulePolicy.prefill_token_budget` and `shortest_prefill_chunk_limit`,
 the `PrefillBudget`, `SWAPrefillBudget` and `ChainPrefillBudget` classes,
 `NewTokenRatioTracker` (the decode reserve), `Scheduler.get_num_allocatable_reqs`,
-`Scheduler._should_defer_prefill` (prefill/decode interleaving) and
-`ScheduleBatch._get_decode_retraction_order`. Every other SGLang object is refused at
+`Scheduler._should_defer_prefill` (prefill/decode interleaving), and under KV pressure
+`ScheduleBatch.check_decode_mem`, `retract_decode` and `_get_decode_retraction_order`.
+Every other SGLang object is refused at
 intake, among them configuration publication, `Scheduler.__init__`, `flush_cache`
 and `init_req_max_new_tokens`, `SchedulePolicy.calc_priority`, speculative
 verification, the sampler, cache classes and model code.

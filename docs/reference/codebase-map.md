@@ -36,7 +36,7 @@ evaluation and economic state.
 | Target identity and node roots | [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py) |
 | Node binding and audit against stock | [`sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py) |
 | Prefix-cache binding, content check, and state audit | [`sglang_cache.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_cache.py), [`sglang_cache_state.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_cache_state.py) |
-| Engine-object binding by dotted path | [`sglang_engine.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_engine.py) |
+| Queue order and listed scheduler decisions | [`sglang_order.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_order.py), [`sglang_engine.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_engine.py) |
 | Static policy | [`sandbox.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/sandbox.py) |
 | Tracing-JIT admission | [`dsl_jit_policy.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/dsl_jit_policy.py) |
 | Local interface smoke and engine check | [`miner_check.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/miner_check.py) |
