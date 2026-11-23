@@ -230,12 +230,14 @@
 # The decode memory check and retraction join the list; the queue-order contract returns to the docs: cacheon +2, docs +30.
 # The Inkling 2 Mini H200 development check inputs and their results page: examples +108, docs +109, root +1 (nav),
 # scripts +2 (this note).
+# Speed policy 23 times one engine that owns the lane; operator.json names the node's sm target and NVLink class; the
+# engine options take bf16_gemm_backend and two decimals: cacheon +9, docs +5, examples +4, scripts +5 (these notes).
 (root) 1164
 .github 338
-cacheon 92987
+cacheon 92996
 cacheon_kernels 936
 dashboard 4421
-docs 13687
-examples 566
-scripts 4766
+docs 13692
+examples 570
+scripts 4771
 tests 14539

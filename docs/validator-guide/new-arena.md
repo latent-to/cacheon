@@ -119,6 +119,7 @@ the pod transport. One directory holds them:
 | `pause_order` | optional, `true`: the replay keeps every session open and gives a freed slot to the turn whose recorded pause ends first ([finite agent replay](qualification.md)); the pressure it puts on the cache grows with the sealed pool over the highest `replay_load` |
 | `bar_futility` | optional, with `decode_floors`: `true` measures the packet's `futility_margin` from the request's payment bar, so a first candidate lifetime reading more than the margin below the bar fails without the second; written into the packet's goodput policy |
 | `steady_span` | optional, with `decode_floors`: a canonical decimal in (0, 1); each load is scored in seconds per warm turn until its active sessions fall below this share of the load, so the drain tail of the longest sessions does not set the window; written into the packet's goodput policy. A stock reference imports into a recommissioned pair across a change of this key or of `decode_floors` |
+| `speed_policy_version` | optional: 21, 22 or 23, written into the packet's speed policy; 23 times one engine that owns the lane, 21 and 22 a prefill/decode pair |
 | `replay_windows` | optional: the scored windows per load, replacing the packet's |
 | `replay_warm_windows` | optional: the untimed windows before the scored ones, 0 to 2, replacing the packet's; time one stock lifetime on the node before sealing, since each window lasts as long as the slice's longest session at the model's per-user speed |
 | `tokens_per_prompt` | the largest recorded output budget of one turn in the sessions the replay serves; the commission refuses any other value |
@@ -129,6 +130,8 @@ the pod transport. One directory holds them:
 | `audit_control_delta_digests` | the registered controls' selected delta digests, sorted; a wrong control for this model's node address, so its audit runs after its speed failure |
 | `audit_row_floor_ppm` | optional: the node audit's per-row floor in ppm, absent at the 20000 (2%) default and at most 400000; set from `cacheon check --audit-row-floor-ppm` runs in which an honest lossy control passes and the wrong control fails |
 | `node.name` | the host class whose measured scheduler positions follow |
+| `node.architecture` | the GPU's sm target the deployment profile seals: `sm103` on B300, `sm90` on H200 |
+| `node.topology_class` | the GPU interconnect class the deployment profile seals: `nvlink-sxm6` on B300, `nvlink-sxm5` on H200 |
 | `node.scheduler_starts` | one measured-fast vCPU start per GPU of the host, in GPU order |
 | `node.helper_starts` | the measured-fast helper vCPU per GPU, in GPU order, on a different physical core from its scheduler |
 | `node.client_cpus` | the validator client core set per lane, keyed by the lane's device list |

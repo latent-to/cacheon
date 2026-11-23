@@ -44,7 +44,9 @@ KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size
 # pause_order: true releases replay turns in the order of the trace's recorded pauses, absent for arrival on completion.
 OPTIONAL_KEYS = {"decode_floors", "replay_windows", "audit_row_floor_ppm", "load_margin", "replay_warm_windows",
                  "steady_span", "quality", "speed_policy_version", "bar_futility", "pause_order"}
-NODE_KEYS = {"name", "scheduler_starts", "helper_starts", "client_cpus"}
+# architecture and topology_class: the GPU's sm target and NVLink class the deployment profile seals (sm103 and
+# nvlink-sxm6 on the B300 pods, sm90 and nvlink-sxm5 on H200).
+NODE_KEYS = {"name", "scheduler_starts", "helper_starts", "client_cpus", "architecture", "topology_class"}
 # engine_cpus: an engine's first GPU -> [DP controller vCPU, frontend vCPU] (oci_cpuset.canonical_cpu_roles).
 OPTIONAL_NODE_KEYS = {"engine_cpus", "lifetime_memory_gib"}
 PACKET = ("cacheon_b300_qualification_adapter.py", "finalize-authority.py", "numeric_answer_judge.py",
@@ -118,8 +120,8 @@ def load_operator(path: Path) -> dict:
         raise SystemExit(f"{path}: steady_span is a canonical decimal in (0, 1), sealed with decode_floors")
     if "bar_futility" in operator and (not floors or operator["bar_futility"] is not True):
         raise SystemExit(f"{path}: bar_futility is true, sealed with decode_floors")
-    if "speed_policy_version" in operator and (type(operator["speed_policy_version"]) is not int or operator["speed_policy_version"] not in (21, 22)):
-        raise SystemExit(f"{path}: speed_policy_version must be 21 or 22")
+    if "speed_policy_version" in operator and (type(operator["speed_policy_version"]) is not int or operator["speed_policy_version"] not in (21, 22, 23)):
+        raise SystemExit(f"{path}: speed_policy_version must be 21, 22 or 23")
     starts, helpers = operator["node"]["scheduler_starts"], operator["node"]["helper_starts"]
     if len(helpers) != len(starts) or not all(type(c) is int for c in (*starts, *helpers)):
         raise SystemExit(f"{path}: helper_starts names one helper vCPU per scheduler start, in GPU order")
@@ -151,6 +153,7 @@ def values(operator: dict, arena_inputs: str) -> dict[str, str]:
         "SCHEDULER_STARTS": json.dumps(operator["node"]["scheduler_starts"]),
         "HELPER_STARTS": json.dumps(operator["node"]["helper_starts"]),
         "NODE_NAME": operator["node"]["name"], "CLIENT_SETS": repr(operator["node"]["client_cpus"]),
+        "ARCHITECTURE": operator["node"]["architecture"], "TOPOLOGY_CLASS": operator["node"]["topology_class"],
         "ENGINE_CPUS": repr(operator["node"].get("engine_cpus")),
         "LIFETIME_MEMORY": repr(operator["node"]["lifetime_memory_gib"] << 30
                                 if "lifetime_memory_gib" in operator["node"] else None),

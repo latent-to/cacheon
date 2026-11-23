@@ -1,10 +1,10 @@
 """Bounded production speed stage: one engine at a time owns the lane.
 
-Stock and candidate replay the sealed session slice in whole prefill/decode pair
-lifetimes on the same lane (speed policies 20-21; ``goodput_runtime`` runs the
-lifetimes and ``service_capacity`` grades them against the retained stock
-reference). Audit and pristine T are later stages and must not run unless this
-returns PASS.
+Stock and candidate replay the sealed session slice in whole engine lifetimes on
+the same lane: a prefill/decode pair under speed policies 20-22, one engine under
+policy 23 (``goodput_runtime`` runs the lifetimes and ``service_capacity`` grades
+them against the retained stock reference). Audit and pristine T are later stages
+and must not run unless this returns PASS.
 """
 
 from __future__ import annotations
@@ -129,9 +129,9 @@ class ResidentCrossoverPlan:
         ):
             raise CrossoverRuntimeError("resident arms differ outside contribution identity")
         hardware = self.candidate.launch.hardware
-        # The policy times a prefill/decode pair over the whole lane; nothing else may.
+        # Policies 20-22 time a prefill/decode pair over the whole lane, policy 23 one engine; nothing else may.
         kwargs = dict(self.candidate.session_plan.engine_config.engine_kwargs)
-        if (not pd_engine.is_pair(kwargs)
+        if (pd_engine.is_pair(kwargs) == (self.policy.version == 23)
                 or hardware.visible_gpu_count != pd_engine.lane_width(hardware.tp_size, kwargs)
                 or _expected_lane_digest(self.baseline) != _expected_lane_digest(self.candidate)):
             raise CrossoverRuntimeError("stock and candidate do not share one whole lane")

@@ -111,7 +111,9 @@ store under the commissioned root that later boots of the same tree reuse.
 1. **Stock reference.** The first qualification that finds no current reference
    for the stock identity (lane digest, stock launch digest, runtime preflight
    SHA-256, workload digest, boot schedule) measures one fresh stock pair under v22
-   or two fresh pairs under v21. Each pair occupies the first two engine lifetimes of
+   and v23 or two fresh pairs under v21. Policy 23 is policy 22 on a lane one engine
+   owns, for a model SGLang serves without a prefill/decode split; policies 20-22 time
+   a prefill/decode pair. Each pair occupies the first two engine lifetimes of
    its own evaluator process, the position every candidate pair holds: replay
    rates fall with each lifetime one evaluator process runs and recover in the
    next qualification's process, not after idle GPUs
@@ -223,7 +225,7 @@ its measured speedup falls below the mirrored bound 1 − u; that failure is
 `candidate_slower`. A miss inside the band is `speed_threshold_not_met`: the bar was
 not cleared, and the candidate was not measurably slower either. A candidate that
 clears the bar but fails the service-attainment gate is `service_contract_not_met`.
-Under policies 20 and 21 a candidate whose pooled per-user decode p50 falls below the
+Under policies 20 to 23 a candidate whose pooled per-user decode p50 falls below the
 sealed floor at any sealed load fails with `service_floor_not_met`, at any speedup.
 Reports settled before this split carry the retained coarse code `speed_regression`,
 which remains valid for them and is never recorded on a new verdict.

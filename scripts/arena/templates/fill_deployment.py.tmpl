@@ -42,7 +42,7 @@ matrix = [[links[r][header.index(c)] for c in labels] for r in labels]
 topology = hashlib.sha256(canonical_json_bytes({"matrix": matrix, "schema": "cacheon-gpu-topology-v1"})).hexdigest()
 glm = json.load(open("/data/cacheon-dev/glm-baseline-20261005/stage/qualification-authority/deployment.json"))
 profile = {
-    "architecture": "sm103",
+    "architecture": "@ARCHITECTURE@",
     "arena_id": "@ARENA_ID@",
     "docker_binary": str(Path(ready["source"]["path"]).resolve().parent / "bin" / "docker"),
     "gid": 65534,
@@ -67,7 +67,7 @@ profile = {
     "speed_policy": {**glm["speed_policy"], "max_qualification_seconds": 14400},
     "stage_root": stage_root,
     "tensor_parallel_size": @TP@,
-    "topology_class": "nvlink-sxm6",
+    "topology_class": "@TOPOLOGY_CLASS@",
     "topology_digest": topology,
     "uid": 65534,
     "worker_digest": seen["worker"]["digest"],

@@ -32,6 +32,8 @@
   ],
   "node": {
     "name": "8-GPU B300 pod",
+    "architecture": "sm103",
+    "topology_class": "nvlink-sxm6",
     "scheduler_starts": [80, 70, 50, 88, 146, 156, 166, 130],
     "helper_starts": [82, 72, 52, 90, 148, 158, 168, 132],
     "lifetime_memory_gib": 1792,

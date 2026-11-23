@@ -1,11 +1,12 @@
 """Frozen qualification speed policy, retaining the historical wire identity.
 
-Only the prefill/decode replay policies remain. Version 20 grades a prefill/decode engine pair against a
+Only the closed-loop replay policies remain. Version 20 grades a prefill/decode engine pair against a
 retained stock reference at a sealed closed-loop concurrency, failing a candidate whose pooled per-user decode
 p50 falls under the contract's floor; it stays readable for the DeepSeek-V4.1-Flash PD arena's 2026-10-28
 attempts. Version 21 keeps that arithmetic and measures stock as two boot pairs, each the first two engine
 lifetimes of its own evaluator process, as every candidate pair is read. Version 22 measures one such pair.
-Versions 16-19 served retired arenas.
+Version 23 is version 22 on a lane one engine owns, for a model SGLang serves without a prefill/decode split
+(Inkling 2's DSpark worker refuses disaggregation). Versions 16-19 served retired arenas.
 The batch-cell fields stay on the wire at zero so sealed replay witnesses decode byte for byte.
 """
 
@@ -40,7 +41,7 @@ class ResidentSpeedPolicy:
     def __post_init__(self) -> None:
         if (
             type(self.version) is not int
-            or self.version not in (20, 21, 22)
+            or self.version not in (20, 21, 22, 23)
             or type(self.max_stage_seconds) is not int
             or not 60 <= self.max_stage_seconds <= 7_200
             or type(self.max_qualification_seconds) is not int
@@ -92,13 +93,14 @@ class ResidentSpeedPolicy:
     @property
     def reference_boots(self) -> int:
         """Number of measured stock lifetimes sealed into this version's witness."""
-        return CANDIDATE_BOOTS if self.version == 22 else REFERENCE_BOOTS
+        return CANDIDATE_BOOTS if self.version >= 22 else REFERENCE_BOOTS
 
     @property
     def digest(self) -> str:
         return canonical_digest("cacheon.qualification.goodput-speed-policy.v1", {
             **self.to_dict(), "timing": "fixed_work_host_time", "repeat_limit": 0,
-            "topology": "pd_prefill_decode_on_one_node", "reference_boots": self.reference_boots,
+            "topology": "one_engine_owns_the_lane" if self.version == 23 else "pd_prefill_decode_on_one_node",
+            "reference_boots": self.reference_boots,
             "candidate_boots": CANDIDATE_BOOTS, "aggregation": "log_mean_elapsed_serving_time_per_boot",
             "eligibility": "alpha_spending_0.05_0.05_0.10_0.80_at_boot_boundaries",
             "sentinel": "stock_bracket_after_pass_one_sided_0.01", "continuation": "completed_stage",
