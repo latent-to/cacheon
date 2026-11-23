@@ -96,9 +96,9 @@ Every slot name other than [`tree_cache`](#the-prefix-cache) is a node address: 
 the served model reaches a module, where `*` stands for exactly one segment. `model.layers.*.mlp` is every MoE block, `model.layers.3` one decoder
 layer, `model` the whole decoder stack; a module reached by several paths binds once. `model` is whatever
 the served model calls `model`, a child or a property over one: Inkling 2 registers its decoder as `llm` and
-binds `model.*` through that property. On Inkling 2 only MoE blocks (`model.layers.*.mlp`) bind; its decoder
-layers, attention and short convolutions write per-visit convolution state and an attention-residual record the
-audit does not restore, so a bundle naming them fails at bind. One adapter,
+binds `model.*` through that property. On Inkling 2, MoE blocks (`model.layers.*.mlp`) and full-attention `attn`
+blocks bind: the audit restores and grades their cache rows and their visit's convolution rows. Sliding-window
+attention, decoder layers and short convolutions write state it does not restore, so naming them fails at bind. One adapter,
 [`sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py),
 serves every width, and a bundle that lists several addresses replaces several
 nodes at once. Granularity is the model's own module tree: a span that is not a

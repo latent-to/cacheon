@@ -1312,14 +1312,13 @@ def _write_materialized_tree(
         destination,
         files=files,
     )
-    result = MaterializedEngineTree(
+    return MaterializedEngineTree(
         root=destination,
         stack_digest=stack_digest,
         tree_digest=tree_digest,
         files=rows,
         runtime_manifest=runtime_manifest,
     )
-    return result
 
 
 def _reopen_engine_tree(

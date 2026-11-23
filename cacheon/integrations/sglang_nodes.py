@@ -668,10 +668,10 @@ def make_node_dispatcher(
     # 2026-10-09). The first call of a shape still records not-selected reasons.
     selections: dict[tuple, object] = {}
     reported = False
-    # Read before any candidate code runs. A decoder layer's stock writes only its own
-    # layer's cache; a node without one (the whole model) keeps every layer's rows.
+    # Read before any candidate code runs. A decoder layer's stock writes only its own layer's cache; a node
+    # without one (the whole model) or Inkling 2's attention (it writes its visit's rows) keeps every layer's.
     layer = getattr(module, "layer_id", None)
-    layer = layer if type(layer) is int else None
+    layer = layer if type(layer) is int and not hasattr(module, "conv_layer_ids") else None
     # Steps alternate per node over audited calls, so every rank runs the same references.
     pruned_moe, steps = _prune.single_pruned_moe(module), 0
 
@@ -762,8 +762,8 @@ def bind(runner, registry: KernelRegistry = REGISTRY, *, draft: bool = False) ->
 
     ``model`` is what the served model calls ``model``, a child or a property over one. Inkling 2
     registers its decoder as ``llm`` (SGLang PR #51926); an ``llm`` root would have changed the
-    forward_pass digest. Only its MoE blocks bind: its layers, attention and convolutions write
-    per-visit convolution state and an attention-residual record this audit does not restore.
+    forward_pass digest. Its MoE and global-attention blocks bind; its layers, convolutions and
+    sliding-window attention write state this audit does not restore (attention residual, window pool).
     """
 
     # Every path, each module once per slot, and one module two slots reach is an overlap:
@@ -776,6 +776,7 @@ def bind(runner, registry: KernelRegistry = REGISTRY, *, draft: bool = False) ->
         named.update(body.named_modules(prefix="model", remove_duplicate=False))
     inkling = getattr(sys.modules.get("sglang.srt.models.inkling2"), "Inkling2ForConditionalGeneration", ())
     moe = getattr(sys.modules.get("sglang.srt.models.inkling_common.inkling2_moe"), "Inkling2MoE", ())
+    attention = getattr(sys.modules.get("sglang.srt.models.inkling_common.inkling2_attn"), "Inkling2Attention", ())
     config = runner.model_config.hf_config
     depth = getattr(config, "target_num_hidden_layers", None) or getattr(config, "text_config", config).num_hidden_layers
     layer = f"model.layers.{depth}."
@@ -788,8 +789,9 @@ def bind(runner, registry: KernelRegistry = REGISTRY, *, draft: bool = False) ->
         if not names:
             error = f"node slot {slot!r} names no module of the served model"
         for name in names:
-            if isinstance(runner.model, inkling) and not isinstance(named[name], moe):
-                error = f"node {name!r} of {slot!r} is not audited on Inkling 2; only its MoE blocks bind"
+            if isinstance(runner.model, inkling) and not (isinstance(named[name], moe) or (
+                    isinstance(named[name], attention) and not named[name].is_local)):
+                error = f"node {name!r} of {slot!r} is not audited on Inkling 2; only MoE and global attention bind"
                 break
             # A claimed node inside another claimed node would run as the candidate
             # while the outer node's stock reference is taken, and never otherwise.

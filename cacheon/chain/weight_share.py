@@ -1284,7 +1284,7 @@ def serve_current_weights(
         raise WeightShareError("push credentials require a configured save_offer")
     if push_credentials is not None and type(push_credentials) is not PushCredentialSet:
         raise WeightShareError("push credentials are untyped")
-    server = _WeightShareHTTPServer(
+    return _WeightShareHTTPServer(
         (host, port),
         _WeightShareHandler,
         load_offer=load_offer,
@@ -1297,7 +1297,6 @@ def serve_current_weights(
         verify=verify or default_verify_fn,
         clock=clock or (lambda: int(time.time())),
     )
-    return server
 
 
 def push_current_weights(
