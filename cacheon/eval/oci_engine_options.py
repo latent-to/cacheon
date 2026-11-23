@@ -20,7 +20,7 @@ ENGINE_KWARG_KINDS: Mapping[str, str] = {
         disaggregation_decode_extra_slots disaggregation_decode_polling_interval
     """.split(), "positive_int"),
     **dict.fromkeys("""
-        cuda_graph_backend_prefill kv_cache_dtype quantization speculative_algorithm
+        cuda_graph_backend_prefill kv_cache_dtype quantization speculative_algorithm bf16_gemm_backend
         hicache_mem_layout hicache_io_backend hicache_write_policy dsv4_attn_backend speculative_draft_attention_backend
         speculative_draft_model_path moe_a2a_backend disaggregation_transfer_backend
         dsa_prefill_backend dsa_decode_backend dsa_paged_mqa_logits_backend
@@ -31,6 +31,9 @@ ENGINE_KWARG_KINDS: Mapping[str, str] = {
         weight_loader_prefetch_checkpoints speculative_use_block_verification enable_dp_lm_head enable_dp_attention_local_control_broadcast
         disaggregation_decode_enable_radix_cache enable_linear_replayssm_spec
     """.split(), "bool"),
+    # Inkling 2's sliding-window pool at 5% of the full-attention pool (its default 10%) holds ~20% more full-attention
+    # tokens, and an explicit host-tier ratio turns off SGLang's host-memory auto-sizing (H200 lanes, 2026-11-23).
+    **dict.fromkeys(("swa_full_tokens_ratio", "hicache_ratio"), "decimal"),
     # Speed policy 20's prefill/decode pair: each role's kwargs and environment over the shared ones
     # (cacheon.eval.pd_engine). GPU placement and the bootstrap port are derived, never sealed.
     **dict.fromkeys(("pd_prefill", "pd_decode"), "role"),
@@ -119,6 +122,8 @@ def _validate_options(value: object, kinds: Mapping[str, str], *, label: str,
             result[key] = _optional_token(item, field_name=field_name, error=error)
             if result[key] is None:
                 raise error(f"{field_name} must not be null")
+        elif kind == "decimal":
+            result[key] = _bounded_float(item, field_name=field_name, minimum=0.000001, maximum=1024.0, error=error)
         elif kind == "int_list":
             if (
                 not isinstance(item, (list, tuple))
@@ -141,7 +146,7 @@ def _validate_options(value: object, kinds: Mapping[str, str], *, label: str,
                 raise error(f"{field_name}.routing_policy must name a prefill routing policy")
             # A role overrides only scalar options, its own TP degree and running-request cap among them; it
             # never nests another role or carries a float. Prefill may run several servers (pd_engine.layout).
-            scalar = {**{name: k for name, k in kinds.items() if k != "role"},
+            scalar = {**{name: k for name, k in kinds.items() if k not in ("role", "decimal")},
                       "max_running_requests": "positive_int", "tp_size": "positive_int"}
             result[key] = {
                 **({"servers": item["servers"]} if "servers" in item else {}),
@@ -172,4 +177,6 @@ def _digest_identity(identity: dict[str, object]) -> dict[str, object]:
     """Stack identities deliberately reject JSON floats: bind each binary64
     value through its shortest round-trippable decimal spelling."""
     identity["mem_fraction_static"] = format(identity["mem_fraction_static"], ".17g")  # type: ignore[arg-type]
+    identity["engine_kwargs"] = {key: format(value, ".17g") if type(value) is float else value
+                                 for key, value in identity["engine_kwargs"].items()}  # type: ignore[union-attr]
     return identity

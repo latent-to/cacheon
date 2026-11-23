@@ -14,6 +14,8 @@
   ],
   "node": {
     "name": "8-GPU AWS 8559C VM",
+    "architecture": "sm103",
+    "topology_class": "nvlink-sxm6",
     "scheduler_starts": [5, 14, 27, 38, 51, 62, 74, 86],
     "helper_starts": [6, 15, 28, 39, 52, 63, 75, 87],
     "client_cpus": {
