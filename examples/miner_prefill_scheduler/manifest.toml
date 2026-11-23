@@ -1,4 +1,4 @@
-bundle_id = "pd-prefill-work-with-fifo-service"
+bundle_id = "prefill-work-with-fifo-service"
 abi_version = "cacheon-op-abi-v0"
 
 [competition]
@@ -6,6 +6,6 @@ target = "engine"
 mode = "slot"
 
 [[ops]]
-slot = "sglang.srt.managers.schedule_policy.SchedulePolicy.calc_priority"
+slot = "queue_order"
 source = "engine/prefill.py"
-entry = "replace"
+entry = "order"

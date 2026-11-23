@@ -78,7 +78,7 @@ when remeasured, which is the intended outcome.
 
 ## What Cacheon depends on upstream
 
-`compat` checks the three seam-table chokepoints in
+`compat` checks every seam-table chokepoint in
 [`cacheon/seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py)
 and the supporting surfaces below:
 
@@ -88,6 +88,7 @@ and the supporting surfaces below:
 | `ModelRunner.load_model` | Node binder: replaces the `forward` of named modules once weights load | Module tree, call arguments, capture order, engine-state layout |
 | `create_tree_cache` | Prefix-cache binder and content check | Cache construction, handoff methods, KV pool and host-tier layout |
 | `SchedulePolicy.calc_priority` | Queue-order address: the candidate reorders stock's answer | Call arguments, whether the queue is returned or sorted in place, the request fields the view reads |
+| `Scheduler` and the `ENGINE_OBJECTS` of `seams.py` | Engine-object binder: replaces the listed scheduler decisions a bundle names. The canary checks `Scheduler` only; a listed path the engine lacks fails when a bundle binds it | Their paths and signatures, and which class serves an arena: a method named on a base class never runs where the arena's subclass overrides it |
 | `BaseFusedOp.forward_native` | The node audit's honest twin | Native reference paths and the twin's measured noise |
 | `Engine.generate` logprob API | Reference scoring and quality observation | Request, logprob, and streaming schema |
 | `ServerArgs` fields | Deterministic engine launch policy | Model, graph, memory, seed, backend, and logging controls |

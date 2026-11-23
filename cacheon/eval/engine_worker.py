@@ -187,9 +187,13 @@ def _eager_audit_engine(kwargs: dict[str, Any]) -> None:
     ``disable_cuda_graph`` leaves nightly SGLang's ``cuda_graph_backend_prefill`` on: the
     DeepSeek-V4.1 audit then graded 74 prefill shapes' capture warmups, on which stock
     disagreed with itself by p90 0.15-0.65, and no replayed prefill (B300, 2026-10-15).
+    The key is set wherever the engine defines it, sealed or not: an unset key lets
+    Inkling's own default capture FULL prefill graphs (U3, 2026-11-23).
     """
+    from sglang.srt.server_args import ServerArgs
+
     kwargs["disable_cuda_graph"] = True
-    if "cuda_graph_backend_prefill" in kwargs:
+    if hasattr(ServerArgs, "cuda_graph_backend_prefill"):
         kwargs["cuda_graph_backend_prefill"] = "disabled"
 
 
@@ -381,9 +385,10 @@ def _require_execution_completion(
         and any(reason.get("outcome") == DECLINED for reason in row.get("reasons") or ())
     ]
     # An engine object changes the engine where it is bound, and a bind that fails stops the scheduler at its
-    # entry. Which of its methods a workload reaches is the engine's business: a decode scheduler never orders
-    # a prefill queue and an abort path may never run. Every member that loaded the bundle is covered, under
-    # the identity its own completions carry (an early active receipt may hold the pid alone).
+    # entry, as does a name the engine lacks or an entry nothing selects (audit #14). Which of its methods a
+    # workload reaches is the engine's business: retraction may never run in a light window. Every member that
+    # loaded the bundle is covered for each engine object and the queue order, under the identity its own
+    # completions carry (an early active receipt may hold the pid alone).
     done = {(row.get("slot"), row.get("pid")) for row in completed}
     known = {row.get("pid"): row for row in completed}
     bound = [{**known.get(member.get("pid"), member), "slot": slot}
