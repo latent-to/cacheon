@@ -44,7 +44,6 @@ _PCI_BUS_ID = re.compile(
 )
 _DRIVER = re.compile(r"[0-9]+(?:\.[0-9]+){1,3}\Z")
 _PSTATE = re.compile(r"P[0-9]{1,2}\Z")
-_PROCESS_KIND = re.compile(r"[A-Z][A-Z+/]{0,7}\Z")
 _COMPUTE_MODES = frozenset(
     {"Default", "Exclusive_Process", "Prohibited", "Exclusive_Thread"}
 )
@@ -804,52 +803,38 @@ def provision_gpu_configurations(
     return tuple(item.configuration for item in observed)
 
 
-def parse_process_monitor(
-    text: str, *, selected_gpu_ids: tuple[int, ...]
+def parse_compute_apps(
+    text: str, *, gpu_ids_by_uuid: dict[str, int]
 ) -> tuple[GPUProcess, ...]:
-    """Parse ``nvidia-smi pmon`` rows, including compute and graphics contexts."""
+    """Parse ``nvidia-smi --query-compute-apps`` rows: every process holding a context on a selected GPU.
+
+    The driver lists a context by its PID in the root namespace. ``pmon`` drops a process the caller's namespace
+    cannot resolve, so it showed nothing for an engine at 100% SM inside a container pod (Inkling H200 pod,
+    2026-11-24), and every final warmup there ended without the active run this guard requires.
+    """
 
     if not isinstance(text, str) or len(text.encode("utf-8")) > _MAX_STDOUT_BYTES:
         raise DeviceStateParseError("GPU process output exceeds its byte bound")
-    selected = set(selected_gpu_ids)
-    seen_gpus: set[int] = set()
-    seen_processes: set[tuple[int, int, str]] = set()
+    seen: set[tuple[int, int]] = set()
     processes: list[GPUProcess] = []
     for raw in text.splitlines():
         line = raw.strip()
-        if not line or line.startswith("#"):
+        if not line:
             continue
-        parts = line.split()
-        if not 3 <= len(parts) <= 64:
+        parts = [part.strip() for part in line.split(",", 2)]
+        if len(parts) != 3:
             raise DeviceStateParseError(f"GPU process row is malformed: {line!r}")
-        physical_id = _parse_int(parts[0], "process GPU index", 0, 65_535)
-        if physical_id not in selected:
-            raise DeviceStateConfigurationError(
-                f"process monitor returned unselected physical GPU {physical_id}"
-            )
-        seen_gpus.add(physical_id)
-        pid_text, kind = parts[1], parts[2]
-        if pid_text == "-":
-            if kind != "-":
-                raise DeviceStateParseError("idle process row has a non-idle process kind")
-            continue
-        pid = _parse_int(pid_text, "GPU process PID", 1, 2_147_483_647)
-        if _PROCESS_KIND.fullmatch(kind) is None:
-            raise DeviceStateParseError(f"GPU process type is invalid: {kind!r}")
-        key = (physical_id, pid, kind)
-        if key in seen_processes:
-            raise DeviceStateParseError(f"GPU process monitor duplicated {key!r}")
-        name = _safe_text(
-            parts[-1], "GPU process name", maximum=_MAX_PROCESS_NAME_CHARS
-        )
-        processes.append(GPUProcess(physical_id, pid, kind, name))
-        seen_processes.add(key)
-    if seen_gpus != selected:
-        raise DeviceStateConfigurationError(
-            "process monitor selected-set mismatch: "
-            f"missing={sorted(selected - seen_gpus)} extra={sorted(seen_gpus - selected)}"
-        )
-    return tuple(sorted(processes, key=lambda item: (item.physical_id, item.pid, item.kind)))
+        uuid = _safe_text(parts[0], "process GPU UUID")
+        if uuid not in gpu_ids_by_uuid:
+            raise DeviceStateConfigurationError(f"compute-app query returned unselected GPU {uuid}")
+        physical_id = gpu_ids_by_uuid[uuid]
+        pid = _parse_int(parts[1], "GPU process PID", 1, 2_147_483_647)
+        if (physical_id, pid) in seen:
+            raise DeviceStateParseError(f"compute-app query duplicated {(physical_id, pid)!r}")
+        seen.add((physical_id, pid))
+        name = _safe_text(parts[2], "GPU process name", maximum=_MAX_PROCESS_NAME_CHARS)
+        processes.append(GPUProcess(physical_id, pid, "C", name))
+    return tuple(sorted(processes, key=lambda item: (item.physical_id, item.pid)))
 
 
 class DeviceStateGuard:
@@ -939,10 +924,9 @@ class DeviceStateGuard:
         )
         process_argv = (
             NVIDIA_SMI,
-            "pmon",
             f"--id={ids}",
-            "--count=1",
-            "--select=u",
+            "--query-compute-apps=gpu_uuid,pid,process_name",
+            "--format=csv,noheader",
         )
         # A wedged nvidia-smi must not make cancellation wait for the whole
         # multi-hour bracket deadline. Each live query receives a small bounded
@@ -953,8 +937,9 @@ class DeviceStateGuard:
             self._command(query_argv, deadline=query_deadline), policy=self.policy, selected_gpu_ids=selected
         )
         process_deadline = min(deadline, self._now() + command_window)
-        processes = parse_process_monitor(
-            self._command(process_argv, deadline=process_deadline), selected_gpu_ids=selected
+        processes = parse_compute_apps(
+            self._command(process_argv, deadline=process_deadline),
+            gpu_ids_by_uuid={item.telemetry.uuid: item.telemetry.physical_id for item in observed},
         )
         return tuple(item.telemetry for item in observed), processes
 
@@ -1007,13 +992,6 @@ class DeviceStateGuard:
             missing = occupied - process_gpu_ids
             if missing:
                 violations.append(f"missing active process on GPUs {sorted(missing)}")
-        graphics_only = [
-            (item.physical_id, item.pid, item.kind)
-            for item in processes
-            if "C" not in item.kind and "M" not in item.kind
-        ]
-        if graphics_only:
-            violations.append(f"unexpected graphics-only processes {graphics_only[:16]}")
         for item in telemetry:
             if item.physical_id not in occupied:
                 continue
