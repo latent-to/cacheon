@@ -55,10 +55,23 @@ the graphs-on role.
 | MoE identity (`miner_node_identity`) | `model.layers.*.mlp` | PASS: 1,752 calls graded, bitwise equal to stock | node called inside CUDA-graph capture on both ranks | 21 min |
 | Cache identity, a subclass that calls stock | `tree_cache` | PASS: 32 requests graded by content | served every request on both ranks | 8 min |
 | Wrong MoE (`miner_node_wrong`) | `model.layers.*.mlp` | FAIL at the first graded call on each rank, score 0 against the bar | not run | 3 min |
+| Decoder-layer identity | `model.layers.*` | PASS: 1,656 calls graded, bitwise equal to stock | node called inside CUDA-graph capture on both ranks | 24 min |
+| Layer-part identity: attention, its input norms, `mlp_norm`, both short convolutions, `model.norm`, `model.embed_norm` | ten addresses | PASS: 5,122 calls graded, bitwise equal to stock | all ten called inside capture on both ranks | 39 min |
+| Attention-internal identity: `qkvr`, `wo_ud`, `k_sconv`, `v_sconv`, `attn.attn`, `rel_logits_proj` | `model.layers.*.attn.*` | PASS: 4,140 calls graded, bitwise equal to stock | all six called inside capture on both ranks | 14 min |
+| Whole-model identity | `model` | PASS: 26 calls graded, bitwise equal to stock | node called inside capture on both ranks | 9 min |
+| Wrong window cache: local attention negates the window K/V rows it wrote | `model.layers.*.attn` | FAIL at the first graded call, score 0 | not run | 3 min |
+| Wrong residual: a decoder layer negates its new partial | `model.layers.*` | FAIL at the first graded call, score 0 | not run | 3 min |
+| Wrong closed block: a decoder layer negates a closed block in place | `model.layers.*` | FAIL at the first graded call, score 0 | not run | 3 min |
+| Wrong loop message: a later-pass layer negates a message in place | `model.layers.*` | FAIL: 4 of 40 graded calls, worst score 0.0002 | not run | 4 min |
+| Wrong visit convolution: a later-pass layer negates its visit's convolution rows | `model.layers.*` | FAIL: one window per rank scored 0.70 against the 0.75 bar | not run | 11 min |
 | Queue order (`miner_prefill_scheduler`) | `queue_order` | not audited | ordered the waiting queue on both ranks | 4 min |
 | Pass-through of `_should_defer_prefill`, `check_decode_mem` and `retract_decode` | `engine` | not audited | all three bound; the first two called on both ranks | 4 min |
 
 Retraction never ran, because these requests never filled the KV pool.
 
 The audit role grades every call of an audited node. The identity control spent 17 of its
-21 minutes there.
+21 minutes there. Every graded call of an Inkling 2 node also keeps every layer visit's
+convolution rows, every layer's window-cache rows at the call's write locations and the
+attention-residual state, so the layer-part control took 39 minutes. A call writes one visit's convolution rows, and the other visits'
+unchanged rows count toward the same window, which is why the wrong visit-convolution control
+scored 0.70 rather than 0.
