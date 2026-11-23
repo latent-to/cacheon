@@ -76,8 +76,9 @@ Promising classes include:
 - name the enclosing module when one coupled change spans several children.
 
 Do not expand the manifest until a desired optimization “fits.” The target
-catalog fixes the smallest allowed delta. If the change needs an unregistered
-engine seam, batching or other scheduler behavior, a broad source patch, or
+catalog fixes the smallest allowed delta. Scheduler behavior is submittable in an
+arena that opens `engine`, through `queue_order` and the scheduler decisions the
+catalog lists. If the change needs another engine seam, a broad source patch, or
 engine-wide setup, it is not submittable until the catalog registers that surface.
 
 ## Cache wins

@@ -921,7 +921,7 @@ def _inspect_contribution(
     for op in manifest.ops:
         if op.slot.split(".")[0] in SCHEDULER_ADDRESSES:
             source = _logical_path(op.source, field="python source")
-            admit(_parse_python(root, source)[1], op.slot, op.entry, error=EngineTreeError)
+            admit(_parse_python(root, source)[1], op, error=EngineTreeError)
 
     file_rows: list[dict[str, object]] = []
     for role, paths in (

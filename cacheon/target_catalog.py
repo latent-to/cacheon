@@ -22,6 +22,7 @@ from typing import Iterable, Mapping
 
 from cacheon._strict import NODE_ADDRESS, require_node_members
 from cacheon.manifest import CompetitionEntry, DEFAULT_VARIANT, Manifest
+from cacheon.seams import ENGINE_OBJECTS, QUEUE_ORDER
 from cacheon.stack_identity import canonical_digest
 
 # Catalog identities are consensus-bearing and survive the product/package
@@ -658,8 +659,9 @@ FORWARD_PASS_ROOTS = ("logits_processor", "model")
 PREFIX_CACHE_TARGET = "prefix_cache"
 # One bundle across every surface, timed as one engine: a kernel's gain moves about 2% with the operating point
 # a cache or scheduler change sets (43 GLM-5.3-Flash rows over three loads, 2026-11-16), so gains never multiply.
+# Its scheduler roots are the queue's order and the validator-listed decisions; any other SGLang object stays stock.
 ENGINE_TARGET = "engine"
-ENGINE_ROOTS = ("logits_processor", "model", "sglang", "tree_cache")
+ENGINE_ROOTS = tuple(sorted(("logits_processor", "model", QUEUE_ORDER, "tree_cache", *ENGINE_OBJECTS)))
 
 
 def _node_contract(slot_id: str, **fields: object) -> TargetContractRef:

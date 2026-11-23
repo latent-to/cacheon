@@ -74,7 +74,6 @@ from cacheon.eval.resident_audit_authority import (
     ResidentAuditExecutionAuthority,
 )
 from cacheon.eval.scoring import marginal_workload_digest
-from cacheon.manifest import load_manifest
 from cacheon.stack_identity import canonical_digest
 from cacheon.stack_manifest import (
     EvaluationStackManifest,
@@ -100,10 +99,11 @@ from cacheon.eval.b300_registered_qualification_inputs import (
 
 
 def _audit_members(selected, tree):
-    """Audit the submitted numerical slots, or the real numerical slots under a scheduler-only change."""
-    members = tuple(sorted(member for member in selected if seams.audited(member)))
-    if members:
-        return members
+    """Audit a model or cache submission's own slots, and every numerical slot of the assembled stack once a
+    submission changes the scheduler: it feeds each inherited kernel new batches, and a decoy node named beside
+    it would otherwise narrow the audit to that node (U17)."""
+    if all(seams.audited(member) for member in selected):
+        return tuple(sorted(selected))
     inherited = tuple(sorted({op.slot for op in load_manifest(tree.root).ops if seams.audited(op.slot)}))
     if not inherited:
         raise B300RegisteredQualificationError("the serving stack has no model or cache slot for its registered numerical audit")

@@ -224,12 +224,15 @@
 # The wrong node control also scales Inkling 2's routed MoE rows: examples +1, scripts +1 (this note).
 # Inkling 2 MoE nodes bind via its `model` property; DSpark verify windows graded: cacheon +19, docs +7, scripts +1.
 # Hybrid prefix-cache audit on PR #51926 fields (#7, U9), timed gap and gate in docs: cacheon +7, docs +15, scripts +1.
+# The engine target opens queue_order and the listed scheduler decisions, not all of sglang (audit #3/#4/#8/#14, U3, U17):
+# the queue-order adapter returns (+83), intake refuses declared domains and parks engine-only changes before a crown, the
+# binder's new-name branch goes: cacheon +176/-50, docs +44/-15, examples +18/-40, tests +169/-11, scripts +3 (these notes).
 (root) 1163
 .github 338
-cacheon 92859
+cacheon 92985
 cacheon_kernels 936
 dashboard 4421
-docs 13519
-examples 480
-scripts 4760
-tests 14381
+docs 13548
+examples 458
+scripts 4763
+tests 14539
