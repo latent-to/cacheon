@@ -219,12 +219,14 @@
 # change is assembled on the record and a miner no longer rebuilds it (GLM refused any crowned entry): cacheon +33,
 # docs +10, tests +62 (the end-to-end case on the standing supervisor). settlement.py shrinks 2 lines; no other
 # deletion available, next: the audit-recovery authorization nothing in the tree or the GLM operator calls.
+# Merging main into the slot branch carries main's re-timed crown bar (#161: 22211598, dded0189), reviewed there:
+# cacheon +36, docs +4, tests +23.
 (root) 1163
 .github 338
-cacheon 92797
+cacheon 92833
 cacheon_kernels 936
 dashboard 4421
-docs 13493
+docs 13497
 examples 479
 scripts 4755
-tests 14358
+tests 14381
