@@ -10,7 +10,7 @@ oracle.
 |---|---|---|
 | `verify` and `check` | Interface smoke; audit against stock and captured execution on public requests | No |
 | Contributor-controlled model A/B or in-engine audit | Development feedback and integration diagnosis | No |
-| Prefix-cache content check | Every served cache page holds the KV the engine computed for that prefix | Yes; it runs in every engine that serves a candidate's cache |
+| Prefix-cache content check | Sampled served cache pages hold the KV the engine computed for their prefix | No; a refusal fails the candidate, but the check runs in the candidate's process and is not tamper-proof |
 | Registered audit-only role | Exact slot × TP-rank live-call evidence graded by the trusted host | Yes, when the arena policy requires it |
 | Pristine T over sealed timed trajectories | Candidate-free, retained production quality evidence | Yes, as one required part of qualification |
 
@@ -41,23 +41,21 @@ registered target or crown authority.
 
 A cache contribution does not change the model's arithmetic, but it can fake a hit:
 serve a prefix whose slots do not hold what the engine computed for it, skipping
-prefill and returning wrong tokens quickly. The validator binds a content check around
-the cache's handoff methods in every engine that serves a candidate's cache, timed or
-audited. Stock's cache is trusted and runs unchecked, so a cache candidate carries the
-check's cost in its own arm. At each handoff it hashes every complete page the request's
-own forward passes computed and records the pair (prefix digest, page hash); it then
-hashes a sample of the pages the request read from the cache and requires each pair to
-have been recorded. A request's own slots must not move between handoffs, and a flush
-forgets every pair. The check is on content, so a host-memory tier that restores the
-exact bytes passes.
+prefill and returning wrong tokens quickly. In every engine that serves a candidate's
+cache, the validator records a hash of each page the engine computed, bound to the
+page's prefix, and requires sampled served pages to match a recorded pair; a
+host-memory tier that restores the exact bytes passes. Timed roles check
+full-attention KV. Sliding-window and recurrent state, which a forward pass can
+overwrite, is checked only in the untimed audit role. A refusal stops the engine and
+is receipted as the candidate's. SGLang serves the cache outside CUDA graphs, so it is
+an eager slot whose completions count without a capture.
 
-Sliding-window KV can be overwritten within a forward pass,
-so in the untimed audit role the adapter also records that state before the cache
-receives it and checks served device hits and, after the cache submits its loads, host hits. A refusal stops the
-engine and is receipted as the candidate's. SGLang serves the cache outside CUDA graphs, so it is an eager slot whose
-completions count without a capture. Residual: a page is checked after the forward pass
-that read it, so bytes a cache moves into a served slot after that read are not told
-apart from bytes placed before. See [The prefix cache](../architecture/slot-contract.md#the-prefix-cache).
+The check is defense in depth, not the quality gate. It runs in the candidate's
+process, where the bundle's own code can switch it off, and an entry that declines can
+first alter the stock cache it leaves unchecked. Pristine T, which teacher-forces the
+timed trajectories in a candidate-free engine, is the gate that binds a cache's output
+quality. Mechanics, residuals and the timed-role gap are in
+[The prefix cache](../architecture/slot-contract.md#the-prefix-cache).
 
 ## Registered audit-only role
 

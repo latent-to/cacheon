@@ -221,12 +221,13 @@
 # deletion available, next: the audit-recovery authorization nothing in the tree or the GLM operator calls.
 # Merging main into the slot branch carries main's re-timed crown bar (#161: 22211598, dded0189), reviewed there:
 # cacheon +36, docs +4, tests +23, scripts +2 (this note).
+# Hybrid prefix-cache audit on PR #51926 fields (#7, U9), timed gap and gate in docs: cacheon +7, docs +15, scripts +1.
 (root) 1163
 .github 338
-cacheon 92833
+cacheon 92840
 cacheon_kernels 936
 dashboard 4421
-docs 13497
+docs 13512
 examples 479
-scripts 4757
+scripts 4758
 tests 14381

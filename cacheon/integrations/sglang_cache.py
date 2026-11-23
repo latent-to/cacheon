@@ -324,7 +324,9 @@ class _Guard:
         # batch that computed these pages (``copy_done``); the pass in flight belongs to the next batch. A wait on
         # the whole stream held the schedule stream behind that pass 30 s per prefill rank over a 930 s replay
         # (GLM-5.3-Flash PD, 2026-11-17). A page read before its write records a pair that its later reads
-        # cannot match, which is a refusal and never a pass.
+        # cannot match, which is a refusal and never a pass. A chunk stashed between prefill chunks is handed
+        # over before its batch's result and relies on the scheduler's write-after-read barrier, which a backend
+        # declaring PRE_REPLAY prefill reads narrows: there an honest cache can be refused (audit U20, 2026-11-23).
         row = self.requests.req_to_token[req.kv.req_pool_idx, :n].to(torch.int64)
         if self.hybrid is not None:
             self.hybrid.record(req, ids, row, held, finished=finished)
