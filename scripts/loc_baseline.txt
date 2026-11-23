@@ -221,12 +221,13 @@
 # deletion available, next: the audit-recovery authorization nothing in the tree or the GLM operator calls.
 # Merging main into the slot branch carries main's re-timed crown bar (#161: 22211598, dded0189), reviewed there:
 # cacheon +36, docs +4, tests +23, scripts +2 (this note).
+# Inkling 2 MoE nodes bind via its `model` property; DSpark verify windows graded: cacheon +19, docs +7, scripts +1.
 (root) 1163
 .github 338
-cacheon 92833
+cacheon 92852
 cacheon_kernels 936
 dashboard 4421
-docs 13497
+docs 13504
 examples 479
-scripts 4757
+scripts 4758
 tests 14381
