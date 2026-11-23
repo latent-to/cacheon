@@ -9,8 +9,8 @@ ordinary full-KV checker remains active in both serving roles.
 
 from __future__ import annotations
 
+import importlib
 import secrets
-import sys
 
 from cacheon import audit
 from cacheon.integrations.sglang_cache import _LAYERS, _MODULI, _STATE
@@ -48,14 +48,6 @@ def compressed_page_buffers(pool):
     return kv, index
 
 
-def _evicted(req) -> int:
-    """The window positions the runtime already let go of, by its own component name."""
-    components = sys.modules.get(_COMPONENTS)
-    if components is None:
-        raise RuntimeError("tree_cache: the runtime's cache components are not loaded")
-    return int(req.kv.get_evicted_seqlen(components.ComponentType.SWA))
-
-
 class PrefixStateAudit:
     """State-family adaptation under the runtime-cache ABI, without model names."""
 
@@ -82,6 +74,11 @@ class PrefixStateAudit:
         self.window = int(self.params.sliding_window_size or 0)
         if (self.swa is not None or self.ring is not None) and self.window <= 0:
             raise RuntimeError("tree_cache: sliding-window state has no positive window size")
+        # The key a request's window cursor goes by. SGLang PR #51926 keys it by sub-pool name, where the int
+        # ComponentType.SWA misses and reads 0, which recorded freed window rows as valid (audit U9, 2026-11-23).
+        prefix = importlib.import_module("sglang.srt.mem_cache.base_prefix_cache")
+        self.cursor = (prefix.window_sub_pool_of(guard.allocator) if hasattr(prefix, "window_sub_pool_of")
+                       else importlib.import_module(_COMPONENTS).ComponentType.SWA)
         self.buffers = self._buffers()
         # A window pool that stores whole pages has fewer rows than slots.
         self.paged = {kind for kind, buffer in self.buffers.items()
@@ -173,7 +170,7 @@ class PrefixStateAudit:
         # Record every computed page still resident: a later branch can reuse an
         # earlier window. On reads, require the whole live window regardless of
         # eviction metadata supplied by the cache.
-        begin = max(start, _evicted(req)) if record else max(0, len(row) - self.window)
+        begin = max(start, req.kv.get_evicted_seqlen(self.cursor)) if record else max(0, len(row) - self.window)
         # DSV4.1's window is smaller than a page: rounding its read start up
         # skips that whole live window. Include the first partially used page.
         first = (begin + page - 1) // page if record else begin // page
@@ -191,7 +188,11 @@ class PrefixStateAudit:
         if audit._rate() <= 0:
             return
         if req.rid in self.pending:
-            self.guard.refuse("a host prefix was consumed before its state audit completed")
+            if held.own:
+                self.guard.refuse("a host prefix was consumed before its state audit completed")
+            # Matched but served nothing: a load-back that commits no host tokens leaves the request to
+            # recompute them, and the scheduler never resolves prefix slots (SGLang PR #51926).
+            del self.pending[req.rid]
         self._swa(req, ids, row, record=True, start=max(held.own, held.recorded))
         if self.mamba is not None:
             extra = self.params.enable_mamba_extra_buffer
@@ -251,10 +252,12 @@ class PrefixStateAudit:
         # lookup only rearranges KV: live recurrent state may be past the last
         # checkpoint and is preserved by settled(), not restored from this hit.
         recurrent = self.mamba is not None and params.cow_mamba
-        host = bool(result.host_hit_length or result.swa_host_hit_length
-                    or getattr(result, "mamba_host_hit_length", 0))
+        # SGLang PR #51926 reports window host hits per sub-pool; the DSV4.1 nightly as one count (audit #7).
+        windows = getattr(result, "window_host_hit_lengths", None)
+        window = any(windows.values()) if windows is not None else result.swa_host_hit_length
+        host = bool(result.host_hit_length or window or getattr(result, "mamba_host_hit_length", 0))
         if host or not hasattr(result, "device_indices"):
-            self.pending[req.rid] = (req, ids, length, host, recurrent)
+            self.pending[req.rid] = (req, ids, host, recurrent)
         else:
             self._check(req, ids, result.device_indices, recurrent=recurrent)
 
@@ -262,9 +265,11 @@ class PrefixStateAudit:
         """Check the lazy prefix when the runtime resolves the slots it will consume."""
         pending = self.pending.pop(req.rid, None)
         if pending is not None:
-            _, ids, length, host, recurrent = pending
-            if len(indices) < length:
-                self.guard.refuse("a host load returned fewer prefix slots than it claimed")
+            _, ids, host, recurrent = pending
+            # The request consumes what was served: a load-back may commit none of the promised host
+            # tokens, which the request recomputes, or expose more resident ones (SGLang PR #51926).
+            if len(indices) > len(ids):
+                self.guard.refuse("it served more prefix slots than the request's key")
             if host and self.guard.device.type == "cuda":
                 controller = getattr(cache, "cache_controller", None)
                 transfer = getattr(controller, "l2_transfer_engine", None)
@@ -273,7 +278,7 @@ class PrefixStateAudit:
                     raise RuntimeError("tree_cache: no native transfer stream for the hybrid host audit")
                 # Wait only on the submitted copies, never on unrelated model/NCCL streams.
                 self.torch.cuda.current_stream(self.guard.device).wait_stream(stream)
-            self._check(req, ids, indices[:length], recurrent=recurrent)
+            self._check(req, ids, indices, recurrent=recurrent)
             self.guard.poll(block=True)
 
     def ready(self, cache):

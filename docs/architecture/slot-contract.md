@@ -277,19 +277,22 @@ The choice is made once, at engine start, with an empty call descriptor: an op d
 dtypes, architectures or eligibility never matches, and the run fails as `candidate_never_executed`.
 A factory that returns `None` leaves that engine's cache stock and unchecked; its
 `not_selected` receipt (outcome `declined`) covers that scheduler in the execution
-gate once another scheduler serves the address.
+gate once another scheduler serves the address. The factory runs in the scheduler
+with the live cache, so it can alter the stock object before it declines.
 
 The content checks run only around a candidate's cache. Stock's cache is trusted
 and runs unchecked: checking it cost the DeepSeek-V4.1 PD decode schedulers 18% of
-their decode speed, so a cache candidate carries the check's cost in its own arm. Storage
+their decode speed, so a cache candidate carries the check's cost in its own arm. The
+checks run in the candidate's process, where the bundle's own code can switch them off
+while completed receipts keep accruing: a refusal fails the candidate, but a pass is
+not quality evidence. Pristine T, which teacher-forces the timed trajectories in a
+candidate-free engine, is the gate that binds a cache's output quality. Storage
 validation is adapter work under this common contract. It recognizes full-attention
 KV, sliding-window KV and its index state (by slot, or by page where the window pool
 stores whole pages), compressed KV and index pages, per-request sliding-window rings,
 and the pending-pair ring a DeepSeek-V4 kv-source layer holds per request, which a
 cache handoff must leave unchanged. A request-local ring is never stored in the tree,
-so a prefix hit that skips its trailing window is refused. In the untimed audit,
-native recurrent convolution and temporal checkpoints are bound to their complete
-token prefix and namespace before donation, then checked before reuse. Live
+so a prefix hit that skips its trailing window is refused. Live
 recurrent request state must survive cache handoffs unchanged. Physical slot
 translation and tracked checkpoint boundaries follow the pinned runtime. MTP
 acceptance commits its scratch state into these same checkpoint rows before
@@ -335,18 +338,32 @@ factory returns must be concrete.
 
 The check runs on the scheduler's stream behind the forward pass that wrote the
 bytes; the host reads each verdict at a later handoff, and only a flush or an
-audited request waits for one. A page is checked after the forward pass that read
+audited request waits for one. A chunk stashed between prefill chunks is handed over
+before its batch's result. On an attention backend that ends its prefill reads before
+graph replay (SGLang's `PRE_REPLAY`, as TRT-LLM MHA does), its pages can be hashed
+before they are written and an honest cache refused; Inkling 2 Mini's hybrid backend
+does not end them there. A page is checked after the forward pass that read
 it, so bytes moved into a served slot after that pass are not told apart from bytes
 placed before. The check does not bound memory a cache allocates beyond the
-engine's pools. Sliding-window KV may be overwritten during forward, so its
-additional checks run in the existing untimed audit role: record computed state
-before handing it to the cache, verify device hits before use, and verify host
-restores after the native transfer stream completes. Unfinished requests retain
-their live ring state. These checks sample up to four layers per transferable
-state field. The handoffs
+engine's pools. Sliding-window KV may be overwritten during forward, so it and native
+recurrent convolution and temporal checkpoints are checked in the untimed audit role:
+state is bound to its complete token prefix and namespace before the cache receives
+it, device hits are verified before use and host restores after the native transfer
+stream completes, against the prefix served, so a load-back that commits none of its
+promised host tokens is not a refusal. Unfinished requests retain their live ring
+state. These checks sample up to four layers per transferable state field. The handoffs
 `match_prefix`, `checkpoint`, `prefix_device_indices`, `on_release`,
 `ready_to_load_host_cache` and `reset` may be overridden in the class but not replaced on
 the instance or class later.
+
+Timed roles check full-attention KV only: on Inkling 2 Mini, 8 of 48 layer caches,
+leaving its 40 sliding-window caches and the convolution state of its 48 layer passes
+unchecked there. A bundle can tell the audit role from a timed one, so pristine T is
+what catches wrong window or recurrent state in a timed lifetime. Those checks read
+device values on the host at each handoff, and the first such read waits out the
+forward pass in flight: one wait per handoff cost 30 s per prefill rank over a 930 s
+replay (GLM-5.3-Flash PD, 2026-11-17). A host hit's check also holds the forward pass
+behind the whole host-to-device copy that the hierarchical cache overlaps layer by layer.
 
 Every candidate refusal and every raise in a method the bundle defines stops the
 engine as the candidate's failure. An unsupported cache or state layout is refused
