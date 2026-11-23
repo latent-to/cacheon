@@ -94,7 +94,11 @@ the pinned runtime, and its documentation.
 
 Every slot name other than [`tree_cache`](#the-prefix-cache) is a node address: a dotted path by which
 the served model reaches a module, where `*` stands for exactly one segment. `model.layers.*.mlp` is every MoE block, `model.layers.3` one decoder
-layer, `model` the whole decoder stack; a module reached by several paths binds once. One adapter,
+layer, `model` the whole decoder stack; a module reached by several paths binds once. `model` is whatever
+the served model calls `model`, a child or a property over one: Inkling 2 registers its decoder as `llm` and
+binds `model.*` through that property. On Inkling 2 only MoE blocks (`model.layers.*.mlp`) bind; its decoder
+layers, attention and short convolutions write per-visit convolution state and an attention-residual record the
+audit does not restore, so a bundle naming them fails at bind. One adapter,
 [`sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py),
 serves every width, and a bundle that lists several addresses replaces several
 nodes at once. Granularity is the model's own module tree: a span that is not a
@@ -116,7 +120,9 @@ Truth is the stock node in the running engine, on the same call:
    requests and tracked checkpoints. Under KDA
    ReplaySSM speculation it grades the draft rings at each live request's
    Mamba slot (the BF16 rounding residuals summed with the values they round)
-   and the per-request convolution windows; other speculative recurrent layouts
+   and the per-request convolution windows. Inkling 2 keeps convolution state alone, one pool layer per
+   layer visit; under DSpark its verify call restores and grades every visit's convolution windows at
+   verify-scratch row i for request i. Other speculative recurrent layouts
    (GDN native MTP, other ReplaySSM forms) are refused. A call that moves the batch's layer-boundary
    residual stream (a decoder layer on SGLang main) also keeps the residual and
    the pending contribution it leaves there;
@@ -398,7 +404,8 @@ checkpoint's own name for it, `model.layers.<num_hidden_layers>` (for
 GLM-5.3-Flash, `model.layers.45.mlp` is the draft layer's MoE). No target layer
 carries that index, so those slots bind only on the draft worker, where the
 layer loads as `model.decoder`, and a wildcard such as `model.layers.*.mlp`
-still names target layers alone. Verification stays
+still names target layers alone. A drafter with a config of its own (Inkling 2's DSpark) takes the index from
+the target's depth it carries; its layers have no address yet. Verification stays
 exact, so a draft node changes only how many proposals are accepted, and the
 speed score counts that. The validator owns the speculative schedule, sampling
 and acceptance rules, and request batching. A contribution may not change those

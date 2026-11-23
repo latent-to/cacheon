@@ -197,7 +197,7 @@ def _state_rows(
     Only a call that carries the engine's batch can reach the cache pools: the cache
     rows at ``out_cache_loc``. An unrecognized cache layout raises rather than
     leaving written state unchecked. Native recurrent live and checkpoint rows
-    are restored too, with KDA ReplaySSM verify rings (``_recurrent_rows``).
+    are restored too, with KDA ReplaySSM and Inkling 2 DSpark verify scratch (``_recurrent_rows``).
 
     SGLang keeps an FP8 cache in ``uint8`` storage with the real type on the pool.
     Graded as bytes, a near-zero value whose sign flips reads as a jump of 128 (7% of
@@ -230,9 +230,11 @@ def _recurrent_rows(runner, batch, layer):
 
     KDA ReplaySSM verify (GLM-5.3-Flash, layout dumped from a TP2 engine on 2026-11-11) appends drafts to rings
     keyed by Mamba slot and writes request i's conv windows to verify scratch row i of the physical buffer.
-    ``rawv``/``rawk`` hold the BF16 rounding of ``d``/``k`` and are graded summed with them. Other speculative
-    layouts raise: GDN native-MTP scratch and request rings served only the retired Qwen arena, whose 21,400-call
-    MTP audit never graded the rings (2026-09-22).
+    ``rawv``/``rawk`` hold the BF16 rounding of ``d``/``k`` and are graded summed with them. Inkling 2 keeps
+    convolution state alone, one pool layer per layer visit: under DSpark its per-draft SSM scratch is allocated
+    empty and verify writes request i's windows to the same scratch row i (the commit reads rows ``arange(bs)``;
+    SGLang PR #51926). Other speculative layouts raise: GDN native-MTP scratch and request rings served only the
+    retired Qwen arena, whose 21,400-call MTP audit never graded the rings (2026-09-22).
     """
     requests = runner.req_to_token_pool
     pool = getattr(requests, "mamba_pool", None)
@@ -240,7 +242,8 @@ def _recurrent_rows(runner, batch, layer):
         return []
     state = getattr(pool, "mamba_cache", None)
     replay = getattr(pool, "enable_linear_replayssm_spec", False)
-    if (state is None or getattr(state, "intermediate_ssm", None) is not None
+    ssm = getattr(state, "intermediate_ssm", None)
+    if (state is None or (ssm is not None and state.temporal.numel())
             or getattr(pool, "enable_linear_replayssm", False)
             or (replay and (not getattr(pool, "replayssm_is_kda", False)
                             or getattr(pool, "replayssm_request_ring", True)
@@ -264,15 +267,17 @@ def _recurrent_rows(runner, batch, layer):
             for buffer in (state.temporal, *state.conv) for index in layers
             if buffer[index].numel()]
     mode = getattr(batch, "forward_mode", None)
-    if replay and mode is not None and mode.is_target_verify():
+    if (replay or ssm is not None) and mode is not None and mode.is_target_verify():
         slots = live.reshape(-1).long()
         slots = slots[slots >= 0]
-        scratch = runner.attn_backend.linear_attn_backend.verify_intermediate_state_indices[:live.numel()].long()
+        scratch = (runner.attn_backend.linear_attn_backend.verify_intermediate_state_indices[:live.numel()].long()
+                   if replay else torch.arange(live.numel(), device=live.device))
         for index in layers:
-            rows.extend((ring[index], 0, slots, ring.dtype) for ring in (
-                state.replayssm_d, state.replayssm_k, state.replayssm_g, state.replayssm_beta))
-            rows.extend((low[index], 0, slots, high[index]) for low, high in (
-                (state.replayssm_rawv, state.replayssm_d), (state.replayssm_rawk, state.replayssm_k)))
+            if replay:
+                rows.extend((ring[index], 0, slots, ring.dtype) for ring in (
+                    state.replayssm_d, state.replayssm_k, state.replayssm_g, state.replayssm_beta))
+                rows.extend((low[index], 0, slots, high[index]) for low, high in (
+                    (state.replayssm_rawv, state.replayssm_d), (state.replayssm_rawk, state.replayssm_k)))
             rows.extend((window[index], 0, scratch, window.dtype) for window in pool._intermediate_conv_window_phys)
     return rows
 
@@ -631,10 +636,7 @@ def _call_facts(module, args: tuple, kwargs: dict) -> tuple[torch.dtype, int, in
     return dtype_source.dtype, int(floating.shape[-1]), (floating.device.index or 0) if floating.is_cuda else None
 
 
-def _descriptor(module, args: tuple, kwargs: dict, in_graph: bool) -> CallDescriptor | None:
-    facts = _call_facts(module, args, kwargs)
-    if facts is None:
-        return None
+def _descriptor(facts: tuple[torch.dtype, int, int | None], in_graph: bool) -> CallDescriptor:
     dtype, last_dim, device = facts
     return CallDescriptor.from_legacy(
         dtype_name=_dtype_name(dtype),
@@ -708,7 +710,7 @@ def make_node_dispatcher(
         try:
             impl = selections[key]
         except KeyError:
-            impl = selections[key] = registry.select(slot, _descriptor(module, args, kwargs, in_graph)).impl
+            impl = selections[key] = registry.select(slot, _descriptor(facts, in_graph)).impl
         if impl is None:
             return stock(*args, **kwargs)
         if id(impl) not in prepared:
@@ -754,6 +756,14 @@ def bind(runner, registry: KernelRegistry = REGISTRY, *, draft: bool = False) ->
     ``model.layers.<num_hidden_layers>``, which no target layer carries; the drafter loads that
     layer as ``model.decoder``. Those slots bind only on the draft worker, the rest only on the
     target, so wildcard slots such as ``model.layers.*.mlp`` keep naming target layers alone.
+    Inkling 2's DSpark drafter has a config of its own and carries the target's depth as
+    ``target_num_hidden_layers``; read as its own three, ``model.layers.3.mlp`` was a draft slot
+    and was refused.
+
+    ``model`` is what the served model calls ``model``, a child or a property over one. Inkling 2
+    registers its decoder as ``llm`` (SGLang PR #51926); an ``llm`` root would have changed the
+    forward_pass digest. Only its MoE blocks bind: its layers, attention and convolutions write
+    per-visit convolution state and an attention-residual record this audit does not restore.
     """
 
     # Every path, each module once per slot, and one module two slots reach is an overlap:
@@ -761,8 +771,14 @@ def bind(runner, registry: KernelRegistry = REGISTRY, *, draft: bool = False) ->
     # child (upstream #42245), and the deduplicating listing named 37 of 40 layers only
     # through that chain, so ``model.layers.*`` bound 3 of 40 (B300, 2026-10-12 and 10-15).
     named = dict(runner.model.named_modules(remove_duplicate=False))
+    body = getattr(runner.model, "model", None)
+    if "model" not in named and isinstance(body, torch.nn.Module):
+        named.update(body.named_modules(prefix="model", remove_duplicate=False))
+    inkling = getattr(sys.modules.get("sglang.srt.models.inkling2"), "Inkling2ForConditionalGeneration", ())
+    moe = getattr(sys.modules.get("sglang.srt.models.inkling_common.inkling2_moe"), "Inkling2MoE", ())
     config = runner.model_config.hf_config
-    layer = f"model.layers.{getattr(config, 'text_config', config).num_hidden_layers}."
+    depth = getattr(config, "target_num_hidden_layers", None) or getattr(config, "text_config", config).num_hidden_layers
+    layer = f"model.layers.{depth}."
     bound: dict[str, str] = {}
     for slot in sorted(s for s in registry.slots() if not _scheduler_address(s) and s.startswith(layer) == draft):
         pattern = node_pattern("model.decoder." + slot.removeprefix(layer) if draft else slot)
@@ -772,6 +788,9 @@ def bind(runner, registry: KernelRegistry = REGISTRY, *, draft: bool = False) ->
         if not names:
             error = f"node slot {slot!r} names no module of the served model"
         for name in names:
+            if isinstance(runner.model, inkling) and not isinstance(named[name], moe):
+                error = f"node {name!r} of {slot!r} is not audited on Inkling 2; only its MoE blocks bind"
+                break
             # A claimed node inside another claimed node would run as the candidate
             # while the outer node's stock reference is taken, and never otherwise.
             clash = next((o for o in bound if named[o] is named[name] or o.startswith(name + ".")
