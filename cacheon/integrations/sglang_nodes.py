@@ -54,6 +54,7 @@ from cacheon.dispatch import (
     _arch_tag, _dtype_name, _dynamo_compiling, _flashinfer_tuning, _in_cuda_graph,
 )
 from cacheon.integrations import sglang_dsv4_prune as _prune
+from cacheon.integrations import sglang_inkling_state as _inkling
 from cacheon.seams import scheduler_address as _scheduler_address
 from cacheon.integrations.sglang_dsa_state import (
     KV_BUFFERS as _KV_BUFFERS, StateFormat, dsa_state_rows, state_values,
@@ -283,7 +284,8 @@ def _recurrent_rows(runner, batch, layer):
 
 
 def _cache_rows(pool, batch, layer: int | None) -> list[tuple]:
-    """The cache rows this batch writes, in the pool's own addressing: by page or by slot."""
+    """The cache rows this batch writes, in the pool's own addressing: by page or by slot,
+    with a mapped sliding-window sub-pool's rows at the translated slots."""
 
     paged = dsv4_state_rows(pool, batch, layer)
     if paged is not None:
@@ -291,26 +293,17 @@ def _cache_rows(pool, batch, layer: int | None) -> list[tuple]:
     dsa = dsa_state_rows(pool, batch, layer)
     if dsa is not None:
         return dsa
-    pool = getattr(pool, "full_kv_pool", pool)
-    buffers = [
-        buffer
-        for name in _KV_BUFFERS
-        for buffer in (getattr(pool, name, None) or ())
-        if torch.is_tensor(buffer)
-    ]
+    loc = batch.out_cache_loc.long()
+    return _kv_rows(getattr(pool, "full_kv_pool", pool), loc) + _inkling.window_rows(pool, loc, _kv_rows)
+
+
+def _kv_rows(pool, index: torch.Tensor) -> list[tuple]:
+    buffers = [b for name in _KV_BUFFERS for b in (getattr(pool, name, None) or ()) if torch.is_tensor(b)]
     if not buffers:
         raise RuntimeError(f"no cache buffer recognized on {type(pool).__name__}")
     held = getattr(pool, "dtype", None)
     fp8 = held is not None and held.is_floating_point and held.itemsize == 1
-    return [
-        (
-            buffer,
-            0,
-            batch.out_cache_loc.long(),
-            held if fp8 and buffer.dtype == torch.uint8 else buffer.dtype,
-        )
-        for buffer in buffers
-    ]
+    return [(b, 0, index, held if fp8 and b.dtype == torch.uint8 else b.dtype) for b in buffers]
 
 
 def _values(buffer: torch.Tensor, dim: int, index: torch.Tensor, held) -> torch.Tensor:
@@ -393,8 +386,10 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
     """
 
     stream = _residual_stream((*args, *kwargs.values()))
+    carry = _inkling.carried((*args, *kwargs.values()))
     # The stream's residual and released fields are restored by value too, once each.
-    handed = _once(_tensors((args, kwargs, stream and (stream[2][0], [fields for _, fields in stream[3]])), []))
+    handed = _once(_tensors((args, kwargs, stream and (stream[2][0], [fields for _, fields in stream[3]])), [])
+                   + _inkling.held(carry))
     rows = _state_rows(runner, (*args, *kwargs.values()), layer)
     before = [t.clone() for t in handed]
     state = []
@@ -412,6 +407,7 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
     def run(keep):
         outputs = _audit.capture_reference(
             slot, lambda: _once(_tensors(stock(*args, **kwargs), [], fields=True) + _stream_left(stream))
+            + _inkling.left(carry)
         )
         kept = None if outputs is None else keep([(t, 0) for t in outputs])
         # Write back only what stock changed: an untouched input may be an expanded
@@ -424,6 +420,7 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
                 buffer.index_copy_(dim, piece, part.to(buffer.device))
         if stream is not None:
             _put_back_stream(stream)
+        _inkling.put_back(carry)
         return kept
 
     expected = run(lambda outputs: outputs + [
@@ -626,7 +623,8 @@ def _grade(slot: str, node: int, actual: list, twin: list, *, node_name: str = "
 def _call_facts(module, args: tuple, kwargs: dict) -> tuple[torch.dtype, int, int | None] | None:
     """Dtype, trailing width and CUDA device of a call; None when nothing is handed in."""
 
-    handed = _tensors((args, kwargs), [])
+    # An Inkling 2 decoder layer is handed its activations inside the attention-residual state.
+    handed = _tensors((args, kwargs), []) + _inkling.held(_inkling.carried((*args, *kwargs.values())))
     if not handed or not handed[0].dim():
         return None
     # Rotary positions can lead the call as (3, M); the activations carry M.
@@ -654,11 +652,13 @@ def make_node_dispatcher(
     *,
     registry: KernelRegistry = REGISTRY,
     node_name: str | None = None,
+    every_layer: bool = False,
 ) -> Callable[..., object]:
     """Build the replacement ``forward`` for one bound node.
 
     ``sealed`` is filled by ``bind`` once every node is bound and before any
-    candidate code has run.
+    candidate code has run. ``every_layer`` keeps every layer's state rows for a node
+    whose call writes a layer other than its own.
     """
 
     prepared: dict[int, object] = {}
@@ -669,9 +669,9 @@ def make_node_dispatcher(
     selections: dict[tuple, object] = {}
     reported = False
     # Read before any candidate code runs. A decoder layer's stock writes only its own layer's cache; a node
-    # without one (the whole model) or Inkling 2's attention (it writes its visit's rows) keeps every layer's.
+    # without one (the whole model) or any Inkling 2 node (a looped layer writes its visit's rows) keeps every layer's.
     layer = getattr(module, "layer_id", None)
-    layer = layer if type(layer) is int and not hasattr(module, "conv_layer_ids") else None
+    layer = layer if type(layer) is int and not every_layer else None
     # Steps alternate per node over audited calls, so every rank runs the same references.
     pruned_moe, steps = _prune.single_pruned_moe(module), 0
 
@@ -720,12 +720,13 @@ def make_node_dispatcher(
                 else module
             )
         stream = _residual_stream((*args, *kwargs.values())) if expected is not None else None
+        carry = _inkling.carried((*args, *kwargs.values())) if expected is not None else None
         result = _receipts.invoke(
             slot, impl.entry, prepared[id(impl)], *args, kwargs=kwargs
         )
         if expected is not None and twin is not None:
             try:
-                outputs = _once(_tensors(result, [], fields=True) + _stream_left(stream))
+                outputs = _once(_tensors(result, [], fields=True) + _stream_left(stream)) + _inkling.left(carry)
                 actual = _errors(
                     [(t, 0) for t in outputs],
                     _state_rows(runner, (*args, *kwargs.values()), layer), expected, module=module,
@@ -762,8 +763,9 @@ def bind(runner, registry: KernelRegistry = REGISTRY, *, draft: bool = False) ->
 
     ``model`` is what the served model calls ``model``, a child or a property over one. Inkling 2
     registers its decoder as ``llm`` (SGLang PR #51926); an ``llm`` root would have changed the
-    forward_pass digest. Its MoE and global-attention blocks bind; its layers, convolutions and
-    sliding-window attention write state this audit does not restore (attention residual, window pool).
+    forward_pass digest. Every Inkling 2 module binds: the audit also puts back and grades the
+    sliding-window cache, every layer visit's conv rows and a decoder layer's attention-residual
+    state and loop messages (``sglang_inkling_state``).
     """
 
     # Every path, each module once per slot, and one module two slots reach is an overlap:
@@ -775,8 +777,7 @@ def bind(runner, registry: KernelRegistry = REGISTRY, *, draft: bool = False) ->
     if "model" not in named and isinstance(body, torch.nn.Module):
         named.update(body.named_modules(prefix="model", remove_duplicate=False))
     inkling = getattr(sys.modules.get("sglang.srt.models.inkling2"), "Inkling2ForConditionalGeneration", ())
-    moe = getattr(sys.modules.get("sglang.srt.models.inkling_common.inkling2_moe"), "Inkling2MoE", ())
-    attention = getattr(sys.modules.get("sglang.srt.models.inkling_common.inkling2_attn"), "Inkling2Attention", ())
+    visits = isinstance(runner.model, inkling)
     config = runner.model_config.hf_config
     depth = getattr(config, "target_num_hidden_layers", None) or getattr(config, "text_config", config).num_hidden_layers
     layer = f"model.layers.{depth}."
@@ -789,10 +790,6 @@ def bind(runner, registry: KernelRegistry = REGISTRY, *, draft: bool = False) ->
         if not names:
             error = f"node slot {slot!r} names no module of the served model"
         for name in names:
-            if isinstance(runner.model, inkling) and not (isinstance(named[name], moe) or (
-                    isinstance(named[name], attention) and not named[name].is_local)):
-                error = f"node {name!r} of {slot!r} is not audited on Inkling 2; only MoE and global attention bind"
-                break
             # A claimed node inside another claimed node would run as the candidate
             # while the outer node's stock reference is taken, and never otherwise.
             clash = next((o for o in bound if named[o] is named[name] or o.startswith(name + ".")
@@ -812,7 +809,7 @@ def bind(runner, registry: KernelRegistry = REGISTRY, *, draft: bool = False) ->
         module = named[name]
         module.forward = make_node_dispatcher(
             slot, module, module.forward, runner, seals[name], registry=registry,
-            node_name=layer + name.removeprefix("model.decoder.") if draft else name,
+            node_name=layer + name.removeprefix("model.decoder.") if draft else name, every_layer=visits,
         )
     for name in bound:
         seals[name].extend(_seal(named[name]))

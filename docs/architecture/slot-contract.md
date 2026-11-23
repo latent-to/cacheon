@@ -96,9 +96,9 @@ Every slot name other than [`tree_cache`](#the-prefix-cache) is a node address: 
 the served model reaches a module, where `*` stands for exactly one segment. `model.layers.*.mlp` is every MoE block, `model.layers.3` one decoder
 layer, `model` the whole decoder stack; a module reached by several paths binds once. `model` is whatever
 the served model calls `model`, a child or a property over one: Inkling 2 registers its decoder as `llm` and
-binds `model.*` through that property. On Inkling 2, MoE blocks (`model.layers.*.mlp`) and full-attention `attn`
-blocks bind: the audit restores and grades their cache rows and their visit's convolution rows. Sliding-window
-attention, decoder layers and short convolutions write state it does not restore, so naming them fails at bind. One adapter,
+binds `model.*` through that property. Every Inkling 2 module binds: its nodes keep every layer's convolution rows,
+since a looped layer writes its visit's, and a decoder layer's attention-residual state (the running partial, the
+closed blocks) and the loop messages it was handed are put back and graded like cache rows. One adapter,
 [`sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py),
 serves every width, and a bundle that lists several addresses replaces several
 nodes at once. Granularity is the model's own module tree: a span that is not a
@@ -116,9 +116,9 @@ Truth is the stock node in the running engine, on the same call:
 1. on an audited eager call the stock node runs first;
 2. its result tensors are kept, together with the engine-state rows the batch may
    write: the cache rows at `out_cache_loc` (whole pages where the pool stores
-   pages; a pooled DSA indexer's per-request key tails too), plus native recurrent convolution and temporal rows for both live
-   requests and tracked checkpoints. Under KDA
-   ReplaySSM speculation it grades the draft rings at each live request's
+   pages; a pooled DSA indexer's per-request key tails too; a mapped sliding-window
+   sub-pool's rows at the translated locations), plus native recurrent convolution and temporal rows for both live
+   requests and tracked checkpoints. Under KDA ReplaySSM speculation it grades the draft rings at each live request's
    Mamba slot (the BF16 rounding residuals summed with the values they round)
    and the per-request convolution windows. Inkling 2 keeps convolution state alone, one pool layer per
    layer visit; under DSpark its verify call restores and grades every visit's convolution windows at

@@ -71,7 +71,6 @@ _STANDARD_COMPONENT_FEATURES = frozenset(
     }
 )
 _ID_RE = re.compile(r"^[0-9A-Za-z._\-]+$")
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _CATALOG_SCHEMA_VERSION = 2
 _CATALOG_POLICY_VERSION = "target-catalog.v2"
 
