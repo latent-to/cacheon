@@ -7,7 +7,7 @@ Examples are development controls, not crowns or performance claims.
 | Example | Expected behavior |
 |---|---|
 | [miner_node_identity](https://github.com/latent-to/cacheon/tree/main/examples/miner_node_identity) | Returns the original MLP result; import smoke passes and engine audit should match stock. |
-| [miner_node_wrong](https://github.com/latent-to/cacheon/tree/main/examples/miner_node_wrong) | Scales a tensor-valued MLP result by 1.5; import smoke passes and engine audit should fail. |
+| [miner_node_wrong](https://github.com/latent-to/cacheon/tree/main/examples/miner_node_wrong) | Scales the MLP result by 1.5 (a tensor, or the routed rows Inkling 2's MoE returns on small verify calls); import smoke passes and engine audit should fail. |
 
 Both name `model.layers.*.mlp`. Use them only where that node exists and is
 supported. Set the actual `competition.arena` before submitting; the examples
