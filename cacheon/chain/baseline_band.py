@@ -166,7 +166,7 @@ def _per_load(reads, policy) -> list[dict[str, Any]]:
 
     def cost(read):
         work = reads.work(read.load)
-        return (steady_span_cost(read, work, policy.steady_span) if policy.steady_span
+        return (steady_span_cost(read, work, policy.steady_span, bool(policy.cold_span)) if policy.steady_span
                 else fixed_work_rate(read, work).elapsed_s)
 
     rows = []

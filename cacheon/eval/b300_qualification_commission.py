@@ -383,6 +383,7 @@ def _compose_locked(
         max_work_seconds=settings.get("max_work_seconds", 0),
         warm_windows=settings.get("warm_windows", 0),
         pause_order=settings.get("pause_order", False),
+        quality_every_load=settings.get("quality_every_load", False),
     )
     if replay.slice.digest != settings["slice_digest"]:
         raise B300QualificationCommissionError("replay slice differs from its sealed authority")

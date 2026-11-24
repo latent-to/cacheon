@@ -42,9 +42,12 @@ KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size
 # each load until active sessions fall below this share of it, sealed with decode_floors; bar_futility: true ends a
 # stage whose first lifetime reads more than the packet's futility margin below the payment bar;
 # pause_order: true releases replay turns in the order of the trace's recorded pauses, absent for arrival on completion;
-# audit_sample_rate_ppm: the share of node calls the eager audit replays and grades, absent when it grades every call.
+# audit_sample_rate_ppm: the share of node calls the eager audit replays and grades, absent when it grades every call;
+# cold_span: true starts each load's steady span at the host's cold-round release, sealed with steady_span;
+# quality_every_load: true draws the quality controls from every load's first window, not only the top load's.
 OPTIONAL_KEYS = {"decode_floors", "replay_windows", "audit_row_floor_ppm", "load_margin", "replay_warm_windows",
-                 "steady_span", "quality", "speed_policy_version", "bar_futility", "pause_order", "audit_sample_rate_ppm"}
+                 "steady_span", "quality", "speed_policy_version", "bar_futility", "pause_order", "audit_sample_rate_ppm",
+                 "cold_span", "quality_every_load"}
 # architecture and topology_class: the GPU's sm target and NVLink class the deployment profile seals (sm103 and
 # nvlink-sxm6 on the B300 pods, sm90 and nvlink-sxm5 on H200).
 NODE_KEYS = {"name", "scheduler_starts", "helper_starts", "client_cpus", "architecture", "topology_class"}
@@ -121,6 +124,10 @@ def load_operator(path: Path) -> dict:
         raise SystemExit(f"{path}: steady_span is a canonical decimal in (0, 1), sealed with decode_floors")
     if "bar_futility" in operator and (not floors or operator["bar_futility"] is not True):
         raise SystemExit(f"{path}: bar_futility is true, sealed with decode_floors")
+    if "cold_span" in operator and ("steady_span" not in operator or operator["cold_span"] is not True):
+        raise SystemExit(f"{path}: cold_span is true, sealed with steady_span")
+    if "quality_every_load" in operator and operator["quality_every_load"] is not True:
+        raise SystemExit(f"{path}: quality_every_load is true when present")
     if "speed_policy_version" in operator and (type(operator["speed_policy_version"]) is not int or operator["speed_policy_version"] not in (21, 22, 23)):
         raise SystemExit(f"{path}: speed_policy_version must be 21, 22 or 23")
     starts, helpers = operator["node"]["scheduler_starts"], operator["node"]["helper_starts"]
@@ -271,9 +278,11 @@ def main() -> None:
         margin = f', load_margin={operator["load_margin"]}' if "load_margin" in operator else ""
         margin += f', steady_span={operator["steady_span"]}' if "steady_span" in operator else ""
         margin += ", bar_futility=1.0" if "bar_futility" in operator else ""
+        margin += ", cold_span=1.0" if "cold_span" in operator else ""
         rewrites.append((r"decode_floor=1\.0\)", lambda _: f"decode_floor=1.0, decode_floors=({floors},){margin})"))
-    if {"replay_windows", "pause_order"} & set(operator):  # the commission refuses a pause_order that is not true
-        pause = f', "pause_order": {operator["pause_order"]!r}' if "pause_order" in operator else ""
+    # The commission refuses a pause_order or quality_every_load that is not true.
+    if {"replay_windows", "pause_order", "quality_every_load"} & set(operator):
+        pause = "".join(f', "{key}": {operator[key]!r}' for key in ("pause_order", "quality_every_load") if key in operator)
         rewrites.append((r'"windows": (\d+)', lambda m: f'"windows": {operator.get("replay_windows", m[1])}{pause}'))
     # The commission refuses a zero count, so no warm windows drops the packet's key.
     if "replay_warm_windows" in operator:

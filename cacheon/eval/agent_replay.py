@@ -59,12 +59,16 @@ class AgentReplayPlan:
     # first. The Weka sessions are alive 25x longer than they are in flight (48-session slice, 2026-11-11); arrival
     # on completion never let a paused session's KV go cold, so no tier or retention choice could be scored.
     pause_order: bool = False
+    # The quality controls draw from every load's first window, not only the top load's. A lower load replays the
+    # top load's first sessions, so a turn nothing graded could be answered with any tokens of the right length,
+    # skipping its work on two of three equally weighted loads (slot audit #2, 2026-11-23; owner 2026-11-24).
+    quality_every_load: bool = False
     slice: SliceManifest = field(init=False, repr=False)
 
     def __post_init__(self):
         manifest = load_slice_manifest(self.manifest_path)
         # A lifetime replays several loads highest first: the top load's windows are the one-load windows, so
-        # warm-up, quality controls and request indexing read them unchanged.
+        # warm-up and request indexing read them unchanged, as do quality controls not drawn from every load.
         if type(self.loads) is not tuple or not self.loads or list(self.loads) != sorted(set(self.loads), reverse=True):
             raise ValueError("replay needs descending distinct sealed loads")
         for load in self.loads:
@@ -77,8 +81,8 @@ class AgentReplayPlan:
             raise ValueError("agent replay needs at least one sealed window")
         if type(self.warm_windows) is not int or not 0 <= self.warm_windows <= 2:
             raise ValueError("agent replay warm windows are outside their bound")
-        if type(self.pause_order) is not bool:
-            raise ValueError("replay release order must be boolean")
+        if type(self.pause_order) is not bool or type(self.quality_every_load) is not bool:
+            raise ValueError("replay release order and quality loads must be boolean")
         if type(self.max_work_seconds) is not int or not 0 <= self.max_work_seconds <= 7200:
             raise ValueError("replay work deadline is outside its bound")
         object.__setattr__(self, "slice", manifest)
@@ -110,6 +114,7 @@ class AgentReplayPlan:
             **({"warm_windows": self.warm_windows} if self.warm_windows else {}),
             "arrival": "closed-loop-after-cold-round",
             **({"release_order": "recorded-pause"} if self.pause_order else {}),
+            **({"quality_loads": "every"} if self.quality_every_load else {}),
             "contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
             "client": "aiperf-0.13.0", "scenario": None, "ignore_trace_delays": True,
             "cache_bust_identity": "sealed-slice-digest",

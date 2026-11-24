@@ -147,10 +147,10 @@ store under the commissioned root that later boots of the same tree reuse.
    quality controls, audit and T do not run.
 3. **Quality controls.** After a speed PASS no stock engine boots: the quality
    gate's stock rollout and its independent stock control are the timed answers
-   of the first boot of each stored stock pair. Until 2026-11-05 a fresh stock
-   bracket boot produced both and acted as a one-sided 1% drift sentinel; it
-   cost 25.5 minutes per PASS and changed none of the PD arena's seven passing
-   verdicts, so it was deleted. Retained evidence with a bracket still regrades.
+   of the first boot of each stored stock pair. The selection draws from the
+   highest load's first timed window, or from every load's first window when the
+   replay seals `quality_every_load`. Retained evidence whose controls came
+   from a stock bracket boot still regrades.
 4. **Audit and pristine T.** The eager audit and pristine T need nothing from each
    other: T scores trajectories and controls sealed by the speed stage. On a
    prefill/decode lane they run at once, the audit on the prefill role's GPUs and T

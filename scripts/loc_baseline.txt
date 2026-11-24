@@ -232,12 +232,15 @@
 # scripts +2 (this note).
 # Speed policy 23 times one engine that owns the lane; operator.json names the node's sm target and NVLink class; the
 # engine options take bf16_gemm_backend and two decimals: cacheon +9, docs +5, examples +4, scripts +5 (these notes).
+# Scoring holes (slot audit #1/#2, owner 11-24): operator cold_span starts each load's span at the host's cold-round
+# release and quality_every_load draws the quality controls from every load: cacheon +47, docs +2 (a dated history
+# paragraph deleted), tests +23, scripts +14 (renderer, quality sealer, these notes). No unreferenced definition found.
 (root) 1164
 .github 338
-cacheon 93048
+cacheon 93095
 cacheon_kernels 936
 dashboard 4421
-docs 13661
+docs 13663
 examples 570
-scripts 4772
-tests 14539
+scripts 4786
+tests 14562

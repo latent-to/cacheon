@@ -359,9 +359,11 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
         raise B300RegisteredQualificationError("unsupported commissioned resident speed version")
     from cacheon.eval.goodput_runtime import GoodputPolicy
     replay = session["replay"]
-    if type(replay) is not dict or set(replay) - {"max_work_seconds", "warm_windows", "pause_order"} != {
+    if type(replay) is not dict or set(replay) - {
+        "max_work_seconds", "warm_windows", "pause_order", "quality_every_load",
+    } != {
         "manifest_path", "slice_digest", "load", "windows", "aiperf_binary", "tokenizer_path",
-    } or replay.get("pause_order", True) is not True:
+    } or replay.get("pause_order", True) is not True or replay.get("quality_every_load", True) is not True:
         raise B300RegisteredQualificationError("sealed replay fields differ")
     _digest(replay["slice_digest"], "replay slice")
     # One load is an integer; several (low, mid, high concurrency) a list, replayed highest first.
