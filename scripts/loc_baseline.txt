@@ -235,12 +235,14 @@
 # Scoring holes (slot audit #1/#2, owner 11-24): operator cold_span starts each load's span at the host's cold-round
 # release and quality_every_load draws the quality controls from every load: cacheon +47, docs +2 (a dated history
 # paragraph deleted), tests +23, scripts +14 (renderer, quality sealer, these notes). No unreferenced definition found.
+# A failing bundle review may name repackaged_upstream_pr (owner ruling 11-12; slot audit #11): cacheon +9, docs +4,
+# tests +20, scripts +2 (this note).
 (root) 1164
 .github 338
-cacheon 93095
+cacheon 93104
 cacheon_kernels 936
 dashboard 4421
-docs 13663
+docs 13667
 examples 570
-scripts 4786
-tests 14562
+scripts 4788
+tests 14582

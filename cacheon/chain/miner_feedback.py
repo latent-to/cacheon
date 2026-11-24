@@ -174,6 +174,10 @@ _GUIDANCE.update(
             "The bundle drops routed experts that stock's own prune keeps.",
             "Prune no more than stock; any pruning beyond it fails, inside tolerance or not.",
         ),
+        "repackaged_upstream_pr": (
+            "The review found the bundle repackages an existing upstream SGLang change.",
+            "Submit your own work; upstream changes are not paid.",
+        ),
         "candidate_exception": (
             "A typed rank receipt proves the selected candidate raised.",
             "Read the attached failure product and request worker log.",

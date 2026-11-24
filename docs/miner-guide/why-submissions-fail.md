@@ -137,6 +137,8 @@ registered tolerance.
   call under its bar fails, however slightly. Compare against stock at the
   live shapes and dtypes before resubmitting.
 - `routed_expert_pruning` — the bundle drops routed experts that stock keeps.
+- `repackaged_upstream_pr` — the bundle review found an existing upstream SGLang
+  change repackaged as the submission; upstream work is not paid.
   DeepSeek-V4.1's stock engine already prunes at decode and verify (budget
   `0.4`, an expert held by at most one row of the call); pruning more — a higher
   budget or count, extra drop rules, dropping experts several rows share — fails,

@@ -310,3 +310,23 @@ def test_a_first_claim_waits_for_its_pruning_review_while_another_pair_holds_a_l
         "miner-first": ("failed", "FAIL", 1, "speed_regression"),
         "miner-pruner": ("failed", "FAIL", 0, "routed_expert_pruning"),
         "miner-third": ("failed", "FAIL", 1, "speed_regression")}
+
+
+def test_a_failing_review_names_its_reason_and_only_a_fail_carries_one(tmp_path):
+    from types import SimpleNamespace
+
+    from cacheon.chain.pruning_review import PruningReviewError, review_verdict
+
+    row = SimpleNamespace(reservation_id="r" * 64, arrival=SimpleNamespace(content_hash="c" * 64))
+
+    def verdict(**fields):
+        (tmp_path / f"{row.reservation_id}.json").write_text(json.dumps({
+            "schema": REVIEW_SCHEMA, "reservation_id": row.reservation_id, "content_hash": "c" * 64, **fields}))
+        return review_verdict(tmp_path, row)
+
+    assert verdict(verdict="pass") == "pass"
+    assert verdict(verdict="fail") == "routed_expert_pruning"
+    assert verdict(verdict="fail", fail_reason="repackaged_upstream_pr") == "repackaged_upstream_pr"
+    for bad in ({"verdict": "pass", "fail_reason": "repackaged_upstream_pr"}, {"verdict": "fail", "fail_reason": "slow"}):
+        with pytest.raises(PruningReviewError, match="does not bind"):
+            verdict(**bad)
