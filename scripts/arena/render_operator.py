@@ -41,9 +41,10 @@ KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size
 # replay_warm_windows: the untimed windows before the scored ones (0-2), replacing the packet's; steady_span: score
 # each load until active sessions fall below this share of it, sealed with decode_floors; bar_futility: true ends a
 # stage whose first lifetime reads more than the packet's futility margin below the payment bar;
-# pause_order: true releases replay turns in the order of the trace's recorded pauses, absent for arrival on completion.
+# pause_order: true releases replay turns in the order of the trace's recorded pauses, absent for arrival on completion;
+# audit_sample_rate_ppm: the share of node calls the eager audit replays and grades, absent when it grades every call.
 OPTIONAL_KEYS = {"decode_floors", "replay_windows", "audit_row_floor_ppm", "load_margin", "replay_warm_windows",
-                 "steady_span", "quality", "speed_policy_version", "bar_futility", "pause_order"}
+                 "steady_span", "quality", "speed_policy_version", "bar_futility", "pause_order", "audit_sample_rate_ppm"}
 # architecture and topology_class: the GPU's sm target and NVLink class the deployment profile seals (sm103 and
 # nvlink-sxm6 on the B300 pods, sm90 and nvlink-sxm5 on H200).
 NODE_KEYS = {"name", "scheduler_starts", "helper_starts", "client_cpus", "architecture", "topology_class"}
@@ -132,9 +133,9 @@ def load_operator(path: Path) -> dict:
     controls = operator["audit_control_delta_digests"]
     if controls != sorted(set(controls)) or not all(re.fullmatch(r"[0-9a-f]{64}", d) for d in controls):
         raise SystemExit(f"{path}: audit_control_delta_digests must be sorted, distinct, lowercase sha256 hex")
-    floor = operator.get("audit_row_floor_ppm")
-    if floor is not None and (type(floor) is not int or not 0 < floor <= 400_000 or floor == 20_000):
-        raise SystemExit(f"{path}: audit_row_floor_ppm is an integer in (0, 400000], absent at the 20000 default")
+    for key, top, default in (("audit_row_floor_ppm", 400_000, 20_000), ("audit_sample_rate_ppm", 1_000_000, 1_000_000)):
+        if (value := operator.get(key)) is not None and (type(value) is not int or not 0 < value <= top or value == default):
+            raise SystemExit(f"{path}: {key} is an integer in (0, {top}], absent at the {default} default")
     return operator
 
 
@@ -258,8 +259,8 @@ def main() -> None:
     text = capabilities.read_text()
     # The registered audit controls are the arena's own bundles (a wrong control for this model's node address):
     # their digests replace the previous arena's in the sealed policy, as the replay load does.
-    floor = operator.get("audit_row_floor_ppm")
-    controls = lambda match: "".join((*([f'{match["indent"]}"audit_row_floor_ppm": {floor},\n'] if floor else []),
+    sealed = [(key, operator[key]) for key in ("audit_row_floor_ppm", "audit_sample_rate_ppm") if operator.get(key)]
+    controls = lambda match: "".join((*(f'{match["indent"]}"{key}": {value},\n' for key, value in sealed),
                                       f'{match["indent"]}"audit_control_delta_digests": [\n',
                                       *(f'{match["indent"]}    "{digest}",\n'
                                         for digest in operator["audit_control_delta_digests"]), f'{match["indent"]}]'))

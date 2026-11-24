@@ -320,8 +320,8 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
     policy = value.get("policy")
     if (
         type(policy) is not dict
-        or set(policy) - {"audit_control_delta_digests", "audit_max_new_tokens", "audit_row_floor_ppm"}
-        != _COMMISSION_POLICY_FIELDS
+        or set(policy) - {"audit_control_delta_digests", "audit_max_new_tokens", "audit_row_floor_ppm",
+                          "audit_sample_rate_ppm"} != _COMMISSION_POLICY_FIELDS
         or type(policy.get("audit_control_delta_digests", [])) is not list
         or not isinstance(policy.get("nll_tail_threshold"), str)
         or type(policy.get("hidden_tasks_required")) is not bool
@@ -329,15 +329,11 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
         raise B300RegisteredQualificationError(
             "sealed qualification policy block is not closed"
         )
-    _commission_int(policy.get("tokens_per_prompt"), "tokens_per_prompt", minimum=1)
-    _commission_int(policy.get("topk_width"), "topk_width", minimum=0)
-    _commission_int(
-        policy.get("hidden_tasks_per_prompt"), "hidden_tasks_per_prompt", minimum=0
-    )
-    _commission_int(policy.get("select_count"), "select_count", minimum=2)
-    _commission_int(policy.get("audit_minimum_calls"), "audit_minimum_calls", minimum=1)
-    _commission_int(policy.get("audit_max_new_tokens", 2), "audit_max_new_tokens", minimum=1)
-    _commission_int(policy.get("audit_row_floor_ppm", 1), "audit_row_floor_ppm", minimum=1)
+    for field, absent, minimum in (("tokens_per_prompt", None, 1), ("topk_width", None, 0),
+                                   ("hidden_tasks_per_prompt", None, 0), ("select_count", None, 2),
+                                   ("audit_minimum_calls", None, 1), ("audit_max_new_tokens", 2, 1),
+                                   ("audit_row_floor_ppm", 1, 1), ("audit_sample_rate_ppm", 1, 1)):
+        _commission_int(policy.get(field, absent), field, minimum=minimum)
     session = value.get("session")
     speed = value.get("resident_speed")
     if not (type(session) is dict and "replay" in session and type(speed) is dict and "goodput" in speed):

@@ -287,6 +287,7 @@ def compose_commissioned_qualifications(
                 policy_block.get("audit_control_delta_digests", ())
             ),
             audit_row_floor_ppm=policy_block.get("audit_row_floor_ppm", ROW_FLOOR_PPM),
+            audit_sample_rate_ppm=policy_block.get("audit_sample_rate_ppm", 1_000_000),
         )
     except B300RegisteredQualificationError as exc:
         raise B300QualificationCommissionError(

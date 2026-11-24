@@ -129,6 +129,7 @@ the pod transport. One directory holds them:
 | `owner` | the dispatcher owner name of the commissioned pair |
 | `audit_control_delta_digests` | the registered controls' selected delta digests, sorted; a wrong control for this model's node address, so its audit runs after its speed failure |
 | `audit_row_floor_ppm` | optional: the node audit's per-row floor in ppm, absent at the 20000 (2%) default and at most 400000; set from `cacheon check --audit-row-floor-ppm` runs in which an honest lossy control passes and the wrong control fails |
+| `audit_sample_rate_ppm` | optional: the share of node calls in ppm that the eager audit replays against stock and grades, absent when it grades every call; each graded call replays stock twice and restores the state rows the call writes, so a model whose node calls carry a lot of state (every layer's rows on Inkling 2) needs a lower rate for its longest audit batch to finish inside the 30-minute batch bound. Keep enough expected graded calls per sealed slot over the audit plan to clear `audit_minimum_calls` |
 | `node.name` | the host class whose measured scheduler positions follow |
 | `node.architecture` | the GPU's sm target the deployment profile seals: `sm103` on B300, `sm90` on H200 |
 | `node.topology_class` | the GPU interconnect class the deployment profile seals: `nvlink-sxm6` on B300, `nvlink-sxm5` on H200 |
