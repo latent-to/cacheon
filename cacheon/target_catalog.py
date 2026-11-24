@@ -257,8 +257,8 @@ class TargetSpec:
     ``node_roots`` opens node addresses. A manifest whose slots all name modules at
     or under one of these roots of the served model resolves to this target, and its
     members are the addresses it declared, not ``members``. Overlap inside one bundle
-    is refused by address containment. Targets' roots are disjoint, so a bundle
-    resolves to the one target that holds all its addresses.
+    is refused by address containment. ``engine`` spans the disjoint model and cache
+    roots, and a bundle resolves to the narrowest target that holds all its addresses.
     """
 
     target_id: str
@@ -584,10 +584,12 @@ class TargetCatalog:
             )
 
         if request is None:
-            # A node bundle's target is the one whose roots hold every address it declared.
-            rooted = [row for row in self._by_id.values() if member_set and row.node_roots and all(
-                any(m == r or m.startswith(r + ".") for r in row.node_roots) for m in member_set)]
-            spec = rooted[0] if len(rooted) == 1 else None
+            # A node bundle's target is the narrowest one whose roots hold every address it declared.
+            rooted = sorted((row for row in self._by_id.values() if member_set and row.node_roots and all(
+                any(m == r or m.startswith(r + ".") for r in row.node_roots) for m in member_set
+            )), key=lambda row: len(row.node_roots))
+            tied = len(rooted) > 1 and len(rooted[0].node_roots) == len(rooted[1].node_roots)
+            spec = rooted[0] if rooted and not tied else None
             if spec is None:
                 members = tuple(sorted(member_set))
                 return ResolvedTarget(
@@ -647,18 +649,18 @@ class TargetCatalog:
         ).require_registered().require_complete_features()
 
 
-# The model's forward pass, the scheduler's prefix cache and its listed decisions are the three targets a bundle may
-# replace, each a distinct stack entry. Sharing one target erased the incumbent kernels when a miner submitted only a
-# cache (2026-09-28).
+# The model's forward pass and the scheduler's prefix cache are the two targets a
+# bundle may replace; a bundle names the modules or the cache object it swaps in.
+# Model and cache replacements are distinct stack entries. Sharing one target
+# erased the incumbent kernels when a miner submitted only a cache (2026-09-28).
 FORWARD_PASS_TARGET = "forward_pass"
 FORWARD_PASS_ROOTS = ("logits_processor", "model")
 PREFIX_CACHE_TARGET = "prefix_cache"
-# The queue's order and the validator-listed decisions; any other SGLang object stays stock. Disjoint roots let a
-# scheduler win stack with kernel and cache wins through the parent: an `engine` target over every root (2026-11-17)
-# made later kernel or cache entries claim its slots. Each candidate is timed as the assembled engine: a kernel's gain
-# moves about 2% with a cache or scheduler operating point (43 GLM-5.3-Flash rows, 2026-11-16), so gains never multiply.
-SCHEDULER_TARGET = "scheduler"
-SCHEDULER_ROOTS = tuple(sorted((QUEUE_ORDER, *ENGINE_OBJECTS)))
+# One bundle across every surface, timed as one engine: a kernel's gain moves about 2% with the operating point
+# a cache or scheduler change sets (43 GLM-5.3-Flash rows over three loads, 2026-11-16), so gains never multiply.
+# Its scheduler roots are the queue's order and the validator-listed decisions; any other SGLang object stays stock.
+ENGINE_TARGET = "engine"
+ENGINE_ROOTS = tuple(sorted(("logits_processor", "model", QUEUE_ORDER, "tree_cache", *ENGINE_OBJECTS)))
 
 
 def _node_contract(slot_id: str, **fields: object) -> TargetContractRef:
@@ -693,14 +695,14 @@ def default_target_catalog() -> TargetCatalog:
             correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="1"),
             tolerances=(),
         ),
-        # No output to compare, as every legal answer yields the same tokens; judged at the engine boundary.
-        SCHEDULER_TARGET: _node_contract(
-            SCHEDULER_TARGET, prepare=None,
-            input_abi_id="scheduler.per-address.input.v1",
-            output_abi_id="scheduler.per-address.output.v1",
-            reference_id="scheduler.stock-engine.reference.v1",
-            verification_profile_id="scheduler.engine-boundary.verify.v1",
-            binding_family_id="sglang.scheduler.v1",
+        # Checked per address; a scheduler decision has no output to compare, every legal answer yields the same tokens.
+        ENGINE_TARGET: _node_contract(
+            ENGINE_TARGET, prepare="prepare",
+            input_abi_id="engine.per-address.input.v1",
+            output_abi_id="engine.per-address.output.v1",
+            reference_id="engine.stock-engine.reference.v1",
+            verification_profile_id="engine.per-address.verify.v1",
+            binding_family_id="sglang.engine.v1",
             correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.75"),
             tolerances=(ToleranceContractRef("bfloat16", "0", "0.02"),),
         ),
@@ -713,5 +715,5 @@ def default_target_catalog() -> TargetCatalog:
         )
         for target, roots in ((FORWARD_PASS_TARGET, FORWARD_PASS_ROOTS),
                               (PREFIX_CACHE_TARGET, ("tree_cache",)),
-                              (SCHEDULER_TARGET, SCHEDULER_ROOTS))
+                              (ENGINE_TARGET, ENGINE_ROOTS))
     )

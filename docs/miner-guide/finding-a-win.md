@@ -77,7 +77,7 @@ Promising classes include:
 
 Do not expand the manifest until a desired optimization “fits.” The target
 catalog fixes the smallest allowed delta. Scheduler behavior is submittable in an
-arena that opens `scheduler`, through `queue_order` and the scheduler decisions the
+arena that opens `engine`, through `queue_order` and the scheduler decisions the
 catalog lists. If the change needs another engine seam, a broad source patch, or
 engine-wide setup, it is not submittable until the catalog registers that surface.
 

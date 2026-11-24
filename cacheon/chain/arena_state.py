@@ -387,14 +387,15 @@ class ArenaStateMixin:
         through the existing no-decision transaction, before acquiring a lease.
         A crown keeps the commissioned baseline open to new commitments.
         Settlement compares completed ancestor-based results with the current
-        lineage tip; arrival after a crown is not an admission failure. A
-        scheduler change names no model or cache slot and is audited through the
+        lineage tip; arrival after a crown is not an admission failure. An
+        engine change naming no model or cache slot is audited through the
         record's, so with neither crowned it is parked the same way: its plan
         could not be built and the failure cost an adapter epoch (audit #8).
         """
         from cacheon.chain.duplicate_replay import PriorVerdict, decide_replay
+        from cacheon.seams import audited
         from cacheon.stack_identity import require_sha256_hex
-        from cacheon.target_catalog import FORWARD_PASS_TARGET, PREFIX_CACHE_TARGET, SCHEDULER_TARGET
+        from cacheon.target_catalog import ENGINE_TARGET, FORWARD_PASS_TARGET, PREFIX_CACHE_TARGET
 
         require_sha256_hex(service_digest, field="arena service digest")
         graded = self._db.execute(
@@ -421,7 +422,7 @@ class ArenaStateMixin:
             before = len(retired)
             for row in self.claimable(limit=limit):
                 first_claim = row.status == "published" and not row.arena_service_digest
-                ungraded = row.target_id == SCHEDULER_TARGET and not graded
+                ungraded = row.target_id == ENGINE_TARGET and not graded and not any(map(audited, row.target_members))
                 if (row.target_id in closed_targets or ungraded) and first_claim:
                     parked = self.mark_target_unavailable(row.reservation_id, target_id=row.target_id)
                     retired.append((row.reservation_id, parked.reason))

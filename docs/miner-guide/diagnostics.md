@@ -61,7 +61,7 @@ Common failures and fixes:
 |---|---|---|
 | unsupported ABI | `abi_version` is not a supported identifier | author new bundles with the published `cacheon-op-abi-v0` component ABI |
 | unsafe/missing path | absolute path, traversal, symlink, or undeclared file | make every declaration bundle-relative and source-only |
-| competition mode mismatch | the mode is not `slot` | use `mode = "slot"` with `forward_pass`, `prefix_cache` or `scheduler` |
+| competition mode mismatch | the mode is not `slot` | use `mode = "slot"` with `forward_pass` or `prefix_cache` |
 | `node addresses must sit under ...` | a node-address row names a module outside the roots, or is malformed | name modules under `model` or `logits_processor`, or the prefix cache `tree_cache`; `*` stands for one whole segment |
 | `tree_cache entry ... must be a function accepting the runtime cache` or `... must be callable with only the runtime cache` | the entry is not a synchronous function in the declared source, or needs other arguments | define `entry(cache)` and return `type(cache)` or a subclass of it; do not supply a constructor or `prepare` |
 | `tree_cache: the cache served a page that does not hold the KV the engine computed for its prefix` | a served prefix's slots held other bytes: a stale or reused slot, a page kept across a flush, a host copy not brought back, or a page from another namespace | serve only slots whose bytes the engine computed for that exact prefix, and drop every page at a flush |
@@ -69,7 +69,7 @@ Common failures and fixes:
 | `tree_cache: state validation is unavailable for this hybrid pool` | the engine's sliding-window pool has a layout the validator does not recognize, or the engine holds recurrent state, which is not validated | this is missing validator coverage, not a failed miner contribution |
 | `tree_cache: this hybrid runtime disables prefix caching` | the arena's engine configuration turns radix caching off | the prefix cache is not a target on that arena; use an arena that serves with prefix caching |
 | `... overlap; claim the wider node alone` | two rows of one bundle name a node and a node inside it | keep the wider address and drop the narrower one |
-| feature not allowed | `setup` or an unknown extra is outside policy; `override points are retired` names a row that sets `base_kernel` or `override_point` | remove it; every target admits declared CUDA sources and the registered rebuild |
+| feature not allowed | `setup` or an unknown extra is outside policy; `override points are retired` names a row that sets `base_kernel` or `override_point` | remove it; both targets admit declared CUDA sources and the registered rebuild |
 | incomplete feature evidence | intake could not independently observe the rebuild feature set | use only registered rebuild declarations and complete source inventory |
 | duplicate slot requires variants | repeated rows omit explicit unique `variant` | name every variant |
 | overlapping domains | two variants can route the same live call | make capability domains provably disjoint |

@@ -77,7 +77,7 @@ def _arena(tmp_path, monkeypatch, name):
     state = e2e.chain(root, reveals, tuple(RECORDS))
     materialized, ready_path, ready = e2e.commission(root, e2e.PROFILES["h100-tp1"], ("forward_pass", "prefix_cache"))
     sealed = e2e.seal_authority(root, materialized, ready_path, ready)
-    assert sealed.manifest["closed_targets"] == ["scheduler"]  # open on an arena only once its prompt registers it
+    assert sealed.manifest["closed_targets"] == ["engine"]  # open on an arena only once its prompt registers it
     return root, state, origin, sealed
 
 

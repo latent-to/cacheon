@@ -44,9 +44,8 @@ That sentence contains the whole discipline:
 
 ## Choose your path before writing code
 
-A bundle changes exactly one of three targets. Kernels, the cache and the
-scheduler are separate submissions, and a crowned one becomes part of the engine
-later submissions are assembled on.
+A bundle changes exactly one of two targets. Kernels and the cache are separate
+submissions.
 
 - **Model kernels (`forward_pass`).** Name one supported module or several
   disjoint modules in the served model. The bundle replaces each module's
@@ -59,13 +58,9 @@ later submissions are assembled on.
   and the validator checks the bytes behind every prefix your cache serves. The
   cache runs outside CUDA graphs. It applies only to arenas that serve with prefix
   caching. See [the prefix cache](slots.md#the-prefix-cache).
-- **Scheduler (`scheduler`).** Name `queue_order` or one of the scheduler
-  decisions the [target catalog](../reference/target-catalog.md#registered-targets)
-  lists. It applies only to arenas that open `scheduler`, and is parked until the
-  arena has crowned a kernel or cache contribution for its audit to grade.
 
-Sampling and serving configuration outside the listed scheduler decisions remain
-outside the contribution.
+Batching, sampling and unrelated serving configuration remain outside the
+contribution.
 
 ## The three identities to keep separate
 

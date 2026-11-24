@@ -26,7 +26,7 @@ integration, and releases; a target ID alone cannot reopen authority.
 |---|---|---|
 | `forward_pass` | `logits_processor`, `model` | The modules of the served model a bundle names |
 | `prefix_cache` | `tree_cache` | The scheduler's prefix cache object |
-| `scheduler` | `queue_order`, the listed scheduler decisions | The waiting queue's order and the scheduler decisions the validator lists |
+| `engine` | every root above, `queue_order`, the listed scheduler decisions | Any set of the addresses above, the queue's order and the listed scheduler decisions, in one bundle |
 
 `forward_pass` is the node target. Its roots are the two top-level modules SGLang
 gives every causal LM, so it carries no model or arena identity. A bundle
@@ -45,7 +45,7 @@ a cache contribution preserves the incumbent `forward_pass` contribution. A new
 cache version replaces the previous cache version in full; the validator does not
 merge their source or combine their policies automatically.
 
-`scheduler` owns the scheduler's decisions. `queue_order` asks
+`engine` spans every root and adds the scheduler's decisions. `queue_order` asks
 for the order of the waiting queue through a view without output lengths, which the
 replay fixes. The other roots are the validator-listed objects in
 [`ENGINE_OBJECTS`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py),
@@ -61,23 +61,22 @@ intake, among them configuration publication, `Scheduler.__init__`, `flush_cache
 and `init_req_max_new_tokens`, `SchedulePolicy.calc_priority`, speculative
 verification, the sampler, cache classes and model code.
 
-A scheduler entry has no check per call and is judged at the engine boundary: the
-timed speed stage, quality against the teacher, and pristine T. It feeds every model
-and cache slot new batches, so a `scheduler` submission is audited on every model and
-cache slot of the stack it is assembled on. Until the arena has crowned a
-`forward_pass` or `prefix_cache` contribution there is no such slot, and a
-`scheduler` submission is parked at intake as `target_unavailable:scheduler`. The
-stack holds one `scheduler` entry, so a later `scheduler` win replaces an earlier one.
+One bundle may name model nodes, the cache, the queue order and engine objects, and
+is timed as one engine against the arena's single record. A node keeps its check
+against stock on the same call and the cache its content check; an engine object
+or the queue order has no check per call and is judged at the engine boundary, and
+a submission that names either is audited on every model and cache slot of the
+stack it is assembled on.
+The pieces are never timed apart and multiplied: across 43 GLM-5.3-Flash rows a
+kernel bundle's gain moved about 2% between the arena's three loads. The stack
+holds one `engine` entry, so a later `engine` win replaces an earlier one. An
+`engine` submission naming no model or cache slot is parked at intake as
+`target_unavailable:engine` until the arena has crowned a `forward_pass` or
+`prefix_cache` contribution.
 
-The three targets have disjoint roots, so they never compete for the same live
-region: a transition replaces its own stack entry and leaves the others
-byte-identical. When a commission declares the crowned entries as the candidate's
-[parent](../architecture/product-model.md#worked-example-a-later-3-delta-on-top-of-an-earlier-7-delta),
-the validator assembles each candidate on them, so kernel, cache and scheduler wins
-accumulate in one engine while each author keeps their own entry. The pieces are
-never timed apart and multiplied: across 43 GLM-5.3-Flash rows a kernel bundle's
-gain moved about 2% between the arena's three loads, so each candidate is timed as
-the engine it is assembled into.
+`forward_pass` and `prefix_cache` have disjoint roots, so they never compete for
+the same live region: a transition replaces its own stack entry and leaves the
+other byte-identical.
 
 Catalog registration defines identity and admission; it does not by itself
 prove that an arena opens the target. See
