@@ -137,8 +137,6 @@ registered tolerance.
   call under its bar fails, however slightly. Compare against stock at the
   live shapes and dtypes before resubmitting.
 - `routed_expert_pruning` — the bundle drops routed experts that stock keeps.
-- `repackaged_upstream_pr` — the bundle review found an existing upstream SGLang
-  change repackaged as the submission; upstream work is not paid.
   DeepSeek-V4.1's stock engine already prunes at decode and verify (budget
   `0.4`, an expert held by at most one row of the call); pruning more — a higher
   budget or count, extra drop rules, dropping experts several rows share — fails,
@@ -157,14 +155,16 @@ moving a request's own slots or claiming more tokens than the key stops the
 engine as the candidate's failure. See
 [the prefix cache](../architecture/slot-contract.md#the-prefix-cache).
 
-## Pruning is reviewed before evaluation
+## Bundles are reviewed before evaluation
 
-The DeepSeek-V4.1 arena reads every bundle's source before its first GPU claim.
-Claude Opus 5.5 checks whether the served code drops routed experts that stock's
-prune keeps (budget `0.4`, an expert held by at most one row of the call). Reviews
-run while earlier bundles are evaluated, so they rarely delay a bundle's turn. A
-bundle the review finds pruning fails as `routed_expert_pruning` without GPU time.
-The audit applies the same rule after the speed stage.
+An arena that runs a bundle review has Claude Opus 5.5 read every bundle's source
+before its first GPU claim, while earlier bundles are evaluated. A bundle the
+review fails is failed without GPU time, as one of:
+
+- `routed_expert_pruning` — on the DeepSeek-V4.1 arena, pruning more than stock
+  (above). The audit applies the same rule after the speed stage.
+- `repackaged_upstream_pr` — an existing upstream SGLang change repackaged as the
+  submission. Upstream work is not paid.
 
 ## Identical bytes are not re-evaluated
 
