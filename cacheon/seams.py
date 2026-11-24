@@ -63,7 +63,7 @@ SEAM_ADAPTERS: tuple[SeamAdapter, ...] = (
     SeamAdapter("engine", "sglang.srt.managers.scheduler", "sglang_engine", "attr:Scheduler"),
 )
 
-# The scheduler decisions an ``engine`` bundle may replace by dotted path, each a class or a method where SGLang
+# The scheduler decisions a ``scheduler`` bundle may replace by dotted path, each a class or a method where SGLang
 # defines it: prefill admission and chunking, the token, row and KV budgets, the decode reserve, prefill/decode
 # interleaving, and under KV pressure the decode memory check, retraction and its order. The queue's order is asked
 # through ``queue_order``, whose view hides output lengths: the replay fixes them, so ``SchedulePolicy.calc_priority``

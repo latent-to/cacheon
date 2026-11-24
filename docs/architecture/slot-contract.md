@@ -376,7 +376,7 @@ unit to the address's audit receipt.
 
 The address `queue_order` names a question, not an object: before every prefill
 batch SGLang's scheduler decides in which order the waiting requests are admitted.
-It belongs to the `engine` target and has no sub-addresses.
+It belongs to the `scheduler` target and has no sub-addresses.
 [`sglang_order.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_order.py)
 wraps `SchedulePolicy.calc_priority`: stock orders the queue first, then the bundle's
 `entry(view)` receives one row per waiting request, in stock's order: tokens still to
@@ -395,7 +395,7 @@ is a pure function of the view. Declare no `prepare`.
 
 ## Engine objects
 
-An address under `sglang`, in the `engine` target, names one of the scheduler
+An address under `sglang`, in the `scheduler` target, names one of the scheduler
 decisions the validator lists in
 [`ENGINE_OBJECTS`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py),
 or a method of a listed class, by its dotted path where SGLang defines it, such as
@@ -430,12 +430,11 @@ speed stage, quality against the teacher, and pristine T. A raise inside a
 replacement is receipted as the candidate's and takes the engine down, and a bind
 that fails stops the scheduler at its entry. An engine object is covered in every
 process that loaded the bundle: which of its methods a workload reaches, on which
-server, is the engine's business. A submission that names the queue order or an
-engine object is audited on every model and cache slot of the stack it is assembled
-on, so a node named beside it cannot narrow the audit, and receives the assembled
-engine's speed and output-quality checks. One that names no model or cache slot is
-parked as `target_unavailable:engine` at its first claim until a `forward_pass` or
-`prefix_cache` crown exists to assemble it on.
+server, is the engine's business. A `scheduler` submission is audited on every
+model and cache slot of the stack it is assembled on and receives the assembled
+engine's speed and output-quality checks. Until a `forward_pass` or `prefix_cache`
+crown exists to assemble it on, it is parked as `target_unavailable:scheduler` at
+its first claim.
 
 ## Escape hatches
 

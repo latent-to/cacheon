@@ -68,8 +68,9 @@ trust domain.
 
 The **reward unit** is the smallest validator-controlled attributable delta:
 
-- the modules of the served model a bundle names under `forward_pass`; or
-- the scheduler's prefix cache under `prefix_cache`.
+- the modules of the served model a bundle names under `forward_pass`;
+- the scheduler's prefix cache under `prefix_cache`; or
+- the waiting queue's order and the listed scheduler decisions under `scheduler`.
 
 The candidate stack is built by the validator. It equals the incumbent stack except for one selected target transition. The miner does not supply the incumbent entries and does not gain attribution for the whole engine simply because the complete engine is the safe execution envelope.
 
@@ -130,8 +131,10 @@ The validator-owned target catalog defines what can receive ordinary attribution
 Miner packaging and manifest row order do not define economic scope. A bundle that explicitly claims a registered target but declares addresses outside its roots, overlapping nodes, or unadmitted features fails resolution rather than falling through to an unregistered identity.
 
 The registered catalog contains `forward_pass` (node roots `model` and
-`logits_processor`) and `prefix_cache` (`tree_cache`). Their roots are disjoint, so
-one transition never displaces the other entry. The live policy is implemented in [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
+`logits_processor`), `prefix_cache` (`tree_cache`) and `scheduler` (`queue_order`
+and the listed scheduler decisions). Their roots are disjoint, so one transition
+never displaces another entry, and kernel, cache and scheduler wins stack through the
+parent. The live policy is implemented in [`target_catalog.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/target_catalog.py).
 
 ## Unregistered work
 

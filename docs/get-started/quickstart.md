@@ -19,12 +19,13 @@ source .venv/bin/activate
 python -m pip install -e ".[cpu,dev]"
 ```
 
-## Read the two targets
+## Read the three targets
 
-A bundle replaces one of two registered targets. `forward_pass` covers the served
+A bundle replaces one of three registered targets. `forward_pass` covers the served
 model: the bundle names the modules it replaces by address, such as
 `model.layers.*.mlp`, and each replacement receives the stock arguments and returns
-what stock returns. `prefix_cache` replaces the scheduler's prefix cache object. See
+what stock returns. `prefix_cache` replaces the scheduler's prefix cache object.
+`scheduler` replaces the waiting queue's order or a listed scheduler decision. See
 the [target catalog](../reference/target-catalog.md).
 
 ## Scan without executing code

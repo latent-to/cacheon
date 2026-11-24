@@ -232,12 +232,14 @@
 # scripts +2 (this note).
 # Speed policy 23 times one engine that owns the lane; operator.json names the node's sm target and NVLink class; the
 # engine options take bf16_gemm_backend and two decimals: cacheon +9, docs +5, examples +4, scripts +5 (these notes).
+# A scheduler target with disjoint roots replaces the engine target, so scheduler, kernel and cache wins stack through
+# the parent; three targets in the miner docs: cacheon -3, docs +10, tests +4, scripts +2 (this note).
 (root) 1164
 .github 338
-cacheon 93048
+cacheon 93045
 cacheon_kernels 936
 dashboard 4421
-docs 13661
+docs 13671
 examples 570
-scripts 4772
-tests 14539
+scripts 4774
+tests 14543

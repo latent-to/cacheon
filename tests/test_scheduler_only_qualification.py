@@ -1,4 +1,4 @@
-"""The engine target's scheduler surface: what intake admits, what binds, what the audit grades, what parks."""
+"""The scheduler target: what intake admits, what binds, what the audit grades, what parks."""
 
 import sys
 from pathlib import Path
@@ -26,19 +26,21 @@ def _bundle(root: Path, *slots: str, extra: str = "") -> Path:
     (root / "engine" / "order.py").write_text("def order(view):\n    return list(range(len(view)))\n")
     ops = "".join(f'\n[[ops]]\nslot = "{slot}"\nsource = "engine/order.py"\nentry = "order"\n{extra}'
                   for slot in slots)
-    (root / "manifest.toml").write_text('bundle_id = "engine-surface"\nabi_version = "cacheon-op-abi-v0"\n\n'
-                                        '[competition]\ntarget = "engine"\nmode = "slot"\n' + ops)
+    (root / "manifest.toml").write_text('bundle_id = "scheduler-surface"\nabi_version = "cacheon-op-abi-v0"\n\n'
+                                        '[competition]\ntarget = "scheduler"\nmode = "slot"\n' + ops)
     return root
 
 
-def test_engine_admits_the_queue_order_and_listed_decisions_and_nothing_else_of_sglang(tmp_path):
+def test_scheduler_admits_the_queue_order_and_listed_decisions_and_nothing_else(tmp_path):
     catalog = default_target_catalog()
     admitted = ("queue_order", f"{ADDER}.add_one_req", "sglang.srt.mem_cache.prefill_budget.SWAPrefillBudget",
                 *ENGINE_OBJECTS)
     for index, slot in enumerate(admitted):
-        assert catalog.resolve_manifest(load_manifest(_bundle(tmp_path / f"ok{index}", slot))).target_id == "engine"
-    # Validator-owned surfaces (audit #3) and the two output-length oracles (audit #4).
+        assert catalog.resolve_manifest(load_manifest(_bundle(tmp_path / f"ok{index}", slot))).target_id == "scheduler"
+    # Validator-owned surfaces (audit #3), the two output-length oracles (audit #4), and the model's and the cache's
+    # roots, which stay their own targets so a scheduler entry never claims a slot a kernel or cache entry holds.
     for index, slot in enumerate((
+        "model.layers.*.mlp", "logits_processor", "tree_cache",
         "sglang.srt.runtime_context.publish", "sglang.srt.managers.scheduler.Scheduler.__init__",
         "sglang.srt.managers.scheduler.Scheduler.flush_cache", "sglang.srt.managers.scheduler.Scheduler.run_batch",
         "sglang.srt.managers.scheduler.Scheduler.init_req_max_new_tokens",
@@ -55,10 +57,10 @@ def test_engine_admits_the_queue_order_and_listed_decisions_and_nothing_else_of_
             catalog.resolve_manifest(load_manifest(_bundle(tmp_path / f"no{index}", slot)))
 
 
-def test_intake_refuses_a_declared_domain_on_an_engine_entry(tmp_path):
+def test_intake_refuses_a_declared_domain_on_a_scheduler_entry(tmp_path):
     catalog = default_target_catalog()
     assert inspect_contribution(_bundle(tmp_path / "ok", "queue_order", f"{ADDER}.add_one_req"),
-                                catalog=catalog).target_id == "engine"
+                                catalog=catalog).target_id == "scheduler"
     for index, extra in enumerate(('dtypes = ["bfloat16"]\n', 'architectures = ["sm_90"]\n', 'variant = "fast"\n',
                                    'prepare = "order"\n')):
         for slot in ("queue_order", f"{ADDER}.add_one_req"):
@@ -68,7 +70,7 @@ def test_intake_refuses_a_declared_domain_on_an_engine_entry(tmp_path):
         inspect_contribution(_bundle(tmp_path / "view", "queue_order.view"), catalog=catalog)
 
 
-def test_engine_audit_covers_the_assembled_stack_and_a_decoy_never_narrows_it(tmp_path):
+def test_scheduler_audit_covers_the_assembled_stack_and_a_decoy_never_narrows_it(tmp_path):
     decoy, nodes = "model.layers.0.self_attn", ("model.layers.*.mlp", "logits_processor")
     tree = SimpleNamespace(root=_bundle(tmp_path / "tree", *nodes, decoy, "tree_cache", "queue_order"))
     assert _audit_members(("queue_order",), tree) == tuple(sorted((*nodes, decoy, "tree_cache")))
@@ -156,20 +158,21 @@ def test_eager_audit_seals_prefill_graphs_off_wherever_the_engine_defines_the_ke
                           **({"cuda_graph_backend_prefill": "disabled"} if defined else {})}
 
 
-def test_an_engine_change_alone_parks_until_the_arena_crowns_a_model_or_cache(tmp_path):
+def test_a_scheduler_change_parks_until_the_arena_crowns_a_model_or_cache(tmp_path):
     with _store(tmp_path) as store:
         rows = [_reserve_one(store, index=index) for index in range(3)]
-        for row, member, marker in zip(rows, ("queue_order", ADDER, "model.layers.*.mlp"), "abc"):
-            _publish(store, row.reservation_id, _fingerprint("engine", member, marker),
+        for row, target, member, marker in zip(rows, ("scheduler", "scheduler", "forward_pass"),
+                                               ("queue_order", ADDER, "model.layers.*.mlp"), "abc"):
+            _publish(store, row.reservation_id, _fingerprint(target, member, marker),
                      digest=marker * 64, root=f"/published/{marker}")
         parked = store.prepare_qualification_queue(service_digest=_h("service"))
-        assert parked == tuple((row.reservation_id, "target_unavailable:engine") for row in rows[:2])
+        assert parked == tuple((row.reservation_id, "target_unavailable:scheduler") for row in rows[:2])
         assert [(store.get(row.reservation_id).status, store.get(row.reservation_id).decision) for row in rows] == [
             ("expired", "NO_DECISION"), ("expired", "NO_DECISION"), ("published", "")]
         store._db.execute("INSERT INTO target_lineage_tips VALUES('', 'forward_pass', ?, '', '1.1', ?, ?, ?, 1)",
                           ("d" * 64, _h("arena"), _h("stack"), _h("event")))
         later = _reserve_one(store, index=3)
-        _publish(store, later.reservation_id, _fingerprint("engine", "queue_order", "d"),
+        _publish(store, later.reservation_id, _fingerprint("scheduler", "queue_order", "d"),
                  digest="d" * 64, root="/published/d")
         assert store.prepare_qualification_queue(service_digest=_h("service")) == ()
         assert store.get(later.reservation_id).status == "published"

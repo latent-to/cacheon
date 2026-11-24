@@ -2,7 +2,7 @@ bundle_id = "prefill-work-with-fifo-service"
 abi_version = "cacheon-op-abi-v0"
 
 [competition]
-target = "engine"
+target = "scheduler"
 mode = "slot"
 
 [[ops]]

@@ -71,7 +71,7 @@
 
 **Target**
 : Smallest registered semantic reward identity. A normal proposal resolves to
-  exactly one target: `forward_pass` or `prefix_cache`.
+  exactly one target: `forward_pass`, `prefix_cache` or `scheduler`.
 
 **Weight intent**
 : Journaled desired chain publication derived from the pure global emissions

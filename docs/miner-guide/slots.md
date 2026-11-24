@@ -2,7 +2,7 @@
 
 The registered targets determine which parts of the serving engine a miner can
 change. `forward_pass` accepts model modules, `prefix_cache` accepts the
-scheduler's `tree_cache`, and an arena with `engine` open accepts the waiting
+scheduler's `tree_cache`, and an arena with `scheduler` open accepts the waiting
 queue's order and the scheduler decisions the validator lists. The arena owns the
 workload and evaluation.
 
@@ -19,8 +19,8 @@ that every model contains or admits each address:
 | `model.layers.*.self_attn.q_b_proj` | Matching attention projection modules |
 | `model` | Whole decoder stack, only where the arena can grade it |
 | `tree_cache` | The scheduler's runtime cache object (see below) |
-| `queue_order` | The order in which waiting requests are admitted ([contract](../architecture/slot-contract.md#the-queue-order)); `entry(view)` returns a permutation, target `engine` |
-| `sglang.<dotted path>` | One listed scheduler decision or a method of a listed class ([contract](../architecture/slot-contract.md#engine-objects)); `entry(stock)` returns its replacement, target `engine` |
+| `queue_order` | The order in which waiting requests are admitted ([contract](../architecture/slot-contract.md#the-queue-order)); `entry(view)` returns a permutation, target `scheduler` |
+| `sglang.<dotted path>` | One listed scheduler decision or a method of a listed class ([contract](../architecture/slot-contract.md#engine-objects)); `entry(stock)` returns its replacement, target `scheduler` |
 
 `*` matches exactly one segment. The binder refuses addresses that match no
 module and parent/child claims that overlap. Binding succeeds only when the
