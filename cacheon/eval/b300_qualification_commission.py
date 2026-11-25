@@ -347,13 +347,13 @@ def compose_commissioned_qualifications(
 
 
 def _require_replay_quality(policy, session_block) -> None:
-    """Replay quality is teacher NLL under greedy decoding; a sealed profile
-    asking for sampled or numeric hidden-task quality must die at commission,
-    not forty minutes into a measured run.
+    """Replay quality is teacher NLL of tokens decoded greedily or sampled at temperature 1, the unscaled
+    distribution the teacher scores; any other temperature, top-k evidence, or numeric hidden-task quality
+    must die at commission, not forty minutes into a measured run.
     """
 
-    if policy.topk_width != 0 or float(session_block["temperature"]) != 0:
-        raise B300QualificationCommissionError("goodput replay requires greedy decoding and teacher-NLL quality")
+    if policy.topk_width != 0 or float(session_block["temperature"]) not in (0, 1):
+        raise B300QualificationCommissionError("goodput replay requires greedy or temperature-1 decoding and teacher-NLL quality")
     if policy.hidden_tasks_required or policy.hidden_tasks_per_prompt:
         raise B300QualificationCommissionError("replay prompts require a teacher-only profile without numeric hidden tasks")
 

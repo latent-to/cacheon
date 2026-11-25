@@ -69,7 +69,10 @@ quality is the teacher-NLL-only mode, digest-bound by a zero top-k width in the
 qualification profile and the raw quality binding. The pristine engine
 teacher-force-scores the exact retained token stream (target NLL and the
 teacher's own argmax per position) — the text the candidate was fast at is the
-text it is judged on, and no candidate code executes during scoring. No
+text it is judged on, and no candidate code executes during scoring. A replay
+decodes greedily or samples at temperature 1, the distribution the teacher
+scores; other temperatures are refused at commission. Sampling noise shows as
+stock-control drift, which above its frozen envelope yields `NO_DECISION`. No
 candidate distributions are retained, so no distribution evidence exists:
 absence is explicit (null, uniformly enforced at every layer), never zeros, and
 a threshold policy naming a distribution metric (`topk_kl`, `argmax_rate`,
@@ -146,9 +149,6 @@ returns.
 
 Finite-debt V2 is a retained design, not an implemented lane; it does not reuse this
 standing-decay formula. See [Emissions policy](../reference/emissions-policy.md).
-
-Read [Settlement and weights](settlement-and-weights.md) for transaction and publication
-details.
 
 ## What a result means
 
