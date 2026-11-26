@@ -572,6 +572,8 @@ class B300RegisteredQualificationInputs:
     candidate_runtime_resource_policy_digest: str
     candidate_device_configuration_digest: str
     seal: object = dc_field(default=None, repr=False, compare=False)
+    # The stack every candidate is assembled on when it is not the measured incumbent (the record on a stock baseline).
+    parent_stack: EvaluationStackManifest | None = None
 
     def __post_init__(self) -> None:
         # Construction is sealed to the commissioner. Every object here is
@@ -594,6 +596,7 @@ class B300RegisteredQualificationInputs:
         for label, stack in (
             ("incumbent", self.incumbent_stack),
             ("pristine T", self.pristine_stack),
+            *((("parent", self.parent_stack),) if self.parent_stack is not None else ()),
         ):
             try:
                 stack.validate_against(self.expected_context)

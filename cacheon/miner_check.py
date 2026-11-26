@@ -156,7 +156,7 @@ def _engine(config: dict, bundle: str, requests: list[dict], root: Path,
     receipt_dir = root / "receipts"
     receipt_dir.mkdir()
     os.environ.update(
-        CACHEON_ACTIVE="1", CACHEON_BUNDLE_PATH=bundle, CACHEON_FRAMEWORK_MODE="0",
+        CACHEON_ACTIVE="1", CACHEON_BUNDLE_PATH=bundle,
         CACHEON_SEAM_RECEIPT_DIR=str(receipt_dir), SGLANG_PLUGINS="cacheon",
         CACHEON_SLOT_AUDIT="1" if phase == "audit" else "0",
         CACHEON_SLOT_AUDIT_SEED=str(seed), CACHEON_SLOT_AUDIT_FLOOR_PPM=str(row_floor_ppm),
@@ -255,10 +255,12 @@ def check(args: argparse.Namespace) -> int:
             "seed": args.seed, "row_floor_ppm": args.audit_row_floor_ppm,
         }, indent=2) + "\n")
         slots = sorted({op.slot for op in manifest.ops})
+        from cacheon import seams
         from cacheon.eval import pd_engine
 
+        audited = [slot for slot in slots if seams.audited(slot)]
         ranks = pd_engine.untimed_ranks(int(config.get("tp_size", 1)), config)
-        for phase in ("audit", "graph"):
+        for phase in (("audit", "graph") if audited else ("graph",)):
             folder = root / phase
             folder.mkdir()
             print(f"Running {phase}; log: {folder / 'engine.log'}", flush=True)
@@ -266,7 +268,7 @@ def check(args: argparse.Namespace) -> int:
                 early = _child([phase, str(root / "inputs.json"), str(folder)],
                                folder / "engine.log", timeout=args.timeout_seconds,
                                failure_check=(lambda: _early_audit_failure(
-                                   folder, slots, ranks, args.minimum_audit_windows)) if phase == "audit" else None)
+                                   folder, audited, ranks, args.minimum_audit_windows)) if phase == "audit" else None)
                 if early is not None:
                     (folder / "result.json").write_text(json.dumps(early, indent=2) + "\n")
                     print(f"FAIL: {early['detail']}")
@@ -283,7 +285,7 @@ def check(args: argparse.Namespace) -> int:
             if phase == "audit":
                 decision, detail = gate(report["receipts"]["audit"],
                                         min_calls=args.minimum_audit_windows,
-                                        expected_slots=slots, expected_member_count=ranks)
+                                        expected_slots=audited, expected_member_count=ranks)
                 # Stock raising is never a graded call: a layer pass that stock refused on
                 # every DSA layer graded only the KDA layers (G3, 2026-11-11).
                 if decision == "PASS" and any(row.get("baseline_refused") for row in report["receipts"]["audit"]):
@@ -293,8 +295,12 @@ def check(args: argparse.Namespace) -> int:
                 print(f"{decision}: {detail}")
                 if decision != "PASS":
                     return 2 if decision == "FAIL" else 3
-        print(f"Development audit and capture checks passed. Evidence: {root}. "
-              "This is not end-to-end quality, a speed win or qualification.")
+        if not audited:
+            observed = {row.get("slot") for row in report["receipts"]["completed"]}
+            if not observed.intersection(slots):
+                print(f"No submitted scheduler method was called by these development requests. Evidence: {root}")
+                return 3
+        print(f"Development serving checks passed. Evidence: {root}.")
         return 0
     except Exception as exc:
         print(f"[ERROR] {type(exc).__name__}: {exc}", file=sys.stderr)

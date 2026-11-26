@@ -55,7 +55,7 @@ submissions.
   cache. The factory `entry(cache)` returns a subclass of the runtime cache's type.
   The candidate runs the incumbent kernels with your cache against the incumbent
   kernels with the incumbent cache (stock SGLang's until a cache is commissioned),
-  and the validator checks the bytes behind every served prefix on both arms. The
+  and the validator checks the bytes behind every prefix your cache serves. The
   cache runs outside CUDA graphs. It applies only to arenas that serve with prefix
   caching. See [the prefix cache](slots.md#the-prefix-cache).
 

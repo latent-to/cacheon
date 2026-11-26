@@ -1,8 +1,9 @@
 """Prefill/decode engine pair for speed policy 20, inside one OCI worker fence.
 
-SGLang's disaggregation role is process-global, so the decode engine stays the in-process
-``sgl.Engine`` the session loop already drives, and each prefill server is a companion child of the
-same worker serving HTTP on loopback. The lane's GPUs run the prefill servers first, each on its own
+SGLang's disaggregation role is process-global. Each prefill server is a child serving HTTP on loopback.
+With a sealed prefill routing policy, the decode frontend and native router also run as children. The replay
+then sends token IDs to one endpoint and the router chooses both workers. Otherwise decode runs in-process.
+The lane's GPUs run the prefill servers first, each on its own
 ``tp_size`` GPUs (``pd_prefill.servers`` of them, one by default), then the decode engine. One request
 is one bootstrap room: the facade posts it to the session's prefill server and hands it to the decode
 engine with the same room and DP rank, as SGLang's PD router does with ``--dp-aware``; a session keeps
@@ -24,6 +25,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from types import SimpleNamespace
 from typing import Any
 
 ROLES = ("pd_prefill", "pd_decode")
@@ -120,12 +122,17 @@ def split(kwargs: dict[str, Any], env: dict[str, str]):
 
 def start_prefill(kwargs: dict[str, Any], env: dict[str, str]) -> subprocess.Popen:
     """Boot the prefill server as a child of this worker; it boots while the decode engine does."""
+    process = _start_server(kwargs, env)
+    # Staggered so the two servers' self-chosen internal ports do not race (10-23 PD launch).
+    time.sleep(10)
+    return process
+
+
+def _start_server(kwargs, env):
     process = subprocess.Popen([sys.executable, "-m", "cacheon.eval.pd_engine"], stdin=subprocess.PIPE,
                                env={**os.environ, **env})
     process.stdin.write(json.dumps({k: v for k, v in kwargs.items() if k != "custom_sigquit_handler"}).encode())
     process.stdin.close()
-    # Staggered so the two servers' self-chosen internal ports do not race (10-23 PD launch).
-    time.sleep(10)
     return process
 
 
@@ -133,7 +140,7 @@ def wait_ready(process: subprocess.Popen, kwargs: dict[str, Any], deadline_s: fl
     url = f"http://{HOST}:{kwargs['port']}"
     while time.monotonic() < deadline_s:
         if process.poll() is not None:
-            raise RuntimeError(f"prefill server exited {process.returncode} during boot")
+            raise RuntimeError(f"server at {url} exited {process.returncode} during boot")
         try:
             with urllib.request.urlopen(url + "/health", timeout=5) as response:
                 if response.status == 200:
@@ -141,7 +148,144 @@ def wait_ready(process: subprocess.Popen, kwargs: dict[str, Any], deadline_s: fl
         except OSError:
             pass
         time.sleep(2)
-    raise TimeoutError("prefill server did not become healthy before the boot deadline")
+    raise TimeoutError(f"server at {url} did not become healthy before the boot deadline")
+
+
+def _loopback_client():
+    import aiohttp
+
+    # SGLang's server drops a connection idle 5 s; aiohttp pooled it 15 s and sent the POST into the close
+    # ("Server disconnected", first PD twin 2026-10-27). Its default 100-connection cap also queued prefills.
+    return aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=0, force_close=True),
+                                 timeout=aiohttp.ClientTimeout(total=None))
+
+
+class _GatewayEngine:
+    """Run timed token requests through one service endpoint, leaving replica placement to its router."""
+
+    def __init__(self, url: str, workers: list[str]):
+        self.url, self.workers = url, workers
+        self.tokenizer_manager = self
+        self.loop = asyncio.new_event_loop()
+        self._http = None
+
+    def _client(self):
+        if self._http is None:
+            self._http = _loopback_client()
+        return self._http
+
+    async def flush_cache(self):
+        """Flush every physical cache before acknowledging the validator's cold boundary."""
+        async def flush(url):
+            async with self._client().post(url + "/flush_cache?timeout=120") as response:
+                response.raise_for_status()
+                await response.read()
+
+        await asyncio.gather(*(flush(url) for url in self.workers))
+        return SimpleNamespace(success=True)
+
+    async def async_generate(self, *, routed_dp_rank=None, stream=False, **kwargs):
+        """One HTTP request per prompt, so every placement decision belongs to the router."""
+        import orjson
+
+        key = "input_ids" if "input_ids" in kwargs else "prompt"
+        prompts = kwargs.pop(key)
+        key = "text" if key == "prompt" else key
+        requests = [self._client().post(self.url + "/generate",
+                    data=orjson.dumps({**kwargs, key: prompt, "stream": stream}),
+                    headers={"Content-Type": "application/json"}) for prompt in prompts]
+        if stream:
+            return self._events(requests)
+
+        async def one(request):
+            async with request as response:
+                response.raise_for_status()
+                return await response.json(loads=orjson.loads)
+
+        return await asyncio.gather(*(one(request) for request in requests))
+
+    async def _events(self, requests):
+        streams = [self._stream(request) for request in requests]
+        if len(streams) == 1:
+            async for row in streams[0]:
+                yield {**row, "index": 0}
+            return
+        pending = {asyncio.create_task(stream.__anext__()): i for i, stream in enumerate(streams)}
+        try:
+            while pending:
+                ready, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for task in ready:
+                    i = pending.pop(task)
+                    try:
+                        row = task.result()
+                    except StopAsyncIteration:
+                        continue
+                    yield {**row, "index": i}
+                    pending[asyncio.create_task(streams[i].__anext__())] = i
+        finally:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            await asyncio.gather(*(stream.aclose() for stream in streams))
+
+    @staticmethod
+    async def _stream(request):
+        import orjson
+        from cacheon.eval.oci_session_protocol import MAX_BATCH_RESPONSE_BYTES
+
+        async with request as response:
+            response.raise_for_status()
+            buf = bytearray()
+            async for chunk in response.content.iter_any():
+                buf.extend(chunk)
+                while (end := buf.find(b"\n")) >= 0:
+                    if end > MAX_BATCH_RESPONSE_BYTES:
+                        raise ValueError("token-stream event exceeds the batch response limit")
+                    line = bytes(buf[:end]).strip()
+                    del buf[:end + 1]
+                    if not line or line.startswith(b":"):
+                        continue
+                    if not line.startswith(b"data:"):
+                        raise ValueError("invalid event in the token stream")
+                    data = line[5:].strip()
+                    if data == b"[DONE]":
+                        return
+                    event = orjson.loads(data)
+                    if "error" in event:
+                        raise RuntimeError(f"serving endpoint: {event['error']}")
+                    yield event
+                if len(buf) > MAX_BATCH_RESPONSE_BYTES:
+                    raise ValueError("token-stream event exceeds the batch response limit")
+        raise RuntimeError("serving endpoint closed the token stream before [DONE]")
+
+    def shutdown(self):
+        """Release the loopback client before the worker reaps its server children."""
+        if self._http is not None:
+            self.loop.run_until_complete(self._http.close())
+        self.loop.close()
+
+
+def _gateway(policy, prefills, decode, processes):
+    """Start the decode frontend and native PD router as children of the disposable worker."""
+    sources = tuple(processes)
+    decode = {**decode, "host": HOST, "port": _free_port()}
+    decoder = _start_server(decode, {})
+    processes.append(decoder)
+    deadline = time.monotonic() + 1800
+    decode_url = wait_ready(decoder, decode, deadline)
+    address = {"port": _free_port()}
+    command = [sys.executable, "-m", "sglang_router.launch_router", "--pd-disaggregation",
+               "--host", HOST, "--port", str(address["port"]), "--prefill-policy", policy,
+               "--decode-policy", "round_robin"]
+    if int(decode.get("dp_size") or 1) > 1 or any(int(server.get("dp_size") or 1) > 1 for server, _ in prefills):
+        command.append("--dp-aware")
+    workers = []
+    for proc, (server, _) in zip(sources, prefills, strict=True):
+        workers.append(wait_ready(proc, server, deadline))
+        command.extend(("--prefill", workers[-1], str(server["disaggregation_bootstrap_port"])))
+    router = subprocess.Popen([*command, "--decode", decode_url])
+    processes.append(router)
+    return _GatewayEngine(wait_ready(router, address, deadline), [*workers, decode_url]), decoder.pid
 
 
 async def _unless_failed(prefill: asyncio.Future, step):
@@ -184,14 +328,10 @@ class PrefillDecodePair:
         return getattr(self.decode, name)
 
     async def post(self, url: str, path: str, body: dict | None) -> None:
-        import aiohttp
         import orjson
 
         if self._client is None:
-            # SGLang's server drops a connection idle 5 s; aiohttp pooled it 15 s and sent the POST into the close
-            # ("Server disconnected", first PD twin 2026-10-27). Its default 100-connection cap also queued prefills.
-            self._client = aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=0, force_close=True),
-                                                 timeout=aiohttp.ClientTimeout(total=None))
+            self._client = _loopback_client()
         # aiohttp's stdlib encode of a 135k-token prompt held ~16% of the session worker's loop (2026-10-27).
         data = None if body is None else orjson.dumps(body)
         async with self._client.post(url + path, data=data,

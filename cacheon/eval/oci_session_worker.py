@@ -540,7 +540,6 @@ def _engine_session(
     runtime_manifest = getattr(tree, "runtime_manifest", None)
     manifest = load_manifest(tree_root) if runtime_manifest is not None else None
     active = bool(manifest is not None and manifest.ops)
-    framework_mode = bool(manifest is not None and any(op.setup for op in manifest.ops))
     engine_kwargs = dict(config.engine_kwargs)
     if reference_mode:  # teacher scoring reads every response logprob; bounded replay refuses them
         engine_kwargs.pop("enable_decoder_swa_bounded_replay", None)
@@ -558,7 +557,6 @@ def _engine_session(
         disable_custom_all_reduce=config.disable_custom_all_reduce,
         extra_engine_kwargs=engine_kwargs, engine_env=dict(config.engine_env),
         seed=0,
-        framework_mode=framework_mode,
         isolate=True,
         allow_unsafe_no_isolation=False,
     )
@@ -569,7 +567,6 @@ def _engine_session(
         cfg,
         bundle_path=bundle_path,
         active=active,
-        framework_mode=framework_mode,
         install_seams=not reference_mode,
         audit_policy=audit_policy,
     ) as handle:

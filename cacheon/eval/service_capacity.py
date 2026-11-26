@@ -141,14 +141,13 @@ def completed_work(read: LoadRead) -> dict[str, tuple[int, int]]:
     return {root: (main, inner) for root, (main, inner) in counts.items()}
 
 
-def fixed_work_rate(read: LoadRead, expected: dict[str, tuple[int, int]], *, wall_time=False) -> WorkRate:
-    """Rate over exact warm work; new policies charge the complete elapsed serving span.
+def fixed_work_rate(read: LoadRead, expected: dict[str, tuple[int, int]]) -> WorkRate:
+    """Rate over exact warm work, charged the complete elapsed serving span.
 
     Cold openings populate the declared warm-cache operating point before timing.
     Wall time includes tails and client handoffs between warm turns. With fixed
-    work value and GPU allocation its inverse is monotone in profit. Historical
-    policies retain summed request latency only for reopening their old scores;
-    inverse mean latency under round barriers is not throughput.
+    work value and GPU allocation its inverse is monotone in profit; inverse mean
+    request latency under round barriers is not throughput.
     """
     done = completed_work(read)
     if done != expected:
@@ -163,20 +162,24 @@ def fixed_work_rate(read: LoadRead, expected: dict[str, tuple[int, int]], *, wal
     warm = [record for record in read.records if record.credit_issued_ns != cold]
     if not warm:
         raise ServiceEvidenceError("read has no timed warm turns")
-    latency = ((max(r.request_end_ns for r in warm) - min(r.credit_issued_ns for r in warm)) / 1e9
-               if wall_time else sum((r.request_end_ns-r.credit_issued_ns)/1e9 for r in warm))
+    latency = (max(r.request_end_ns for r in warm) - min(r.credit_issued_ns for r in warm)) / 1e9
     if latency <= 0:
         raise ServiceEvidenceError("read has no timed warm turns")
     return WorkRate(len(warm), latency, len(warm) / latency)
 
 
-def steady_span_cost(read: LoadRead, expected: dict[str, tuple[int, int]], share: float) -> float:
+def steady_span_cost(read: LoadRead, expected: dict[str, tuple[int, int]], share: float,
+                     from_cold_round: bool = False) -> float:
     """Seconds per warm turn until active sessions fall below ``share`` of the load after the last session starts.
 
     The fixed work must still complete. A closed loop holds the load until the slice runs out of sessions; the drain
     after it runs on the longest few sessions, so their tails set the whole-span cost (four GLM stock lifetimes,
-    2026-11-12: per-lifetime geometric-mean spread 1.45% whole span, 0.58% at half the load)."""
-    fixed_work_rate(read, expected, wall_time=True)
+    2026-11-12: per-lifetime geometric-mean spread 1.45% whole span, 0.58% at half the load).
+
+    ``from_cold_round`` starts the span at the host's release of the cold round and counts its turns. The first warm
+    credit is a candidate's: it exists once an opening finishes, so holding every opening kept the cold round off the
+    clock (slot audit #1, 2026-11-23)."""
+    fixed_work_rate(read, expected)
     cold = min(record.credit_issued_ns for record in read.records)
     warm = [record for record in read.records if record.credit_issued_ns != cold]
     sessions: dict[str, list[int]] = {}
@@ -191,8 +194,8 @@ def steady_span_cost(read: LoadRead, expected: dict[str, tuple[int, int]], share
         if step < 0 and time_ns > last_start and active < share * read.load:
             end = time_ns
             break
-    start = min(record.credit_issued_ns for record in warm)
-    turns = sum(record.request_end_ns <= end for record in warm)
+    start = cold if from_cold_round else min(record.credit_issued_ns for record in warm)
+    turns = sum(record.request_end_ns <= end for record in (read.records if from_cold_round else warm))
     if end <= start or not turns:
         raise ServiceEvidenceError("read has no steady warm turns")
     return (end - start) / 1e9 / turns
@@ -234,7 +237,7 @@ class ServiceVerdict:
 
 
 def _boot_costs(reads: Sequence[LoadRead], arm: str, expected: dict[int, dict[str, tuple[int, int]]],
-                steady_span: float = 0.0) -> list[dict[int, list[float]]]:
+                steady_span: float = 0.0, cold_span: bool = False) -> list[dict[int, list[float]]]:
     """Split one arm's reads into engine lifetimes; a lifetime replays each load once, numbering its windows from 1."""
     boots: list[dict[int, list[float]]] = []
     for read in reads:
@@ -246,8 +249,8 @@ def _boot_costs(reads: Sequence[LoadRead], arm: str, expected: dict[int, dict[st
             if not boots or read.load in lifetime:
                 boots.append({})
             boots[-1][read.load] = []
-        boots[-1][read.load].append(steady_span_cost(read, expected[read.load], steady_span) if steady_span
-                                    else fixed_work_rate(read, expected[read.load], wall_time=True).elapsed_s)
+        boots[-1][read.load].append(steady_span_cost(read, expected[read.load], steady_span, cold_span) if steady_span
+                                    else fixed_work_rate(read, expected[read.load]).elapsed_s)
     return boots
 
 
@@ -285,7 +288,7 @@ def reference_grade(
     window_noise: float, boot_noise: float, error_rate: float, boots: int,
     attainment_tolerance: float, attainment_margin: float, futility_margin: float = 0.0,
     sentinel: Sequence[LoadRead] = (), decode_floors: dict[int, float] | None = None, reference_lane: str = "",
-    load_margin: float = 0.0, steady_span: float = 0.0, futility_bar: float = 1.0,
+    load_margin: float = 0.0, steady_span: float = 0.0, futility_bar: float = 1.0, cold_span: bool = False,
 ) -> ServiceVerdict:
     """Grade candidate engine lifetimes against a retained stock reference campaign on the same lane.
 
@@ -323,7 +326,7 @@ def reference_grade(
             or len(set(starts)) != len(starts)
             or any(shapes.setdefault(read.load, shape) != shape for read in every for shape in (_work_shapes(read),))):
         raise ServiceEvidenceError("reference and candidate reads differ in lane, work or identity")
-    lifetimes = [_boot_costs(arm, role, expected, steady_span)
+    lifetimes = [_boot_costs(arm, role, expected, steady_span, cold_span)
                  for arm, role in ((reference, "incumbent"), (candidate, "candidate"), (sentinel, "incumbent"))]
     if any(list(lifetime) != list(lifetimes[0][0]) for rows in lifetimes for lifetime in rows):
         raise ServiceEvidenceError("reference and candidate lifetimes replay different loads")

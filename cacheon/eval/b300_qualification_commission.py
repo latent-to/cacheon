@@ -287,6 +287,7 @@ def compose_commissioned_qualifications(
                 policy_block.get("audit_control_delta_digests", ())
             ),
             audit_row_floor_ppm=policy_block.get("audit_row_floor_ppm", ROW_FLOOR_PPM),
+            audit_sample_rate_ppm=policy_block.get("audit_sample_rate_ppm", 1_000_000),
         )
     except B300RegisteredQualificationError as exc:
         raise B300QualificationCommissionError(
@@ -295,6 +296,7 @@ def compose_commissioned_qualifications(
 
     _require_replay_quality(policy, session_block)
     # T grades against the baseline's stored rollouts; stock keeps stacked wins from compounding drift (owner, 2026-11-11).
+    # The record rides under a candidate as ``parent_entries``, which leave this baseline stock.
     if capabilities.incumbent_entries:
         raise B300QualificationCommissionError("replay quality is graded against stock: the incumbent declares entries")
 
@@ -372,20 +374,16 @@ def _compose_locked(
     from cacheon.eval.goodput_runtime import GoodputPolicy
     settings = session_block["replay"]
     goodput = GoodputPolicy.from_dict(speed_block["goodput"])
-    if not goodput.error_rate or not goodput.decode_floor:
-        raise B300QualificationCommissionError(
-            "new replay commissions are prefill/decode pairs with elapsed-work eligibility and a decode floor"
-        )
     replay = AgentReplayPlan(
         Path(settings["manifest_path"]),
         tuple(sorted(settings["load"], reverse=True)) if type(settings["load"]) is list else (settings["load"],),
         Path(settings["aiperf_binary"]), Path(settings["tokenizer_path"]),
         inputs.root / "qualification-replays" / screen_lane,
         goodput.contract, "incumbent", 1, screen_lane, windows=settings["windows"],
-        elapsed_cost=True,
         max_work_seconds=settings.get("max_work_seconds", 0),
-        closed_loop=True,
         warm_windows=settings.get("warm_windows", 0),
+        pause_order=settings.get("pause_order", False),
+        quality_every_load=settings.get("quality_every_load", False),
     )
     if replay.slice.digest != settings["slice_digest"]:
         raise B300QualificationCommissionError("replay slice differs from its sealed authority")
@@ -401,6 +399,10 @@ def _compose_locked(
         entries=capabilities.incumbent_entries, resolver=capabilities.source_resolver,
         replay=replay,
     )
+    # Crowned entries a candidate rides on while B, the speed reference and T's rollouts stay the incumbent's.
+    parent = incumbent
+    for ref in capabilities.parent_entries.values():
+        parent = parent.with_contribution(ref)
     incumbent_tree = incumbent_binding.tree
     incumbent_launch = incumbent_arm.launch
     baseline_session_plan = incumbent_arm.session_plan
@@ -522,6 +524,7 @@ def _compose_locked(
                 executor.device_policy.configuration_sha256
             ),
             seal=_COMMISSION_SEAL,
+            parent_stack=None if parent is incumbent else parent,
         )
         factory = build_b300_registered_qualification_factory(factory_inputs)
     except B300RegisteredQualificationError as exc:

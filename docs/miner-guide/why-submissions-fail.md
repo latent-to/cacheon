@@ -155,14 +155,16 @@ moving a request's own slots or claiming more tokens than the key stops the
 engine as the candidate's failure. See
 [the prefix cache](../architecture/slot-contract.md#the-prefix-cache).
 
-## Pruning is reviewed before evaluation
+## Bundles are reviewed before evaluation
 
-The DeepSeek-V4.1 arena reads every bundle's source before its first GPU claim.
-Claude Opus 5.5 checks whether the served code drops routed experts that stock's
-prune keeps (budget `0.4`, an expert held by at most one row of the call). Reviews
-run while earlier bundles are evaluated, so they rarely delay a bundle's turn. A
-bundle the review finds pruning fails as `routed_expert_pruning` without GPU time.
-The audit applies the same rule after the speed stage.
+An arena that runs a bundle review has Claude Opus 5.5 read every bundle's source
+before its first GPU claim, while earlier bundles are evaluated. A bundle the
+review fails is failed without GPU time, as one of:
+
+- `routed_expert_pruning` — on the DeepSeek-V4.1 arena, pruning more than stock
+  (above). The audit applies the same rule after the speed stage.
+- `repackaged_upstream_pr` — an existing upstream SGLang change repackaged as the
+  submission. Upstream work is not paid.
 
 ## Identical bytes are not re-evaluated
 
@@ -186,10 +188,19 @@ stays spendable. The submission closes as `NO_DECISION` and is not re-queued:
 resubmit the same bytes when the family reopens. The operator's announcement
 names the open targets; see [current availability](slots.md#current-availability).
 
+An `engine` submission that names no model node and no `tree_cache` is parked
+the same way, as `target_unavailable:engine`, while the arena has no crowned
+`forward_pass` or `prefix_cache` contribution: its numerical audit grades the
+model and cache slots it is assembled on, and there are none yet.
+
 ## Things that are not valid submissions
 
-- **Patches to SGLang.** The engine is pinned and consensus-critical. Submit
-  kernels or a prefix cache, not engine changes.
+- **Patches to SGLang outside the listed engine objects.** The engine is pinned
+  and consensus-critical. An `engine` bundle may name `queue_order` and the
+  scheduler decisions the [target catalog](../reference/target-catalog.md#registered-targets)
+  lists; any other SGLang path, and a dtype, architecture, metadata, `prepare`
+  or variant on an engine entry, is refused at intake. A method name the engine
+  does not define on that path stops the engine at its first scheduler.
 - **Engine-wide setup.** A bundle that installs process-wide setup is not a
   registered target and is rejected at resolution.
 

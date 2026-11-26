@@ -94,7 +94,11 @@ the pinned runtime, and its documentation.
 
 Every slot name other than [`tree_cache`](#the-prefix-cache) is a node address: a dotted path by which
 the served model reaches a module, where `*` stands for exactly one segment. `model.layers.*.mlp` is every MoE block, `model.layers.3` one decoder
-layer, `model` the whole decoder stack; a module reached by several paths binds once. One adapter,
+layer, `model` the whole decoder stack; a module reached by several paths binds once. `model` is whatever
+the served model calls `model`, a child or a property over one: Inkling 2 registers its decoder as `llm` and
+binds `model.*` through that property. Every Inkling 2 module binds: its nodes keep every layer's convolution rows,
+since a looped layer writes its visit's, and a decoder layer's attention-residual state (the running partial, the
+closed blocks) and the loop messages it was handed are put back and graded like cache rows. One adapter,
 [`sglang_nodes.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_nodes.py),
 serves every width, and a bundle that lists several addresses replaces several
 nodes at once. Granularity is the model's own module tree: a span that is not a
@@ -112,11 +116,13 @@ Truth is the stock node in the running engine, on the same call:
 1. on an audited eager call the stock node runs first;
 2. its result tensors are kept, together with the engine-state rows the batch may
    write: the cache rows at `out_cache_loc` (whole pages where the pool stores
-   pages; a pooled DSA indexer's per-request key tails too), plus native recurrent convolution and temporal rows for both live
-   requests and tracked checkpoints. Under KDA
-   ReplaySSM speculation it grades the draft rings at each live request's
+   pages; a pooled DSA indexer's per-request key tails too; a mapped sliding-window
+   sub-pool's rows at the translated locations), plus native recurrent convolution and temporal rows for both live
+   requests and tracked checkpoints. Under KDA ReplaySSM speculation it grades the draft rings at each live request's
    Mamba slot (the BF16 rounding residuals summed with the values they round)
-   and the per-request convolution windows; other speculative recurrent layouts
+   and the per-request convolution windows. Inkling 2 keeps convolution state alone, one pool layer per
+   layer visit; under DSpark its verify call restores and grades every visit's convolution windows at
+   verify-scratch row i for request i. Other speculative recurrent layouts
    (GDN native MTP, other ReplaySSM forms) are refused. A call that moves the batch's layer-boundary
    residual stream (a decoder layer on SGLang main) also keeps the residual and
    the pending contribution it leaves there;
@@ -163,7 +169,8 @@ sealed audit policy sets `row_floor_ppm`, which the settlement binds with the re
 audit control. The audit attributes and controls: it proves the contribution ran in its
 slot on every rank and computes the same function within a bounded deviation, and output
 quality is pristine T's to judge, always against stock (a commission whose incumbent declares
-entries is refused). An arena whose twin is bitwise (GLM-5.3-Flash) gets no
+entries is refused; the record rides under a candidate as the commission's parent entries, which
+leave the baseline stock). An arena whose twin is bitwise (GLM-5.3-Flash) gets no
 noise from the twin term, so 2% admitted no lossy node there: FP8 block-scaled projections
 sat at 6–13% row error while the wrong control sits at 50%. Rows stock itself left
 non-finite (an idle data-parallel rank's padding) are not graded. The tolerance is measured because honest
@@ -268,18 +275,24 @@ and evicts the validator's KV memory. It must preserve the runtime object's
 interfaces and state guarantees; returning a subclass is not correctness proof.
 The choice is made once, at engine start, with an empty call descriptor: an op declaring
 dtypes, architectures or eligibility never matches, and the run fails as `candidate_never_executed`.
+A factory that returns `None` leaves that engine's cache stock and unchecked; its
+`not_selected` receipt (outcome `declined`) covers that scheduler in the execution
+gate once another scheduler serves the address. The factory runs in the scheduler
+with the live cache, so it can alter the stock object before it declines.
 
 The content checks run only around a candidate's cache. Stock's cache is trusted
 and runs unchecked: checking it cost the DeepSeek-V4.1 PD decode schedulers 18% of
-their decode speed, so a cache candidate carries the check's cost in its own arm. Storage
+their decode speed, so a cache candidate carries the check's cost in its own arm. The
+checks run in the candidate's process, where the bundle's own code can switch them off
+while completed receipts keep accruing: a refusal fails the candidate, but a pass is
+not quality evidence. Pristine T, which teacher-forces the timed trajectories in a
+candidate-free engine, is the gate that binds a cache's output quality. Storage
 validation is adapter work under this common contract. It recognizes full-attention
 KV, sliding-window KV and its index state (by slot, or by page where the window pool
 stores whole pages), compressed KV and index pages, per-request sliding-window rings,
 and the pending-pair ring a DeepSeek-V4 kv-source layer holds per request, which a
 cache handoff must leave unchanged. A request-local ring is never stored in the tree,
-so a prefix hit that skips its trailing window is refused. In the untimed audit,
-native recurrent convolution and temporal checkpoints are bound to their complete
-token prefix and namespace before donation, then checked before reuse. Live
+so a prefix hit that skips its trailing window is refused. Live
 recurrent request state must survive cache handoffs unchanged. Physical slot
 translation and tracked checkpoint boundaries follow the pinned runtime. MTP
 acceptance commits its scratch state into these same checkpoint rows before
@@ -325,19 +338,32 @@ factory returns must be concrete.
 
 The check runs on the scheduler's stream behind the forward pass that wrote the
 bytes; the host reads each verdict at a later handoff, and only a flush or an
-audited request waits for one. A page is checked after the forward pass that read
+audited request waits for one. A chunk stashed between prefill chunks is handed over
+before its batch's result. On an attention backend that ends its prefill reads before
+graph replay (SGLang's `PRE_REPLAY`, as TRT-LLM MHA does), its pages can be hashed
+before they are written and an honest cache refused; Inkling 2 Mini's hybrid backend
+does not end them there. A page is checked after the forward pass that read
 it, so bytes moved into a served slot after that pass are not told apart from bytes
 placed before. The check does not bound memory a cache allocates beyond the
-engine's pools. Sliding-window KV may be overwritten during forward, so its
-additional checks run in the existing untimed audit role: record computed state
-before handing it to the cache, verify device hits before use, and verify host
-restores after the native transfer stream completes. Unfinished requests retain
-their live ring state. These checks sample up to four layers per transferable
-state field. The handoffs
-`match_prefix`, `cache_unfinished_req`, `cache_finished_req`, `insert_req`,
-`checkpoint`, `prefix_device_indices`, `on_release`, `ready_to_load_host_cache`
-and `reset` may be overridden in the class but not replaced on
+engine's pools. Sliding-window KV may be overwritten during forward, so it and native
+recurrent convolution and temporal checkpoints are checked in the untimed audit role:
+state is bound to its complete token prefix and namespace before the cache receives
+it, device hits are verified before use and host restores after the native transfer
+stream completes, against the prefix served, so a load-back that commits none of its
+promised host tokens is not a refusal. Unfinished requests retain their live ring
+state. These checks sample up to four layers per transferable state field. The handoffs
+`match_prefix`, `checkpoint`, `prefix_device_indices`, `on_release`,
+`ready_to_load_host_cache` and `reset` may be overridden in the class but not replaced on
 the instance or class later.
+
+Timed roles check full-attention KV only: on Inkling 2 Mini, 8 of 48 layer caches,
+leaving its 40 sliding-window caches and the convolution state of its 48 layer passes
+unchecked there. A bundle can tell the audit role from a timed one, so pristine T is
+what catches wrong window or recurrent state in a timed lifetime. Those checks read
+device values on the host at each handoff, and the first such read waits out the
+forward pass in flight: one wait per handoff cost 30 s per prefill rank over a 930 s
+replay (GLM-5.3-Flash PD, 2026-11-17). A host hit's check also holds the forward pass
+behind the whole host-to-device copy that the hierarchical cache overlaps layer by layer.
 
 Every candidate refusal and every raise in a method the bundle defines stops the
 engine as the candidate's failure. An unsupported cache or state layout is refused
@@ -346,16 +372,82 @@ never in a CUDA graph, so its completions count on a graphs-on run without a
 capture; in the audit role each audited request waits for its verdict and adds one
 unit to the address's audit receipt.
 
+## The queue order
+
+The address `queue_order` names a question, not an object: before every prefill
+batch SGLang's scheduler decides in which order the waiting requests are admitted.
+It belongs to the `engine` target and has no sub-addresses.
+[`sglang_order.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_order.py)
+wraps `SchedulePolicy.calc_priority`: stock orders the queue first, then the bundle's
+`entry(view)` receives one row per waiting request, in stock's order: tokens still to
+prefill, tokens the prefix cache serves (stock's own match, zero where stock does not
+match waiting requests), and prefill tokens the engine processed since the request
+arrived (stock's aging clock, equal on every TP rank). The view carries no token ids,
+no request ids and no output length: the replay fixes output lengths, so a policy that
+saw one would read the future.
+
+The entry returns the positions of the view in the order to admit. Each permutation
+yields the same tokens for every request; answers differ only in who waits. Any other
+answer is refused, receipted as the candidate's, and takes the engine down. Stock's
+admission then applies the order under its own budgets, so the address chooses who is
+next, never how much is admitted. Every rank must receive the same answer, so the entry
+is a pure function of the view. Declare no `prepare`.
+
+## Engine objects
+
+An address under `sglang`, in the `engine` target, names one of the scheduler
+decisions the validator lists in
+[`ENGINE_OBJECTS`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py),
+or a method of a listed class, by its dotted path where SGLang defines it, such as
+`sglang.srt.managers.schedule_policy.PrefillAdder.add_one_req` or
+`sglang.srt.mem_cache.prefill_budget.SWAPrefillBudget`. The list covers prefill
+admission and chunking, the token, row and KV budgets, the decode reserve,
+prefill/decode interleaving, and under KV pressure the decode memory check,
+retraction and its order; the [target catalog](../reference/target-catalog.md#registered-targets)
+names each. Every other SGLang object is refused at intake. The path takes no `*`,
+and a name the engine does not define on that path is refused at bind.
+
+The bundle's `entry(stock)` receives the stock object and returns its replacement:
+a callable for a method, a subclass for a class, which may add methods. `None` leaves
+that process stock. Declare no `prepare`.
+[`sglang_engine.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/integrations/sglang_engine.py)
+binds the replacement once in each scheduler process, when the bundle loads and
+before SGLang builds the scheduler, so every later construction and call reaches
+it. A name another engine module imported from the defining module is rebound
+with it; a reference the engine took some other way before the bind, such as an
+entry in a registry dictionary, keeps the stock object. Only scheduler processes
+load a bundle, so an object that runs only in the HTTP server, the tokenizer or
+the detokenizer is never replaced.
+
+A replacement is the object's new source: a winning bundle reads as a patch to the
+file that defines the object. Every TP rank is its own scheduler process and runs
+the replacement on the same requests, so a replacement that decides anything must
+decide the same on every rank.
+
+No call to a replacement is checked, as nothing in the validator knows what a
+scheduler method should return. The engine boundary judges the result: the timed
+speed stage, quality against the teacher, and pristine T. A raise inside a
+replacement is receipted as the candidate's and takes the engine down, and a bind
+that fails stops the scheduler at its entry. An engine object is covered in every
+process that loaded the bundle: which of its methods a workload reaches, on which
+server, is the engine's business. A submission that names the queue order or an
+engine object is audited on every model and cache slot of the stack it is assembled
+on, so a node named beside it cannot narrow the audit, and receives the assembled
+engine's speed and output-quality checks. One that names no model or cache slot is
+parked as `target_unavailable:engine` at its first claim until a `forward_pass` or
+`prefix_cache` crown exists to assemble it on.
+
 ## Escape hatches
 
-Normal target submissions cannot request arbitrary engine-wide setup or framework mutation. Cross-cutting proposals are not submittable; dependency patches are refused, and native builds use the validator-shipped, policy-constrained build step. Successful work should be resolved into a registered target or reviewed product source without relabeling changed selected payload bytes under old evidence.
+A bundle changes the engine only through the addresses it names, and only where the arena's target opens them. The manifest's engine-wide `setup` hook is refused on every target, as are cross-cutting proposals with no address; dependency patches are refused, and native builds use the validator-shipped, policy-constrained build step. Successful work should be resolved into a registered target or reviewed product source without relabeling changed selected payload bytes under old evidence.
 
 With MTP enabled, the drafter's layer is a node address too, under the
 checkpoint's own name for it, `model.layers.<num_hidden_layers>` (for
 GLM-5.3-Flash, `model.layers.45.mlp` is the draft layer's MoE). No target layer
 carries that index, so those slots bind only on the draft worker, where the
 layer loads as `model.decoder`, and a wildcard such as `model.layers.*.mlp`
-still names target layers alone. Verification stays
+still names target layers alone. A drafter with a config of its own (Inkling 2's DSpark) takes the index from
+the target's depth it carries; its layers have no address yet. Verification stays
 exact, so a draft node changes only how many proposals are accepted, and the
 speed score counts that. The validator owns the speculative schedule, sampling
 and acceptance rules, and request batching. A contribution may not change those

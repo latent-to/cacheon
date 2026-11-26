@@ -19,20 +19,30 @@ from cacheon.eval.scoring import marginal_workload_digest
 from cacheon.stack_identity import canonical_digest
 
 
-def source_digest(replay, root: str, outer: int, inner: int | None) -> str:
-    """Name a dataset turn independently of its dispatch or completion order."""
+def source_digest(replay, root: str, outer: int, inner: int | None, load: int | None = None) -> str:
+    """Name a dataset turn independently of its dispatch or completion order; a lower load's repeat names its load."""
     if (type(root) is not str or type(outer) is not int or outer < 0
         or (inner is not None and (type(inner) is not int or inner < 0))):
         raise QualificationError("replay source coordinate is malformed")
     return canonical_digest("cacheon.qualification.replay-prompt.v1", {
         "slice": replay.slice.digest, "root": root, "outer": outer, "inner": inner,
+        **({} if load is None or load == replay.loads[0] else {"load": load}),
     })
+
+
+def quality_loads(replay) -> tuple[int, ...]:
+    """The loads whose first timed window the quality controls draw from."""
+    return replay.loads if replay.quality_every_load else replay.loads[:1]
 
 
 def prompt_pool(replay) -> dict[str, int]:
     """Enumerate the windows a replay serves (the whole slice under closed loop); never choose or truncate another."""
+    return {key: count for load in quality_loads(replay) for key, count in _load_pool(replay, load).items()}
+
+
+def _load_pool(replay, load: int) -> dict[str, int]:
     result = {}
-    for index, session in enumerate(replay.slice.sessions[:replay.sessions]):
+    for index, session in enumerate(replay.slice.sessions[:replay.sessions_at(load)]):
         path = replay.slice.directory / f"{index:03d}_{session.id}.json"
         trace = json.loads(path.read_text())
         counts = [0, 0]
@@ -43,11 +53,23 @@ def prompt_pool(replay) -> dict[str, int]:
                 count = row["out"]
                 if type(count) is not int or count < 1:
                     raise QualificationError("replay quality requires a positive recorded output budget")
-                result[source_digest(replay, session.id, outer, inner)] = count
+                result[source_digest(replay, session.id, outer, inner, load)] = count
                 counts[inner is not None] += 1
         if tuple(counts) != (session.main_turns, session.inner_requests):
             raise QualificationError("replay prompt pool differs from the sealed turn counts")
     return result
+
+
+def _window(directory: Path, replay, load: int) -> Path:
+    """A load's first timed window directory, as run_replay lays it out."""
+    return directory / ("" if load == replay.loads[0] else f"load{load}") / "window1"
+
+
+def _window_start(arm, replay, load: int) -> int:
+    """Index of a load's first timed request in a lifetime: warm-up, the top load's warm windows, earlier loads."""
+    first = arm.session_plan.warmup_count + arm.session_plan.replay.warm_windows * replay.slice.turns(replay.sessions)
+    return first + sum(replay.windows * replay.slice.turns(replay.sessions_at(earlier))
+                       for earlier in replay.loads[:replay.loads.index(load)])
 
 
 def _frame(prompt):
@@ -73,21 +95,22 @@ def selected_frames(lifecycle):
                  for item in lifecycle.crossover.reference_inputs)
 
 
-def _source_rows(replay, directory: Path, batches):
+def _source_rows(replay, directory: Path, batches, load: int):
     rows = {row.request_id: row for row in batches}
     result = {}
     # Every window replays the same prompts; the first is the one every sequential read retains.
-    path = directory / "window1" / "aiperf" / "profile_export.jsonl"
+    path = _window(directory, replay, load) / "aiperf" / "profile_export.jsonl"
     for line in path.read_text().splitlines():
         meta = json.loads(line)["metadata"]
         if meta["benchmark_phase"] != "profiling":
             continue
-        key = source_digest(replay, meta["source_trace_id"], meta["source_outer_idx"], meta.get("source_inner_idx"))
+        key = source_digest(replay, meta["source_trace_id"], meta["source_outer_idx"], meta.get("source_inner_idx"),
+                            load)
         request_id = UUID(meta["x_request_id"]).hex
         if key in result or request_id not in rows:
             raise QualificationError("replay source-to-request join is not one-to-one")
         result[key] = rows[request_id]
-    if set(result) != set(prompt_pool(replay)):
+    if set(result) != set(_load_pool(replay, load)):
         raise QualificationError("replay quality sources differ from the committed prompt pool")
     return result
 
@@ -104,10 +127,9 @@ def stock_rollouts(evidence):
     return (bracket, bracket) if bracket is not None else _stock_pair(evidence.prior_executions, evidence.policy.reference_boots)
 
 
-def _timed_rows(execution, arm, replay):
-    count = replay.slice.turns(replay.sessions)
-    first = arm.session_plan.warmup_count + arm.session_plan.replay.warm_windows * count
-    return execution.session.batches[first:first + count]
+def _timed_rows(execution, arm, replay, load: int):
+    first = _window_start(arm, replay, load)
+    return execution.session.batches[first:first + replay.slice.turns(replay.sessions_at(load))]
 
 
 def _matched(rows, compared, pool):
@@ -130,9 +152,13 @@ def create_controls(value, reference, candidate, candidate_directory, candidate_
     replay = plan.baseline.session_plan.replay
     pool = prompt_pool(replay)
     arm = _reference_arm(plan, getattr(reference, "origin", ""))
-    compared = _source_rows(replay, candidate_directory, candidate.session.batches)
     lifetimes = _stock_pair(reference, plan.policy.reference_boots)
-    stock, control = (_matched(_timed_rows(row, arm, replay), compared, pool) for row in lifetimes)
+    compared, stock, control = {}, {}, {}
+    for load in quality_loads(replay):
+        sources = _source_rows(replay, candidate_directory, candidate.session.batches, load)
+        compared.update(sources)
+        for joined, row in zip((stock, control), lifetimes):
+            joined.update(_matched(_timed_rows(row, arm, replay, load), sources, pool))
     pairs = tuple((key, stock[key].batch_index, compared[key].batch_index) for key in sorted(compared))
     entropy = entropy_provider(value.commitment, candidate_quiescence)
     selection = SelectionReceipt.reveal(
@@ -144,14 +170,15 @@ def create_controls(value, reference, candidate, candidate_directory, candidate_
     )
     by_request = {compared[key].request_id: key for key in selection.selected_prompt_digests}
     # bridge.jsonl names each input by digest; its IDs are the ones this evaluator process primed and sent.
-    primed = {digest: ids for ids, digest in _PROMPTS.values()}
+    primed = {digest: ids for ids, digest, _place in _PROMPTS.values()}
     inputs = {}
-    with (candidate_directory / "window1" / "bridge.jsonl").open() as stream:
-        for line in stream:
-            row = json.loads(line)
-            key = by_request.get(UUID(row["x_request_id"]).hex)
-            if key is not None and row["input_sha256"] in primed:
-                inputs[key] = primed[row["input_sha256"]]
+    for load in quality_loads(replay):
+        with (_window(candidate_directory, replay, load) / "bridge.jsonl").open() as stream:
+            for line in stream:
+                row = json.loads(line)
+                key = by_request.get(UUID(row["x_request_id"]).hex)
+                if key is not None and row["input_sha256"] in primed:
+                    inputs[key] = primed[row["input_sha256"]]
     if set(inputs) != set(selection.selected_prompt_digests):
         raise QualificationError("selected replay canonical inputs are incomplete")
     result = []
@@ -183,8 +210,10 @@ def validate_controls(evidence, plan, stock_arm):
     stock, control = stock_rollouts(evidence)
     rows = (stock.session.batches, evidence.candidate_execution.session.batches)
     for role, arm in enumerate((stock_arm, plan.candidate)):
-        first = arm.session_plan.warmup_count + arm.session_plan.replay.warm_windows * replay.slice.turns(replay.sessions)
-        if {pair[role + 1] for pair in pairs} != set(range(first, first + len(pool))):
+        timed = {index for load in quality_loads(replay) for index in range(
+            _window_start(arm, replay, load),
+            _window_start(arm, replay, load) + replay.slice.turns(replay.sessions_at(load)))}
+        if {pair[role + 1] for pair in pairs} != timed:
             raise QualificationError("replay source pairs do not cover the timed requests exactly")
     joined = {key: (rows[0][b], rows[1][c]) for key, b, c in pairs}
     for key, (baseline, candidate) in joined.items():
@@ -197,7 +226,7 @@ def validate_controls(evidence, plan, stock_arm):
     # A stored control is a timed answer of the second stock pair; a bracket's are checked with its session.
     stored = None if evidence.baseline_execution is not None else {
         (row.input_ids_sha256, tuple(row.evidence.prompts[0].output_ids))
-        for row in _timed_rows(control, stock_arm, replay)}
+        for load in quality_loads(replay) for row in _timed_rows(control, stock_arm, replay, load)}
     for prompt in evidence.reference_inputs:
         baseline, candidate = joined[prompt.prompt_digest]
         if (prompt.roles[0].output_ids != baseline.evidence.prompts[0].output_ids

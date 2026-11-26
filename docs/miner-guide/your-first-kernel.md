@@ -136,25 +136,8 @@ speed improvement is a successful diagnostic, not a competitive contribution.
 ## Prefix-cache bundles
 
 A cache bundle names `tree_cache` under the `prefix_cache` target and supplies a
-factory that receives the runtime cache and returns a subclass of its type:
-
-```toml
-[competition]
-target = "prefix_cache"
-mode = "slot"
-arena = "<published-arena-id>"
-
-[[ops]]
-slot = "tree_cache"
-source = "cache/policy.py"
-entry = "build"
-```
-
-```python
-def build(cache):
-    return type(cache)
-```
-
+factory that receives the runtime cache and returns a subclass of its type; the
+manifest and an identity factory are in [Slots and targets](slots.md#the-prefix-cache).
 Declare no `prepare`, dtypes, architectures or metadata. `verify` imports `build`
 and checks that it accepts the runtime cache. Run `check` with the GLM development
 inputs: their second batch reuses prefixes, so the cache audit sees enough

@@ -80,11 +80,15 @@ class GoodputPolicy:
     # 1 measures the first lifetime's futility margin from the request's payment bar instead of from stock: a first
     # lifetime reading more than the margin below the speedup settlement pays ends the stage (owner 2026-11-14).
     bar_futility: float = field(default=0.0, metadata={"wire_optional": True})
+    # 1 starts each load's steady span when the host releases its cold round, not at the first warm credit: a
+    # candidate sets that credit by when it finishes an opening, so holding every opening hid the cold round from
+    # the clock (slot audit #1, 2026-11-23; owner 2026-11-24). Sealed with steady_span.
+    cold_span: float = field(default=0.0, metadata={"wire_optional": True})
 
     def __post_init__(self):
         values = (self.required, self.null_noise, self.attainment_tolerance, self.attainment_margin,
                   self.error_rate, self.boot_noise, self.futility_margin, self.attainment_pooled,
-                  self.decode_floor, self.load_margin, self.steady_span, self.bar_futility)
+                  self.decode_floor, self.load_margin, self.steady_span, self.bar_futility, self.cold_span)
         floors = self.decode_floors
         if (type(self.contract) is not ServiceContract
             or any(type(v) not in (int, float) or not math.isfinite(v) for v in values)
@@ -97,6 +101,7 @@ class GoodputPolicy:
             or not 0 <= self.attainment_tolerance <= 1 or not 0 <= self.attainment_margin < 1
             or self.attainment_pooled not in (0, 1) or self.decode_floor not in (0, 1)
             or self.bar_futility not in (0, 1) or (self.bar_futility and not self.futility_margin)
+            or self.cold_span not in (0, 1) or (self.cold_span and not self.steady_span)
             or type(floors) is not tuple or (floors and not self.decode_floor)
             or any(type(row) is not tuple or len(row) != 2 or type(row[0]) is not int or row[0] < 1
                    or type(row[1]) not in (int, float) or not 0 < row[1] < math.inf for row in floors)
@@ -125,7 +130,7 @@ class GoodputPolicy:
                 **{key: format(getattr(self, key), ".17g") for key in self.__dataclass_fields__
                    if key not in ("contract", "decode_floors") and (self.error_rate or key not in ("error_rate", "boot_noise"))
                    and (key not in ("futility_margin", "attainment_pooled", "decode_floor", "load_margin", "steady_span",
-                                    "bar_futility") or getattr(self, key))},
+                                    "bar_futility", "cold_span") or getattr(self, key))},
                 **({"decode_floors": {str(load): format(floor, ".17g") for load, floor in self.decode_floors}}
                    if self.decode_floors else {})}
 
@@ -136,7 +141,7 @@ class GoodputPolicy:
         if type(value) is dict and "error_rate" not in value:
             fields -= {"error_rate", "boot_noise"}
         for optional in ("futility_margin", "attainment_pooled", "decode_floor", "decode_floors", "load_margin",
-                         "steady_span", "bar_futility"):
+                         "steady_span", "bar_futility", "cold_span"):
             if type(value) is dict and optional not in value:
                 fields -= {optional}
         if (type(value) is not dict or set(value) != fields or type(value["contract"]) is not dict
@@ -227,7 +232,7 @@ class GoodputReadSet:
             boots=self.boots, futility_margin=policy.futility_margin, sentinel=self.incumbent[split:],
             decode_floors=policy.floors(self.loads), attainment_tolerance=policy.attainment_tolerance,
             attainment_margin=policy.attainment_margin, reference_lane=self.reference_lane,
-            load_margin=policy.load_margin, steady_span=policy.steady_span,
+            load_margin=policy.load_margin, steady_span=policy.steady_span, cold_span=bool(policy.cold_span),
             futility_bar=float(self.payment_bar) if policy.bar_futility and self.payment_bar else 1.0,
         )
         if type(result) is not ServiceVerdict or not math.isfinite(result.ratio) or result.ratio <= 0:
@@ -351,10 +356,10 @@ def _reference_arm(plan, origin):
     for policy in (old, new):
         policy.pop("calibration_digest")
         policy.pop("calibration_context_digest")
-        # Floors, the window's scored span and the first-lifetime bar only grade the retained records; the stock
-        # measurement is unchanged.
+        # Floors, the window's scored span, where it starts and the first-lifetime bar only grade the retained
+        # records; the stock measurement is unchanged.
         policy["goodput"] = {key: value for key, value in policy["goodput"].items()
-                             if key not in ("decode_floors", "steady_span", "bar_futility")}
+                             if key not in ("decode_floors", "steady_span", "bar_futility", "cold_span")}
     if old != new:
         raise CrossoverRuntimeError("stock reference import changed its scoring policy")
     arm = restore_speed_arm(plan.baseline, row["arm"])

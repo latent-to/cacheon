@@ -199,7 +199,7 @@ def test_hostile_reveals_archives_and_manifests_fail_at_intake(tmp_path, monkeyp
          "node addresses must sit under ('logits_processor', 'model'); manifest declares 'tree_cache'"),
         ("system-request", None, lambda m: m.replace('"forward_pass"', '"sglang.inference.bundle.v1"')
          .replace('"slot"', '"system"'), None, "legacy competition mode 'system' is unregistered"),
-        ("node-and-cache", None, lambda m: compete("")(m) + node.format("tree_cache"), None,
+        ("node-and-rootless", None, lambda m: compete("")(m) + node.format("lm_head"), None,
          "proposal 'node-identity-control' has no registered exact target"),
         ("variant-overlap", None, lambda m: m.replace('entry = "forward"', 'entry = "forward"\nvariant = "a"')
          + node.format("model.layers.*.mlp") + 'variant = "b"\n', None, "overlapping capability domains"),
@@ -365,7 +365,7 @@ def test_claim_parks_a_closed_target_and_replays_a_duplicate_fail(tmp_path, monk
 
     materialized, ready_path, ready = e2e.commission(root, e2e.PROFILES["h100-tp1"])
     sealed = e2e.seal_authority(root, materialized, ready_path, ready)
-    assert sealed.manifest["closed_targets"] == ["prefix_cache"]  # the prompt registers forward_pass only
+    assert sealed.manifest["closed_targets"] == ["engine", "prefix_cache"]  # the prompt registers forward_pass only
     heartbeat = e2e.private(root / "spool" / "state") / "heartbeat.json"
     with _dispatcher_heartbeat(sealed.registration, heartbeat, lambda: None):
         supervisor = supervisors(root)

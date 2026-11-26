@@ -15,6 +15,9 @@ from pathlib import Path
 
 REVIEW_SCHEMA = "cacheon-pruning-review-v1"
 PRUNING_REASON = "routed_expert_pruning"
+# Owner ruling 2026-11-12: a repackaged upstream SGLang change is not paid. A review that fails a bundle for it names
+# this reason in the verdict's ``fail_reason``; a fail without one is pruning (slot audit #11, 2026-11-23).
+UPSTREAM_REASON = "repackaged_upstream_pr"
 
 
 class PruningReviewError(RuntimeError):
@@ -22,7 +25,7 @@ class PruningReviewError(RuntimeError):
 
 
 def review_verdict(root: Path, reservation) -> str | None:
-    """Return ``"pass"`` or ``"fail"`` for this reservation's bundle, or None while it is unreviewed."""
+    """Return ``"pass"`` or the failure reason for this reservation's bundle, or None while it is unreviewed."""
 
     path = root / f"{reservation.reservation_id}.json"
     try:
@@ -37,9 +40,11 @@ def review_verdict(root: Path, reservation) -> str | None:
         or value.get("reservation_id") != reservation.reservation_id
         or value.get("content_hash") != reservation.arrival.content_hash
         or value.get("verdict") not in ("pass", "fail")
+        or value.get("fail_reason", PRUNING_REASON) not in (PRUNING_REASON, UPSTREAM_REASON)
+        or ("fail_reason" in value and value["verdict"] != "fail")
     ):
         raise PruningReviewError(f"pruning review {path.name} does not bind to its reservation")
-    return value["verdict"]
+    return "pass" if value["verdict"] == "pass" else value.get("fail_reason", PRUNING_REASON)
 
 
 def admit(store, coordinator, review_root: Path | None) -> bool:
@@ -71,8 +76,8 @@ def admit(store, coordinator, review_root: Path | None) -> bool:
             verdict = review_verdict(review_root, row)
             if verdict is None:
                 return False
-            if verdict == "fail":
-                store.mark_failed(reservation_id, PRUNING_REASON)
+            if verdict != "pass":
+                store.mark_failed(reservation_id, verdict)
                 break
         else:
             return True

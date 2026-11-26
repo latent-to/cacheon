@@ -368,8 +368,10 @@ status change is one canonical-JSON line on stdout.
 operator's pruning review writes its verdicts; an empty value claims bundles without
 one. Each verdict is `<reservation_id>.json` holding `schema`
 `cacheon-pruning-review-v1`, the `reservation_id`, the bundle's `content_hash` and a
-`verdict` of `pass` or `fail`; other fields are the operator's record. Admission fails
-a `fail` as `routed_expert_pruning`, holds a first claim that has no verdict yet, and
+`verdict` of `pass` or `fail`, and on a `fail` an optional `fail_reason`; other fields
+are the operator's record. Admission fails a `fail` as its `fail_reason`,
+`repackaged_upstream_pr` (owner ruling: upstream work is not paid) or by default
+`routed_expert_pruning`, holds a first claim that has no verdict yet, and
 stops the stage on a verdict that does not bind to its row
 (`chain/pruning_review.py`). The review process and its prompt are operator-side and
 are not in this repository.

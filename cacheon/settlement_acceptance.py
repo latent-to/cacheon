@@ -101,33 +101,6 @@ class SettlementCandidate:
 
         return (self.primary,) if self.reproduction is None else (self.primary, self.reproduction)
 
-    @classmethod
-    def from_reproductions(
-        cls,
-        primary: SettlementQualification,
-        reproduction: SettlementQualification,
-    ) -> "SettlementCandidate":
-        """Reconstruct a historical independently bound pair."""
-
-        candidate = cls(primary, reproduction)
-        # ``__post_init__`` already refuses a mixed audited/auditless pair and
-        # requires an exact physical lane swap whenever orientation is present.
-        # A resident acceptance pair (v6 speed PASS on both lane orientations)
-        # carries no audit witness; the enforced swap is its reproduction
-        # defense.  Any other auditless pair is legacy history and cannot
-        # become a new candidate.
-        if (
-            candidate.primary.audit_policy is None
-            or candidate.reproduction.audit_policy is None
-        ) and (
-            candidate.primary.resident_lane_orientation is None
-            or candidate.reproduction.resident_lane_orientation is None
-        ):
-            raise SettlementError(
-                "new settlement candidate requires two audited qualifications"
-            )
-        return candidate
-
     def __getattr__(self, field: str):
         if field in SettlementQualification.__dataclass_fields__:
             return getattr(self.primary, field)

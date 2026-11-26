@@ -7,8 +7,8 @@ segment (``model.layers.*.mlp``). The candidate is a drop-in for that node's sto
 returns what stock returns. ``prepare(module)`` runs once per bound node; a bundle
 without one receives the module itself. The same body therefore serves one
 activation, a fused MoE block, a decoder layer or the whole decoder stack, and a
-bundle that lists several addresses replaces several nodes at once. The prefix
-cache's address ``tree_cache`` is not a node; ``sglang_cache`` serves it.
+bundle that lists several addresses replaces several nodes at once. The scheduler
+addresses (``tree_cache``, ``sglang.*``) are not nodes; their own adapters serve them.
 
 Truth is the stock node in the running engine, not hand-written reference math. On
 an audited eager call stock answers first; its outputs and the engine-state rows
@@ -54,7 +54,8 @@ from cacheon.dispatch import (
     _arch_tag, _dtype_name, _dynamo_compiling, _flashinfer_tuning, _in_cuda_graph,
 )
 from cacheon.integrations import sglang_dsv4_prune as _prune
-from cacheon.integrations.sglang_cache import ADDRESS as _CACHE
+from cacheon.integrations import sglang_inkling_state as _inkling
+from cacheon.seams import scheduler_address as _scheduler_address
 from cacheon.integrations.sglang_dsa_state import (
     KV_BUFFERS as _KV_BUFFERS, StateFormat, dsa_state_rows, state_values,
 )
@@ -197,7 +198,7 @@ def _state_rows(
     Only a call that carries the engine's batch can reach the cache pools: the cache
     rows at ``out_cache_loc``. An unrecognized cache layout raises rather than
     leaving written state unchecked. Native recurrent live and checkpoint rows
-    are restored too, with KDA ReplaySSM verify rings (``_recurrent_rows``).
+    are restored too, with KDA ReplaySSM and Inkling 2 DSpark verify scratch (``_recurrent_rows``).
 
     SGLang keeps an FP8 cache in ``uint8`` storage with the real type on the pool.
     Graded as bytes, a near-zero value whose sign flips reads as a jump of 128 (7% of
@@ -230,9 +231,11 @@ def _recurrent_rows(runner, batch, layer):
 
     KDA ReplaySSM verify (GLM-5.3-Flash, layout dumped from a TP2 engine on 2026-11-11) appends drafts to rings
     keyed by Mamba slot and writes request i's conv windows to verify scratch row i of the physical buffer.
-    ``rawv``/``rawk`` hold the BF16 rounding of ``d``/``k`` and are graded summed with them. Other speculative
-    layouts raise: GDN native-MTP scratch and request rings served only the retired Qwen arena, whose 21,400-call
-    MTP audit never graded the rings (2026-09-22).
+    ``rawv``/``rawk`` hold the BF16 rounding of ``d``/``k`` and are graded summed with them. Inkling 2 keeps
+    convolution state alone, one pool layer per layer visit: under DSpark its per-draft SSM scratch is allocated
+    empty and verify writes request i's windows to the same scratch row i (the commit reads rows ``arange(bs)``;
+    SGLang PR #51926). Other speculative layouts raise: GDN native-MTP scratch and request rings served only the
+    retired Qwen arena, whose 21,400-call MTP audit never graded the rings (2026-09-22).
     """
     requests = runner.req_to_token_pool
     pool = getattr(requests, "mamba_pool", None)
@@ -240,7 +243,8 @@ def _recurrent_rows(runner, batch, layer):
         return []
     state = getattr(pool, "mamba_cache", None)
     replay = getattr(pool, "enable_linear_replayssm_spec", False)
-    if (state is None or getattr(state, "intermediate_ssm", None) is not None
+    ssm = getattr(state, "intermediate_ssm", None)
+    if (state is None or (ssm is not None and state.temporal.numel())
             or getattr(pool, "enable_linear_replayssm", False)
             or (replay and (not getattr(pool, "replayssm_is_kda", False)
                             or getattr(pool, "replayssm_request_ring", True)
@@ -264,21 +268,24 @@ def _recurrent_rows(runner, batch, layer):
             for buffer in (state.temporal, *state.conv) for index in layers
             if buffer[index].numel()]
     mode = getattr(batch, "forward_mode", None)
-    if replay and mode is not None and mode.is_target_verify():
+    if (replay or ssm is not None) and mode is not None and mode.is_target_verify():
         slots = live.reshape(-1).long()
         slots = slots[slots >= 0]
-        scratch = runner.attn_backend.linear_attn_backend.verify_intermediate_state_indices[:live.numel()].long()
+        scratch = (runner.attn_backend.linear_attn_backend.verify_intermediate_state_indices[:live.numel()].long()
+                   if replay else torch.arange(live.numel(), device=live.device))
         for index in layers:
-            rows.extend((ring[index], 0, slots, ring.dtype) for ring in (
-                state.replayssm_d, state.replayssm_k, state.replayssm_g, state.replayssm_beta))
-            rows.extend((low[index], 0, slots, high[index]) for low, high in (
-                (state.replayssm_rawv, state.replayssm_d), (state.replayssm_rawk, state.replayssm_k)))
+            if replay:
+                rows.extend((ring[index], 0, slots, ring.dtype) for ring in (
+                    state.replayssm_d, state.replayssm_k, state.replayssm_g, state.replayssm_beta))
+                rows.extend((low[index], 0, slots, high[index]) for low, high in (
+                    (state.replayssm_rawv, state.replayssm_d), (state.replayssm_rawk, state.replayssm_k)))
             rows.extend((window[index], 0, scratch, window.dtype) for window in pool._intermediate_conv_window_phys)
     return rows
 
 
 def _cache_rows(pool, batch, layer: int | None) -> list[tuple]:
-    """The cache rows this batch writes, in the pool's own addressing: by page or by slot."""
+    """The cache rows this batch writes, in the pool's own addressing: by page or by slot,
+    with a mapped sliding-window sub-pool's rows at the translated slots."""
 
     paged = dsv4_state_rows(pool, batch, layer)
     if paged is not None:
@@ -286,26 +293,17 @@ def _cache_rows(pool, batch, layer: int | None) -> list[tuple]:
     dsa = dsa_state_rows(pool, batch, layer)
     if dsa is not None:
         return dsa
-    pool = getattr(pool, "full_kv_pool", pool)
-    buffers = [
-        buffer
-        for name in _KV_BUFFERS
-        for buffer in (getattr(pool, name, None) or ())
-        if torch.is_tensor(buffer)
-    ]
+    loc = batch.out_cache_loc.long()
+    return _kv_rows(getattr(pool, "full_kv_pool", pool), loc) + _inkling.window_rows(pool, loc, _kv_rows)
+
+
+def _kv_rows(pool, index: torch.Tensor) -> list[tuple]:
+    buffers = [b for name in _KV_BUFFERS for b in (getattr(pool, name, None) or ()) if torch.is_tensor(b)]
     if not buffers:
         raise RuntimeError(f"no cache buffer recognized on {type(pool).__name__}")
     held = getattr(pool, "dtype", None)
     fp8 = held is not None and held.is_floating_point and held.itemsize == 1
-    return [
-        (
-            buffer,
-            0,
-            batch.out_cache_loc.long(),
-            held if fp8 and buffer.dtype == torch.uint8 else buffer.dtype,
-        )
-        for buffer in buffers
-    ]
+    return [(b, 0, index, held if fp8 and b.dtype == torch.uint8 else b.dtype) for b in buffers]
 
 
 def _values(buffer: torch.Tensor, dim: int, index: torch.Tensor, held) -> torch.Tensor:
@@ -388,8 +386,10 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
     """
 
     stream = _residual_stream((*args, *kwargs.values()))
+    carry = _inkling.carried((*args, *kwargs.values()))
     # The stream's residual and released fields are restored by value too, once each.
-    handed = _once(_tensors((args, kwargs, stream and (stream[2][0], [fields for _, fields in stream[3]])), []))
+    handed = _once(_tensors((args, kwargs, stream and (stream[2][0], [fields for _, fields in stream[3]])), [])
+                   + _inkling.held(carry))
     rows = _state_rows(runner, (*args, *kwargs.values()), layer)
     before = [t.clone() for t in handed]
     state = []
@@ -407,6 +407,7 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
     def run(keep):
         outputs = _audit.capture_reference(
             slot, lambda: _once(_tensors(stock(*args, **kwargs), [], fields=True) + _stream_left(stream))
+            + _inkling.left(carry)
         )
         kept = None if outputs is None else keep([(t, 0) for t in outputs])
         # Write back only what stock changed: an untouched input may be an expanded
@@ -419,6 +420,7 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
                 buffer.index_copy_(dim, piece, part.to(buffer.device))
         if stream is not None:
             _put_back_stream(stream)
+        _inkling.put_back(carry)
         return kept
 
     expected = run(lambda outputs: outputs + [
@@ -621,7 +623,8 @@ def _grade(slot: str, node: int, actual: list, twin: list, *, node_name: str = "
 def _call_facts(module, args: tuple, kwargs: dict) -> tuple[torch.dtype, int, int | None] | None:
     """Dtype, trailing width and CUDA device of a call; None when nothing is handed in."""
 
-    handed = _tensors((args, kwargs), [])
+    # An Inkling 2 decoder layer is handed its activations inside the attention-residual state.
+    handed = _tensors((args, kwargs), []) + _inkling.held(_inkling.carried((*args, *kwargs.values())))
     if not handed or not handed[0].dim():
         return None
     # Rotary positions can lead the call as (3, M); the activations carry M.
@@ -631,10 +634,7 @@ def _call_facts(module, args: tuple, kwargs: dict) -> tuple[torch.dtype, int, in
     return dtype_source.dtype, int(floating.shape[-1]), (floating.device.index or 0) if floating.is_cuda else None
 
 
-def _descriptor(module, args: tuple, kwargs: dict, in_graph: bool) -> CallDescriptor | None:
-    facts = _call_facts(module, args, kwargs)
-    if facts is None:
-        return None
+def _descriptor(facts: tuple[torch.dtype, int, int | None], in_graph: bool) -> CallDescriptor:
     dtype, last_dim, device = facts
     return CallDescriptor.from_legacy(
         dtype_name=_dtype_name(dtype),
@@ -652,11 +652,13 @@ def make_node_dispatcher(
     *,
     registry: KernelRegistry = REGISTRY,
     node_name: str | None = None,
+    every_layer: bool = False,
 ) -> Callable[..., object]:
     """Build the replacement ``forward`` for one bound node.
 
     ``sealed`` is filled by ``bind`` once every node is bound and before any
-    candidate code has run.
+    candidate code has run. ``every_layer`` keeps every layer's state rows for a node
+    whose call writes a layer other than its own.
     """
 
     prepared: dict[int, object] = {}
@@ -666,10 +668,10 @@ def make_node_dispatcher(
     # 2026-10-09). The first call of a shape still records not-selected reasons.
     selections: dict[tuple, object] = {}
     reported = False
-    # Read before any candidate code runs. A decoder layer's stock writes only its own
-    # layer's cache; a node without one (the whole model) keeps every layer's rows.
+    # Read before any candidate code runs. A decoder layer's stock writes only its own layer's cache; a node
+    # without one (the whole model) or any Inkling 2 node (a looped layer writes its visit's rows) keeps every layer's.
     layer = getattr(module, "layer_id", None)
-    layer = layer if type(layer) is int else None
+    layer = layer if type(layer) is int and not every_layer else None
     # Steps alternate per node over audited calls, so every rank runs the same references.
     pruned_moe, steps = _prune.single_pruned_moe(module), 0
 
@@ -708,7 +710,7 @@ def make_node_dispatcher(
         try:
             impl = selections[key]
         except KeyError:
-            impl = selections[key] = registry.select(slot, _descriptor(module, args, kwargs, in_graph)).impl
+            impl = selections[key] = registry.select(slot, _descriptor(facts, in_graph)).impl
         if impl is None:
             return stock(*args, **kwargs)
         if id(impl) not in prepared:
@@ -718,12 +720,13 @@ def make_node_dispatcher(
                 else module
             )
         stream = _residual_stream((*args, *kwargs.values())) if expected is not None else None
+        carry = _inkling.carried((*args, *kwargs.values())) if expected is not None else None
         result = _receipts.invoke(
             slot, impl.entry, prepared[id(impl)], *args, kwargs=kwargs
         )
         if expected is not None and twin is not None:
             try:
-                outputs = _once(_tensors(result, [], fields=True) + _stream_left(stream))
+                outputs = _once(_tensors(result, [], fields=True) + _stream_left(stream)) + _inkling.left(carry)
                 actual = _errors(
                     [(t, 0) for t in outputs],
                     _state_rows(runner, (*args, *kwargs.values()), layer), expected, module=module,
@@ -754,6 +757,15 @@ def bind(runner, registry: KernelRegistry = REGISTRY, *, draft: bool = False) ->
     ``model.layers.<num_hidden_layers>``, which no target layer carries; the drafter loads that
     layer as ``model.decoder``. Those slots bind only on the draft worker, the rest only on the
     target, so wildcard slots such as ``model.layers.*.mlp`` keep naming target layers alone.
+    Inkling 2's DSpark drafter has a config of its own and carries the target's depth as
+    ``target_num_hidden_layers``; read as its own three, ``model.layers.3.mlp`` was a draft slot
+    and was refused.
+
+    ``model`` is what the served model calls ``model``, a child or a property over one. Inkling 2
+    registers its decoder as ``llm`` (SGLang PR #51926); an ``llm`` root would have changed the
+    forward_pass digest. Every Inkling 2 module binds: the audit also puts back and grades the
+    sliding-window cache, every layer visit's conv rows and a decoder layer's attention-residual
+    state and loop messages (``sglang_inkling_state``).
     """
 
     # Every path, each module once per slot, and one module two slots reach is an overlap:
@@ -761,10 +773,16 @@ def bind(runner, registry: KernelRegistry = REGISTRY, *, draft: bool = False) ->
     # child (upstream #42245), and the deduplicating listing named 37 of 40 layers only
     # through that chain, so ``model.layers.*`` bound 3 of 40 (B300, 2026-10-12 and 10-15).
     named = dict(runner.model.named_modules(remove_duplicate=False))
+    body = getattr(runner.model, "model", None)
+    if "model" not in named and isinstance(body, torch.nn.Module):
+        named.update(body.named_modules(prefix="model", remove_duplicate=False))
+    inkling = getattr(sys.modules.get("sglang.srt.models.inkling2"), "Inkling2ForConditionalGeneration", ())
+    visits = isinstance(runner.model, inkling)
     config = runner.model_config.hf_config
-    layer = f"model.layers.{getattr(config, 'text_config', config).num_hidden_layers}."
+    depth = getattr(config, "target_num_hidden_layers", None) or getattr(config, "text_config", config).num_hidden_layers
+    layer = f"model.layers.{depth}."
     bound: dict[str, str] = {}
-    for slot in sorted(s for s in registry.slots() if s != _CACHE and s.startswith(layer) == draft):
+    for slot in sorted(s for s in registry.slots() if not _scheduler_address(s) and s.startswith(layer) == draft):
         pattern = node_pattern("model.decoder." + slot.removeprefix(layer) if draft else slot)
         names = [name for name in named if pattern.match(name)]
         names = [n for i, n in enumerate(names) if all(named[m] is not named[n] for m in names[:i])]
@@ -791,7 +809,7 @@ def bind(runner, registry: KernelRegistry = REGISTRY, *, draft: bool = False) ->
         module = named[name]
         module.forward = make_node_dispatcher(
             slot, module, module.forward, runner, seals[name], registry=registry,
-            node_name=layer + name.removeprefix("model.decoder.") if draft else name,
+            node_name=layer + name.removeprefix("model.decoder.") if draft else name, every_layer=visits,
         )
     for name in bound:
         seals[name].extend(_seal(named[name]))

@@ -154,6 +154,7 @@ nav:
       - Qwen H100 node slots: results/qwen-h100-node-slots.md
       - Prefix-cache slot: results/prefix-cache.md
       - DeepSeek-V4.1-Flash prefill/decode arena: results/deepseek-v41-flash-pd.md
+      - Inkling 2 Mini on H200: results/inkling-2-mini-h200.md
       - Full-node qualification and noise: results/full-node-qualification-noise.md
       - GPU setup: dev/gpu-setup.md
       - Development environment: dev/environment.md

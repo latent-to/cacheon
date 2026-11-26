@@ -22,6 +22,7 @@ from typing import Iterable, Mapping
 
 from cacheon._strict import NODE_ADDRESS, require_node_members
 from cacheon.manifest import CompetitionEntry, DEFAULT_VARIANT, Manifest
+from cacheon.seams import ENGINE_OBJECTS, QUEUE_ORDER
 from cacheon.stack_identity import canonical_digest
 
 # Catalog identities are consensus-bearing and survive the product/package
@@ -70,7 +71,6 @@ _STANDARD_COMPONENT_FEATURES = frozenset(
     }
 )
 _ID_RE = re.compile(r"^[0-9A-Za-z._\-]+$")
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _CATALOG_SCHEMA_VERSION = 2
 _CATALOG_POLICY_VERSION = "target-catalog.v2"
 
@@ -256,9 +256,9 @@ class TargetSpec:
 
     ``node_roots`` opens node addresses. A manifest whose slots all name modules at
     or under one of these roots of the served model resolves to this target, and its
-    members are the addresses it declared, not ``members``. Two targets never share
-    a node: overlap inside one bundle is refused by address containment, and the
-    model and the prefix cache have disjoint roots.
+    members are the addresses it declared, not ``members``. Overlap inside one bundle
+    is refused by address containment. ``engine`` spans the disjoint model and cache
+    roots, and a bundle resolves to the narrowest target that holds all its addresses.
     """
 
     target_id: str
@@ -584,15 +584,12 @@ class TargetCatalog:
             )
 
         if request is None:
-            # A node bundle's target is the one whose roots hold every address it declared.
-            rooted = [
-                row for row in self._by_id.values()
-                if member_set and row.node_roots and all(
-                    any(m == r or m.startswith(r + ".") for r in row.node_roots)
-                    for m in member_set
-                )
-            ]
-            spec = rooted[0] if len(rooted) == 1 else None
+            # A node bundle's target is the narrowest one whose roots hold every address it declared.
+            rooted = sorted((row for row in self._by_id.values() if member_set and row.node_roots and all(
+                any(m == r or m.startswith(r + ".") for r in row.node_roots) for m in member_set
+            )), key=lambda row: len(row.node_roots))
+            tied = len(rooted) > 1 and len(rooted[0].node_roots) == len(rooted[1].node_roots)
+            spec = rooted[0] if rooted and not tied else None
             if spec is None:
                 members = tuple(sorted(member_set))
                 return ResolvedTarget(
@@ -659,6 +656,11 @@ class TargetCatalog:
 FORWARD_PASS_TARGET = "forward_pass"
 FORWARD_PASS_ROOTS = ("logits_processor", "model")
 PREFIX_CACHE_TARGET = "prefix_cache"
+# One bundle across every surface, timed as one engine: a kernel's gain moves about 2% with the operating point
+# a cache or scheduler change sets (43 GLM-5.3-Flash rows over three loads, 2026-11-16), so gains never multiply.
+# Its scheduler roots are the queue's order and the validator-listed decisions; any other SGLang object stays stock.
+ENGINE_TARGET = "engine"
+ENGINE_ROOTS = tuple(sorted(("logits_processor", "model", QUEUE_ORDER, "tree_cache", *ENGINE_OBJECTS)))
 
 
 def _node_contract(slot_id: str, **fields: object) -> TargetContractRef:
@@ -693,6 +695,17 @@ def default_target_catalog() -> TargetCatalog:
             correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="1"),
             tolerances=(),
         ),
+        # Checked per address; a scheduler decision has no output to compare, every legal answer yields the same tokens.
+        ENGINE_TARGET: _node_contract(
+            ENGINE_TARGET, prepare="prepare",
+            input_abi_id="engine.per-address.input.v1",
+            output_abi_id="engine.per-address.output.v1",
+            reference_id="engine.stock-engine.reference.v1",
+            verification_profile_id="engine.per-address.verify.v1",
+            binding_family_id="sglang.engine.v1",
+            correctness=CorrectnessContractRef(mode="matched_ratio", min_ratio="0.75"),
+            tolerances=(ToleranceContractRef("bfloat16", "0", "0.02"),),
+        ),
     }
     return TargetCatalog(
         TargetSpec(
@@ -701,5 +714,6 @@ def default_target_catalog() -> TargetCatalog:
             contract_ref=contracts[target], node_roots=roots,
         )
         for target, roots in ((FORWARD_PASS_TARGET, FORWARD_PASS_ROOTS),
-                              (PREFIX_CACHE_TARGET, ("tree_cache",)))
+                              (PREFIX_CACHE_TARGET, ("tree_cache",)),
+                              (ENGINE_TARGET, ENGINE_ROOTS))
     )

@@ -1,10 +1,10 @@
 # Slots and contribution targets
 
-An execution slot is either an address in the served model's module tree,
-admitted by the `forward_pass` target, or `tree_cache`, the scheduler's prefix
-cache, admitted by the `prefix_cache` target. A bundle changes one target, so
-kernels and a cache are separate submissions. The arena still owns its model,
-workload, evaluation policy and supported nodes.
+The registered targets determine which parts of the serving engine a miner can
+change. `forward_pass` accepts model modules, `prefix_cache` accepts the
+scheduler's `tree_cache`, and an arena with `engine` open accepts the waiting
+queue's order and the scheduler decisions the validator lists. The arena owns the
+workload and evaluation.
 
 ## Current slot catalog
 
@@ -19,6 +19,8 @@ that every model contains or admits each address:
 | `model.layers.*.self_attn.q_b_proj` | Matching attention projection modules |
 | `model` | Whole decoder stack, only where the arena can grade it |
 | `tree_cache` | The scheduler's runtime cache object (see below) |
+| `queue_order` | The order in which waiting requests are admitted ([contract](../architecture/slot-contract.md#the-queue-order)); `entry(view)` returns a permutation, target `engine` |
+| `sglang.<dotted path>` | One listed scheduler decision or a method of a listed class ([contract](../architecture/slot-contract.md#engine-objects)); `entry(stock)` returns its replacement, target `engine` |
 
 `*` matches exactly one segment. The binder refuses addresses that match no
 module and parent/child claims that overlap. Binding succeeds only when the
@@ -51,6 +53,24 @@ entry = "forward"
 
 The bundle uses that node's stock `forward` interface, with its module or
 prepared state as the first argument. See [Kernel ABI](kernel-abi.md).
+
+## Changing the scheduler
+
+The prefill scheduler example names `queue_order`. Its `entry(view)` moves a cheap
+returning turn ahead of a long opening until the opening has aged, from the
+remaining input work and the work processed since arrival. The existing scheduler
+still allocates pages, forms batches and runs the model; admission, chunking,
+interleaving and retraction are the [listed decisions](../architecture/slot-contract.md#engine-objects).
+On a commission with a kernel parent, the validator assembles those kernels
+with the scheduler proposal. The example contains the manifest and queue
+policy needed for a submission in `examples/miner_prefill_scheduler`.
+
+Run the interface checks in the arena image.
+
+```bash
+python -m cacheon.cli scan examples/miner_prefill_scheduler
+python -m cacheon.cli verify examples/miner_prefill_scheduler
+```
 
 ## The prefix cache
 
@@ -85,11 +105,19 @@ other cache methods. It inherits the runtime cache interface instead of naming a
 particular SGLang cache class. The identity implementation establishes binding,
 not a speed win.
 
+The factory runs once in every scheduler of every engine. Returning `None` leaves
+that engine's cache stock and unchecked, so a bundle that works on the host tier
+of a prefill/decode pair's prefill servers does not carry the content check on the
+decode schedulers. Decide from the cache object, for example whether it has a host
+tier, not from the engine's role name: the untimed audit runs one engine with the
+prefill servers' settings. At least one engine must be served; a bundle that
+declines everywhere fails as `candidate_never_executed`.
+
 A cache bundle is judged as the incumbent kernels with the candidate cache against
 the incumbent kernels with the incumbent cache, which is stock SGLang's until a
 cache is commissioned. The cache runs outside CUDA graphs, so it needs no captured
-execution. The same content check runs on both arms: the KV behind every prefix
-the cache serves is checked against what the engine computed for it, whichever
+execution. The content check runs around a candidate's cache only: the KV behind
+every prefix it serves is checked against what the engine computed for it, whichever
 slot or host tier the bytes came through. Serving other bytes, keeping pages
 across a flush, moving a request's own slots, claiming more tokens than the key, or
 serving or protecting a length that is not whole pages stops the engine as the

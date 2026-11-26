@@ -1,0 +1,11 @@
+bundle_id = "prefill-work-with-fifo-service"
+abi_version = "cacheon-op-abi-v0"
+
+[competition]
+target = "engine"
+mode = "slot"
+
+[[ops]]
+slot = "queue_order"
+source = "engine/prefill.py"
+entry = "order"

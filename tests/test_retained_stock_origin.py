@@ -62,6 +62,29 @@ def test_steady_span_policy_round_trips_and_grades_the_same_complete_work():
     assert reads.grade(policy) == reads.grade(replace(policy, steady_span=0.0))
 
 
+def test_cold_span_gives_holding_every_opening_no_gain():
+    from cacheon.eval.service_capacity import steady_span_cost
+
+    def read(*opened):  # two sessions open together; each sends one 10 s warm turn once its opening finishes
+        rows = []
+        for index, end in enumerate(opened):
+            end *= 10**9
+            rows += [TurnRecord(f"s{index}", "main", 0, 1, 1, 10**8, end, 100, 2, "ok"),
+                     TurnRecord(f"s{index}", "main", 1, end, end, end + 10**8, end + 10 * 10**9, 100, 2, "ok")]
+        return LoadRead("candidate", 1, "lane", 2, tuple(rows))
+
+    work = {"s0": (2, 0), "s1": (2, 0)}
+    honest, held = read(2, 20), read(20, 20)  # the same last finish; one holds its first opening
+    assert steady_span_cost(held, work, 0.5) < steady_span_cost(honest, work, 0.5) / 2
+    assert steady_span_cost(held, work, 0.5, True) == steady_span_cost(honest, work, 0.5, True)
+    policy = GoodputPolicy(ServiceContract(1.0, 0.001, 0.8), 1.0, 0.0003, 0.0, 0.0, 0.01, 0.0001,
+                           steady_span=0.5, cold_span=1.0)
+    assert GoodputPolicy.from_dict(policy.to_dict()) == policy
+    assert "cold_span" not in replace(policy, cold_span=0.0).to_dict()
+    with pytest.raises(ValueError, match="calibration inputs"):
+        replace(policy, steady_span=0.0)
+
+
 def test_single_stock_pair_regrades_with_its_own_uncertainty_and_control():
     from cacheon.eval.qualification_trajectories import _stock_pair
 

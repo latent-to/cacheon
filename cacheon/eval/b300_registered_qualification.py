@@ -54,6 +54,8 @@ from cacheon.eval.marginal_runtime import (
     PreparedCandidateRuntime,
     prepare_marginal_runtime,
 )
+from cacheon import seams
+from cacheon.manifest import load_manifest
 from cacheon.eval import pd_engine
 from cacheon.eval.oci_session_protocol import SlotAuditPolicy
 from cacheon.eval.qualification import (
@@ -72,7 +74,6 @@ from cacheon.eval.resident_audit_authority import (
     ResidentAuditExecutionAuthority,
 )
 from cacheon.eval.scoring import marginal_workload_digest
-from cacheon.manifest import load_manifest
 from cacheon.stack_identity import canonical_digest
 from cacheon.stack_manifest import (
     EvaluationStackManifest,
@@ -95,6 +96,18 @@ from cacheon.eval.b300_registered_qualification_inputs import (
     registered_b300_member_contract_projection,
     registered_b300_profile_resolver_digest,
 )
+
+
+def _audit_members(selected, tree):
+    """Audit a model or cache submission's own slots, and every numerical slot of the assembled stack once a
+    submission changes the scheduler: it feeds each inherited kernel new batches, and a decoy node named beside
+    it would otherwise narrow the audit to that node (U17)."""
+    if all(seams.audited(member) for member in selected):
+        return tuple(sorted(selected))
+    inherited = tuple(sorted({op.slot for op in load_manifest(tree.root).ops if seams.audited(op.slot)}))
+    if not inherited:
+        raise B300RegisteredQualificationError("the serving stack has no model or cache slot for its registered numerical audit")
+    return inherited
 
 
 @dataclass(frozen=True)
@@ -277,7 +290,7 @@ class B300RegisteredQualificationFactory:
     ) -> tuple[MarginalArmPlan, MaterializedArmBinding]:
         inputs = self._inputs
         candidate_stack = plan_candidate_stack(
-            inputs.incumbent_stack,
+            inputs.incumbent_stack if inputs.parent_stack is None else inputs.parent_stack,
             contribution,
             catalog=inputs.catalog,
             expected_context=inputs.expected_context,
@@ -318,6 +331,7 @@ class B300RegisteredQualificationFactory:
             incumbent_tree_digest=inputs.incumbent_binding.tree.tree_digest,
             candidate_tree_digest=tree.tree_digest,
             expected_context=inputs.expected_context,
+            parent=inputs.parent_stack,
         )
         try:
             trusted = inputs.candidate_binding_builder(tree)
@@ -463,7 +477,7 @@ class B300RegisteredQualificationFactory:
             audit_seed,
             inputs.policy.audit_sample_rate_ppm,
             inputs.policy.audit_minimum_calls,
-            tuple(sorted(candidate.reservation.target_members)),
+            _audit_members(candidate.reservation.target_members, candidate_binding.tree),
             pd_engine.untimed_ranks(config.tp_size, config.engine_kwargs),
             inputs.policy.audit_row_floor_ppm,
         )

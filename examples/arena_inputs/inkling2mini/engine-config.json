@@ -1,0 +1,20 @@
+{
+  "attention_backend": "fa4",
+  "disable_custom_all_reduce": false,
+  "dtype": "bfloat16",
+  "max_running_requests": 64,
+  "mem_fraction_static": 0.93,
+  "moe_runner_backend": "auto",
+  "random_seed": 7,
+  "log_level": "error",
+  "tp_size": 2,
+  "ep_size": 2,
+  "page_size": 128,
+  "context_length": 300000,
+  "bf16_gemm_backend": "torch",
+  "speculative_algorithm": "DSPARK",
+  "swa_full_tokens_ratio": 0.05,
+  "enable_hierarchical_cache": true,
+  "hicache_ratio": 2,
+  "engine_env": {}
+}

@@ -703,6 +703,7 @@ def build_runtime_argv(
     seccomp_path: Path,
     runtime: OCIRuntimeResourcePolicy,
     session_protocol: str = "ordinary",
+    native_router: bool = False,
 ) -> tuple[str, ...]:
     """Construct the exact runtime argv from trusted, already-reopened inputs."""
     if session_protocol not in {"ordinary", "reference"}:
@@ -715,7 +716,7 @@ def build_runtime_argv(
         f"{publication.build_spec_digest}"
     )
     policy_mounts, policy_digests = worker_policy_files(
-        resolved.materialized_tree, model_root, CONTAINER_ENGINE_WORKER_POLICY, OCIBackendError)
+        resolved.materialized_tree, model_root, CONTAINER_ENGINE_WORKER_POLICY, OCIBackendError, native_router=native_router)
     site_bootstrap = Path(__file__).with_name("oci_site")
     environment = {
         **policy_digests,
@@ -1217,6 +1218,7 @@ class OCIEngineExecutor:
         preflight: RuntimePreflightReceipt,
         model_root: Path,
         session_protocol: str,
+        native_router: bool,
         run: Callable[[AttachedSessionTransport, float, str, tuple], object],
         gpu_ids: tuple[int, ...] | None = None,
     ) -> _RawRuntimeExecution:
@@ -1305,15 +1307,14 @@ class OCIEngineExecutor:
                 )
             reopen_launch_tree(launch, resolved.materialized_tree_root)
             argv = build_runtime_argv(
-                lease=lease,
-                resolved=resolved,
+                lease=lease, resolved=resolved,
                 preflight=preflight,
                 model_root=model_root,
                 publication=publication,
                 cache_root=cache_root,
                 seccomp_path=seccomp_copy,
                 runtime=self.config.runtime,
-                session_protocol=session_protocol,
+                session_protocol=session_protocol, native_router=native_router,
             )
             argv_digest = hashlib.sha256(
                 json.dumps(argv, separators=(",", ":")).encode("utf-8")
@@ -1455,14 +1456,13 @@ class OCIEngineExecutor:
                     conditioner.cancel()
 
             raw = self._execute_runtime(
-                launch,
-                binding,
-                mount,
+                launch, binding, mount,
                 absolute=absolute,
                 resolved=resolved,
                 preflight=preflight,
                 model_root=model_root,
                 session_protocol="ordinary",
+                native_router=bool(plan.engine_config.engine_kwargs.get("pd_prefill", {}).get("routing_policy")),
                 run=run,
                 gpu_ids=engine_gpu_ids,
             )
@@ -1586,14 +1586,13 @@ class OCIEngineExecutor:
                 )
 
             raw = self._execute_runtime(
-                launch,
-                binding,
-                mount,
+                launch, binding, mount,
                 absolute=absolute,
                 resolved=resolved,
                 preflight=preflight,
                 model_root=model_root,
                 session_protocol="reference",
+                native_router=bool(plan.engine_config.engine_kwargs.get("pd_prefill", {}).get("routing_policy")),
                 run=run,
                 gpu_ids=(self.device_guard.policy.physical_gpu_ids[pd_engine.untimed_gpus(plan.engine_config.tp_size,
                          plan.engine_config.engine_kwargs)[1]] if pd_engine.is_pair(plan.engine_config.engine_kwargs) else None),

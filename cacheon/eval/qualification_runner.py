@@ -165,12 +165,12 @@ def _strict(value: object, fields: set[str], label: str) -> dict[str, object]:
 def _encode_record(value: object) -> object:
     if isinstance(value, Enum):
         return value.value
-    # Reports and resident witnesses own their wire shape; let their serializer
-    # run even when nested inside an attempt dataclass.
+    # Reports, resident witnesses and the audit policy own their wire shape; let their serializer run even when nested.
+    # The policy omits its default row floor, which from_dict requires: written, it failed a PASS's reopen (2026-11-24).
     if type(value) in {
         globals().get("CandidateQualificationReport"),
         globals().get("ResidentSpeedWitness"),
-        QualificationTimingWitness,
+        QualificationTimingWitness, SlotAuditPolicy,
     }:
         return value.to_dict()  # type: ignore[union-attr]
     if type(value) is AuditReceiptFacts:  # an absent pruning finding keeps retained bytes

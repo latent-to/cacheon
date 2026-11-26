@@ -80,6 +80,15 @@ keeps admission open on that baseline. Later commitments are measured against th
 same commissioned incumbent, and settlement compares their completed results with
 the current lineage tip.
 
+A commission may also declare the crowned entries as the candidate's **parent** while the
+measured incumbent stays where it is. On an arena graded against stock this is how wins
+stack: the validator assembles each candidate on the record, times that one engine against
+the stock baseline and grades its output against stock. A miner submits only the change; the
+crowned pieces it rides on stay their authors' entries, and a candidate replaces only the
+entry of its own target. Settlement crowns such a row only while its parent is still the
+stack, so the engine adopted is the engine that was measured; a row whose parent moved is
+held as `stale_incumbent`.
+
 This is the core composability property: later work can be evaluated on top of earlier wins without copying earlier contributors' artifacts and without collapsing attribution into winner-take-all engine ownership.
 
 ### Worked example: a later 3% delta on top of an earlier 7% delta

@@ -385,12 +385,14 @@ def seal_authority(root: Path, materialized: dict, ready_path: Path, ready: dict
                            inputs=inputs, composition=composition, resolver={})
 
 
-def rotate(root: Path, sealed):
+def rotate(root: Path, sealed, *, baseline: bool = True):
     """The operator moves the baseline to the durable crowned stack: the pod re-declares it, the CPU is re-pointed.
 
     The pod's commission materializes the crowned entries from its own copies of their publications
     (``_commissioned_stock_authority`` with ``entries``); the dispatcher's incumbent pin and the durable
-    commit refuse a declaration that is not the durable stack's identity.
+    commit refuse a declaration that is not the durable stack's identity. With ``baseline=False`` the
+    baseline and the CPU's pin stay where they are and the pod declares the crowned entries as the parent
+    its candidates are assembled on (the commission's ``parent_entries``).
     """
 
     with FinalizedIntakeStore(root / "validator" / "intake.sqlite3", scope=sealed.scope) as store:
@@ -399,6 +401,11 @@ def rotate(root: Path, sealed):
                for row in store_rows(root, "SELECT content_hash, publication_root FROM reservations")}
     resolver = {("proposal", ref.artifact_digest): root / "pod" / "publications" / address[ref.artifact_digest][:2]
                 / address[ref.artifact_digest] for ref in durable.entries.values()}
+    if not baseline:
+        parent = sealed.incumbent
+        for ref in durable.entries.values():
+            parent = parent.with_contribution(ref)
+        return SimpleNamespace(**{**vars(sealed), "parent": parent, "resolver": resolver})
     _, _, incumbent, tree = deployment._commissioned_stock_authority(
         sealed.inputs, sealed.composition.manifest, sealed.catalog, sealed.catalog.snapshot(),
         error=deployment.B300DeploymentError, label="end-to-end rotation", entries=durable.entries,

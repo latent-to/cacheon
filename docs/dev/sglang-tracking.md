@@ -4,11 +4,10 @@ Cacheon competes against and integrates with an exact SGLang runtime. The pin is
 part of evaluation identity, not a loose minimum version. The
 default compatibility pin is `0.5.20` in
 [`cacheon/compat.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/compat.py). Different arenas may commission different exact runtimes:
-the GLM arena runs `0.5.20` and the DeepSeek-V4.1-Flash arena `0.5.21`, whose
-prefix cache hands a finished request through `insert_req` and `on_release`
-instead of `cache_finished_req`. The DSV4 nightly uses `checkpoint`,
-`device_prefix_len`, and lazy `prefix_device_indices`; the seam checks its
-resolved slots and request handoffs as well as the release interfaces.
+the commissioned arenas run SGLang nightlies whose prefix cache hands a request
+over through `checkpoint` and `on_release`, with `device_prefix_len` and lazy
+`prefix_device_indices`; the cache seam checks those handoffs and refuses a
+cache candidate on an engine that still has the 0.5.20/0.5.21 handoff methods.
 Run `python -m cacheon.cli compat --sglang-version <pin>` inside the image
 commissioned for that version. The runtime preflight independently compares the
 installed version with its sealed `expected_sglang_version`. This does not
@@ -79,7 +78,7 @@ when remeasured, which is the intended outcome.
 
 ## What Cacheon depends on upstream
 
-`compat` checks the three seam-table chokepoints in
+`compat` checks every seam-table chokepoint in
 [`cacheon/seams.py`](https://github.com/latent-to/cacheon/blob/main/cacheon/seams.py)
 and the supporting surfaces below:
 
@@ -88,6 +87,8 @@ and the supporting surfaces below:
 | `run_scheduler_process` | Scheduler-only candidate load gate | Process roles, spawn path, rank identity |
 | `ModelRunner.load_model` | Node binder: replaces the `forward` of named modules once weights load | Module tree, call arguments, capture order, engine-state layout |
 | `create_tree_cache` | Prefix-cache binder and content check | Cache construction, handoff methods, KV pool and host-tier layout |
+| `SchedulePolicy.calc_priority` | Queue-order address: the candidate reorders stock's answer | Call arguments, whether the queue is returned or sorted in place, the request fields the view reads |
+| `Scheduler` and the `ENGINE_OBJECTS` of `seams.py` | Engine-object binder: replaces the listed scheduler decisions a bundle names. The canary checks `Scheduler` only; a listed path the engine lacks fails when a bundle binds it | Their paths and signatures, and which class serves an arena: a method named on a base class never runs where the arena's subclass overrides it |
 | `BaseFusedOp.forward_native` | The node audit's honest twin | Native reference paths and the twin's measured noise |
 | `Engine.generate` logprob API | Reference scoring and quality observation | Request, logprob, and streaming schema |
 | `ServerArgs` fields | Deterministic engine launch policy | Model, graph, memory, seed, backend, and logging controls |

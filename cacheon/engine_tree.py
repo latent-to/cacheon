@@ -867,7 +867,7 @@ def _inspect_contribution(
 ) -> InspectedContribution:
     """Inspect one registered contribution source without executing it."""
 
-    from cacheon.integrations.sglang_cache import ADDRESS, admit
+    from cacheon.seams import SCHEDULER_ADDRESSES, admit
     from cacheon.registry import eligibility_from_metadata
     from cacheon.target_catalog import TargetCatalog
 
@@ -919,9 +919,9 @@ def _inspect_contribution(
         _module_name("cacheon_validation", relative)
 
     for op in manifest.ops:
-        if op.slot.split(".")[0] == ADDRESS:
+        if op.slot.split(".")[0] in SCHEDULER_ADDRESSES:
             source = _logical_path(op.source, field="python source")
-            admit(_parse_python(root, source)[1], op.slot, op.entry, error=EngineTreeError)
+            admit(_parse_python(root, source)[1], op, error=EngineTreeError)
 
     file_rows: list[dict[str, object]] = []
     for role, paths in (
@@ -1312,14 +1312,13 @@ def _write_materialized_tree(
         destination,
         files=files,
     )
-    result = MaterializedEngineTree(
+    return MaterializedEngineTree(
         root=destination,
         stack_digest=stack_digest,
         tree_digest=tree_digest,
         files=rows,
         runtime_manifest=runtime_manifest,
     )
-    return result
 
 
 def _reopen_engine_tree(

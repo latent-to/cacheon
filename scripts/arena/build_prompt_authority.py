@@ -103,7 +103,9 @@ def main() -> None:
         "hidden_task_policy_digest": judge.hidden_task_policy_digest(),
         "model_profile_key": operator["model_profile_key"], "prompt_batch_cells": ROUTING, "prompt_batches": batches,
         "prompt_seed_scheme": f"{arena.name}-gsm8k-v1.s{cursor_s}-l{cursor_l}",
-        "registered_targets": ["forward_pass", "prefix_cache"], "schema": "cacheon-private-prompt-authority-v1",
+        # engine alone: it spans the kernel and cache slots, so every submission rides one lineage and can carry the
+        # earlier crowns; with stock baselines a crown on one target holds rows on another as stale_incumbent.
+        "registered_targets": ["engine"], "schema": "cacheon-private-prompt-authority-v1",
         "selection_policy_digest": ref["selection_policy_digest"], "tokenizer_digest": tokenizer_digest,
         "workload_cells": CELLS,
     }

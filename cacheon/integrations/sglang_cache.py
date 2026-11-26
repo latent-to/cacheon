@@ -9,7 +9,9 @@ components, pools and host tier, then the entry returns a subclass of its runtim
 type. The validator binds those methods onto the existing object, preserving
 the references its components and transfer workers already hold. The
 contract is the runtime cache object's interface, not a particular cache class
-or model. No engine flag differs between the arms.
+or model. No engine flag differs between the arms. An entry that returns None
+leaves that engine's cache stock and unchecked, which is how a bundle serves a
+pair's prefill servers without paying the check on its decode schedulers.
 
 What a cache alone can fake is a hit: a served prefix whose slots do not hold what
 the engine computed for it skips that prefill and returns wrong tokens fast. The
@@ -38,7 +40,6 @@ sessions (2026-10-27), so a cache candidate carries the check in its own arm.
 
 from __future__ import annotations
 
-import ast
 import functools
 import importlib
 import inspect
@@ -53,6 +54,7 @@ from cacheon.capabilities import CallDescriptor
 from cacheon.registry import REGISTRY, KernelRegistry
 
 ADDRESS = "tree_cache"
+DECLINED = "declined"  # the routing outcome of an entry that returned None for this engine's cache
 _MODULE = "sglang.srt.mem_cache.registry"
 _STOCK = "_cacheon_stock_factory"
 # (prime, base) pairs below 2**31, so every product of two residues fits in int64.
@@ -61,11 +63,10 @@ _LAYERS = 4  # layers hashed per KV buffer kind, drawn once per engine
 _SAMPLE = 64  # served pages checked per handoff
 _CHUNK = 64  # pages hashed per pass, which bounds the temporaries
 _CELLS = 1 << 24  # one-byte cells of the pair table, two per pair
-# The methods the scheduler hands requests through; the check runs inside them. A
-# finished request arrives through ``cache_finished_req`` on 0.5.20 and through
-# ``insert_req`` then ``on_release`` on 0.5.21; the DSV4 nightly uses ``checkpoint``.
-_HANDOFFS = frozenset({"match_prefix", "cache_unfinished_req", "cache_finished_req", "insert_req",
-                       "checkpoint", "prefix_device_indices", "on_release", "reset", "ready_to_load_host_cache"})
+# The methods the scheduler hands requests through; the check runs inside them. Every commissioned engine hands a
+# request over through ``checkpoint`` and ``on_release``; a cache with the handoffs of SGLang 0.5.20/0.5.21 is refused.
+_HANDOFFS = frozenset({"match_prefix", "checkpoint", "prefix_device_indices", "on_release", "reset",
+                       "ready_to_load_host_cache"})
 # Verdict bits: the device raises them, a later handoff reads them.
 _FAKE, _MOVED, _ROW, _STATE = 1, 2, 4, 8
 _VERDICTS = {
@@ -74,22 +75,6 @@ _VERDICTS = {
     _ROW: "left a request row that disagrees with the request's prefix",
     _STATE: "served or changed unrecorded sliding-window, recurrent or request-held state",
 }
-
-
-def admit(tree: ast.Module, slot: str, entry: str, *, error: type[Exception]) -> None:
-    """Check the factory declaration without importing the miner into intake."""
-
-    if slot != ADDRESS:
-        raise error(f"{slot!r}: the prefix cache {ADDRESS!r} has no sub-addresses")
-    factory = next((node for node in tree.body
-                    if isinstance(node, ast.FunctionDef) and node.name == entry), None)
-    if factory is None:
-        raise error(f"{ADDRESS} entry {entry!r} must be a function accepting the runtime cache")
-    args = factory.args
-    positional = len(args.posonlyargs) + len(args.args)
-    if (positional - len(args.defaults) > 1 or (positional < 1 and args.vararg is None)
-            or any(default is None for default in args.kw_defaults)):
-        raise error(f"{ADDRESS} entry {entry!r} must be callable with only the runtime cache")
 
 
 def _refuse(message: str, *, error: type[Exception] = RuntimeError, phase: str = "entry") -> NoReturn:
@@ -149,11 +134,6 @@ class _Guard:
         self.bigram = int(bool(params.is_eagle) and not ctx.is_hybrid_ssm)
         self.device = self.requests.req_to_token.device  # with its index, unlike a flag string
         cuda = self.device.type == "cuda"
-        # The forward pass writes KV on its own stream; the check reads behind it.
-        runner = getattr(ctx.tp_worker, "model_runner", None)
-        self.forward = getattr(runner, "forward_stream", None) if cuda else None
-        if cuda and self.forward is None:
-            raise RuntimeError(f"{ADDRESS}: the scheduler's model runner has no forward stream")
         seed = int.from_bytes(os.urandom(8), "little") >> 1
         draws = torch.Generator().manual_seed(seed)
         self.draws = torch.Generator(device=self.device).manual_seed(seed // 3)
@@ -340,8 +320,13 @@ class _Guard:
             if served % self.page:
                 self.refuse(f"it served a prefix of {served} tokens, which ends inside a page")
             held = self.held[req.rid] = _Held(own=min(served, n))
-        if self.forward is not None:
-            torch.cuda.current_stream().wait_stream(self.forward)
+        # No wait on the forward stream. The scheduler hands a request over after it has synchronized on the
+        # batch that computed these pages (``copy_done``); the pass in flight belongs to the next batch. A wait on
+        # the whole stream held the schedule stream behind that pass 30 s per prefill rank over a 930 s replay
+        # (GLM-5.3-Flash PD, 2026-11-17). A page read before its write records a pair that its later reads
+        # cannot match, which is a refusal and never a pass. A chunk stashed between prefill chunks is handed
+        # over before its batch's result and relies on the scheduler's write-after-read barrier, which a backend
+        # declaring PRE_REPLAY prefill reads narrows: there an honest cache can be refused (audit U20, 2026-11-23).
         row = self.requests.req_to_token[req.kv.req_pool_idx, :n].to(torch.int64)
         if self.hybrid is not None:
             self.hybrid.record(req, ids, row, held, finished=finished)
@@ -365,13 +350,13 @@ class _Guard:
                                 content)
             k = len(check)
             self._flag(_FAKE, ~(self.table[cells[0][:k]] & self.table[cells[1][:k]]))
-            for cell in cells:
-                self.table[cell[k:]] = True
+            for cell in cells:  # scalar fill: a host value here waits out the forward pass in flight (2026-11-17)
+                self.table.index_fill_(0, cell[k:], True)
         held.recorded = max(held.recorded, end * self.page)
         self.publish()
         return row
 
-    def settle(self, req, row, cache=None) -> None:
+    def settle(self, req, row, cache) -> None:
         """Hold the cache to the prefix it left on an unfinished request, which the next pass reads.
 
         It may point the part it now protects at slots of its own; the rest must be
@@ -386,12 +371,11 @@ class _Guard:
         if not 0 <= protected <= n or protected % self.page:
             self.refuse(f"it protected {protected} of a request's {n} tokens, not whole pages of them")
         after = self.requests.req_to_token[req.kv.req_pool_idx, :n].to(torch.int64)
-        prefix = req.prefix_indices if cache is None else cache.path_device_indices(req.last_node)
-        checked = n if cache is None else protected
+        prefix = cache.path_device_indices(req.last_node)
         if (not isinstance(prefix, torch.Tensor) or prefix.device != self.device
-                or len(prefix) != checked):
-            self.refuse(f"it left a prefix that is not {checked} slots on the device on a request with {n} tokens")
-        self._flag(_ROW, after[:checked] != prefix)
+                or len(prefix) != protected):
+            self.refuse(f"it left a prefix that is not {protected} slots on the device on a request with {n} tokens")
+        self._flag(_ROW, after[:protected] != prefix)
         self._flag(_MOVED, after[protected:] != row[protected:])
         held.own = max(held.own, protected)
         held.until, held.kept = n, after[held.own:].clone()
@@ -480,25 +464,6 @@ def _guarded(cls: type, base: type, guard: _Guard) -> type:
             return result
 
         @pinned
-        def cache_unfinished_req(self, req, *args, **kwargs):
-            row = guard.handoff(self, req, req.get_fill_ids())
-            guard.invoke(super().cache_unfinished_req, req, *args, **kwargs)
-            guard.settle(req, row)
-
-        @pinned
-        def cache_finished_req(self, req, *args, **kwargs):
-            tokens = req.origin_input_ids + req.output_ids
-            guard.handoff(self, req, tokens[: kwargs["kv_len_to_handle"]], finished=True)
-            guard.invoke(super().cache_finished_req, req, *args, **kwargs)
-            guard.finished(req)
-
-        @pinned
-        def insert_req(self, req, *, up_to, **kwargs):
-            tokens = req.origin_input_ids + req.output_ids
-            guard.handoff(self, req, tokens[:up_to], finished=True)
-            return guard.invoke(super().insert_req, req, up_to=up_to, **kwargs)
-
-        @pinned
         def checkpoint(self, req, *, up_to, **kwargs):
             finished = req.finished()
             row = guard.handoff(self, req, req.full_untruncated_fill_ids[:up_to], finished=finished)
@@ -547,17 +512,21 @@ def _bind(impl, ctx, stock):
     if (ctx.is_hybrid_swa or ctx.is_hybrid_ssm) and ctx.disable_radix_cache:
         raise RuntimeError(f"{ADDRESS}: this hybrid runtime disables prefix caching")
     base = importlib.import_module("sglang.srt.mem_cache.base_prefix_cache").BasePrefixCache
-    if inspect.isclass(impl.entry):
-        _refuse("entry must accept the runtime cache, not its construction parameters",
-                error=TypeError, phase="prepare")
     if impl.prepare is not None:
         _refuse("a cache entry takes no prepare", error=TypeError, phase="prepare")
     cache = stock(ctx)
     if not isinstance(cache, base):
         _refuse(f"this engine builds {type(cache).__name__}, not a BasePrefixCache",
                 phase="prepare")
-    guard = _Guard(ctx)
+    if hasattr(cache, "cache_finished_req") or hasattr(cache, "insert_req"):
+        _refuse("this engine's cache hands requests over through methods that are not checked", phase="prepare")
     cls = _receipts.invoke(ADDRESS, impl.entry, cache, phase="prepare")
+    if cls is None:
+        # A tier bundle lives on the prefill servers: the check would cost its decode schedulers more than it wins.
+        # Declined before the guard exists: decode's replayed recurrent state has no check to build (2026-11-12).
+        _receipts.not_selected(ADDRESS, DECLINED, ())
+        return cache
+    guard = _Guard(ctx)
     if not inspect.isclass(cls) or not issubclass(cls, type(cache)):
         _refuse("entry must return a subclass of the runtime cache's type",
                 error=TypeError, phase="prepare")

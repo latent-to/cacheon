@@ -111,7 +111,9 @@ store under the commissioned root that later boots of the same tree reuse.
 1. **Stock reference.** The first qualification that finds no current reference
    for the stock identity (lane digest, stock launch digest, runtime preflight
    SHA-256, workload digest, boot schedule) measures one fresh stock pair under v22
-   or two fresh pairs under v21. Each pair occupies the first two engine lifetimes of
+   and v23 or two fresh pairs under v21. Policy 23 is policy 22 on a lane one engine
+   owns, for a model SGLang serves without a prefill/decode split; policies 20-22 time
+   a prefill/decode pair. Each pair occupies the first two engine lifetimes of
    its own evaluator process, the position every candidate pair holds: replay
    rates fall with each lifetime one evaluator process runs and recover in the
    next qualification's process, not after idle GPUs
@@ -145,10 +147,10 @@ store under the commissioned root that later boots of the same tree reuse.
    quality controls, audit and T do not run.
 3. **Quality controls.** After a speed PASS no stock engine boots: the quality
    gate's stock rollout and its independent stock control are the timed answers
-   of the first boot of each stored stock pair. Until 2026-11-05 a fresh stock
-   bracket boot produced both and acted as a one-sided 1% drift sentinel; it
-   cost 25.5 minutes per PASS and changed none of the PD arena's seven passing
-   verdicts, so it was deleted. Retained evidence with a bracket still regrades.
+   of the first boot of each stored stock pair. The selection draws from the
+   highest load's first timed window, or from every load's first window when the
+   replay seals `quality_every_load`. Retained evidence whose controls came
+   from a stock bracket boot still regrades.
 4. **Audit and pristine T.** The eager audit and pristine T need nothing from each
    other: T scores trajectories and controls sealed by the speed stage. On a
    prefill/decode lane they run at once, the audit on the prefill role's GPUs and T
@@ -223,7 +225,7 @@ its measured speedup falls below the mirrored bound 1 − u; that failure is
 `candidate_slower`. A miss inside the band is `speed_threshold_not_met`: the bar was
 not cleared, and the candidate was not measurably slower either. A candidate that
 clears the bar but fails the service-attainment gate is `service_contract_not_met`.
-Under policies 20 and 21 a candidate whose pooled per-user decode p50 falls below the
+Under policies 20 to 23 a candidate whose pooled per-user decode p50 falls below the
 sealed floor at any sealed load fails with `service_floor_not_met`, at any speedup.
 Reports settled before this split carry the retained coarse code `speed_regression`,
 which remains valid for them and is never recorded on a new verdict.
@@ -729,8 +731,9 @@ requires an acknowledged SGLang cache flush covering device radix state and
 the HiCache host pool. Failure stops the window. Each load's fresh output
 directory retains the AIPerf command, log and raw export,
 `bridge.jsonl` with each request's input digest (`input_sha256`, the SHA-256 of its
-canonical ID list in compact JSON), actual output IDs and host timing,
-`turns.jsonl` in the service-capacity record format, and `read.json` with fixed
+canonical ID list in compact JSON), actual output IDs, host timing and the engine's
+own `cached_tokens` report when it sends one (observability from inside the engine's
+process: no verdict reads it), `turns.jsonl` in the service-capacity record format, and `read.json` with fixed
 work rate and attainment. `window.json` retains the workload identity and the
 read. The existing engine-session evidence also carries
 the typed `LoadRead` records, so continuation retains them with the token evidence.
@@ -767,6 +770,21 @@ runs one colocated engine with the prefill role's settings on the first prefill
 server's GPUs, and the pristine reference the same engine from the first decode
 GPU; the audit's final-warmup device check requires active processes only on its
 GPUs.
+
+An arena can instead seal `pd_prefill.routing_policy`, for example `power_of_two`.
+Timed requests then go to SGLang's native PD router at one loopback endpoint.
+The router receives the actual prompt and sampling budget and chooses a prefill
+replica and a decode worker. The validator measures the token stream and
+flushes each physical cache at the existing cold boundaries. Select a native
+policy appropriate for token-ID requests. The pinned HTTP router uses request
+text for `cache_aware` and receives no routing text on token-ID replays. A
+changed routing contract has its own engine configuration identity.
+
+Ordinary replays order the initial wave by a digest of the visible conversation
+opening and use that key for replica affinity. The raw bridge records the rank
+requested by the client. The recorded-pause experiment orders openings by their
+trace session and keeps its subagents with that root.
+
 The driver uses the executable's sibling Python interpreter to call AIPerf's
 single-run API. The sealed slice digest supplies its benchmark identity, keeping
 cache-buster tokens identical between arms and windows. Each
@@ -792,6 +810,15 @@ replays the first sessions of the sealed order in proportion to its concurrency
 (at least as many as its concurrency), so three loads together replay less work than
 three whole-pool windows; the read set records each lower load's roots
 (`load_roots`) and checks its completed work against them.
+Optional `pause_order: true` opens every session of the window in the cold round,
+keeps `load` requests in flight, and gives a freed slot to the waiting request due
+first: a session not yet started at once, a session's next turn at the moment it
+went idle plus the pause the trace recorded before that turn (`think_time`). No
+turn waits for the wall clock; the pauses only order the returns, so a session
+that paused for an hour returns behind those that paused for seconds and finds its
+prefix wherever the cache left it. Without the setting each session sends its next
+turn when the last completes and no session is ever idle. The fixed work is the
+same; the setting is part of the workload identity, so references do not cross it.
 Optional `max_work_seconds` bounds each boot's replay work; expiry aborts, never
 grades incomplete work. Optional `warm_windows` (1 or 2) replays that many whole
 windows untimed at the highest load before the sealed windows, each after its own
@@ -871,14 +898,12 @@ dispatcher seals that bar into each new request, so a PASS below it stops at the
 checks the exact stopping point, all engine identities, host timings, and
 controls.
 
-The dashboard lists a replay per engine boot — "Stock reference boot k",
-"Candidate boot k" and, on older evidence, "Stock bracket after PASS" — with each boot's mean
-same-work seconds, decode rate, first-token time and service attainment; its
-`score_basis` is `retained_reference_boots`. The detail adds the operating load,
-windows per boot, workload identity, required gain, unsuccessful request count
-and speed-stage duration. The attempt's retained workload and policy identify its
-regime, regardless of submission date. Retained evaluations under retired
-policies show their verdict only.
+The dashboard groups mean same-work seconds, decode rate, first-token time and attainment by stock reference
+boot, candidate boot and, on older evidence, stock bracket after PASS. Its `score_basis` is `retained_reference_boots`.
+The detail gives the load, windows per boot, workload identity, required gain, unsuccessful requests and speed-stage
+duration. At each load, service goodput counts successful turns meeting both sealed latency and decode limits and
+their output tokens over the full replay, including openings and drain. The retained workload and policy identify
+the regime. Evaluations under retired policies show their verdict only.
 
 The economic interpretation assumes identical billable work, fixed GPU
 allocation and cost, and demand for the measured capacity. At fixed basket

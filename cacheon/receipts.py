@@ -622,14 +622,14 @@ def _expected_members(
     return labels, malformed, duplicates, count_ok, member_identities
 
 
-def coverage_matrix(
-    observed: Iterable[dict],
+def completed_gate(
+    completed_receipts: Iterable[dict],
     *,
     expected_slots: Iterable[str],
     member_receipts: Iterable[dict],
     expected_member_count: int | None = None,
-) -> dict:
-    """Build fail-closed per-slot/per-member diagnostic coverage.
+) -> tuple[bool, str]:
+    """Require one completion per expected slot and member, failing closed.
 
     Presence, not volume: one completion per slot per member is the whole gate.
     Invocation counts belong on the receipt (see ``flush_calls``) where they are
@@ -637,7 +637,7 @@ def coverage_matrix(
     because how many times a captured kernel re-enters Python is a property of
     CUDA graphs rather than of the candidate.
     """
-    got = list(observed)
+    got = list(completed_receipts)
     members = list(member_receipts)
     raw_slots = list(expected_slots)
     if any(not isinstance(slot, str) or not slot for slot in raw_slots):
@@ -717,66 +717,20 @@ def coverage_matrix(
             }
             if known and known != {(0, 1)}:
                 malformed.extend(got)
-    present = {pair for pair, count in counts.items() if count >= 1}
-    missing = sorted(expected_pairs - present)
-    return {
-        "ok": (
-            bool(slots)
-            and bool(expected_members)
-            and member_count_ok
-            and not missing
-            and not malformed
-            and not unexpected
-            and not duplicates
-        ),
-        "expected_slots": slots,
-        "members": expected_members,
-        "expected_member_count": expected_member_count,
-        "observed_member_count": len(expected_members),
-        "member_count_ok": member_count_ok,
-        "expected_pairs": len(expected_pairs),
-        "covered_pairs": len(expected_pairs & present),
-        "missing": [
-            {"slot": slot, "member": member} for slot, member in missing
-        ],
-        "malformed": malformed,
-        "unexpected": unexpected,
-        "duplicates": duplicates,
-    }
-
-
-def completed_gate(
-    completed_receipts: Iterable[dict],
-    *,
-    expected_slots: Iterable[str],
-    member_receipts: Iterable[dict],
-    expected_member_count: int | None = None,
-) -> tuple[bool, str]:
-    """Require one completion per expected slot and member."""
-    complete = list(completed_receipts)
-    members = list(member_receipts)
-    detail = coverage_matrix(
-        complete,
-        expected_slots=expected_slots,
-        member_receipts=members,
-        expected_member_count=expected_member_count,
+    missing = sorted(expected_pairs - set(counts))
+    ok = bool(
+        slots and expected_members and member_count_ok
+        and not (missing or malformed or unexpected or duplicates)
     )
-    ok = detail["ok"]
-    desc = (
-        f"completed coverage {detail['covered_pairs']}/{detail['expected_pairs']} "
-        "slot/member pairs"
-    )
-    if detail["missing"]:
-        desc += f"; missing={detail['missing']}"
-    if detail["malformed"]:
-        desc += f"; malformed={len(detail['malformed'])}"
-    if detail["unexpected"]:
-        desc += f"; unexpected={len(detail['unexpected'])}"
-    if detail["duplicates"]:
-        desc += f"; duplicates={len(detail['duplicates'])}"
-    if not detail["member_count_ok"]:
-        desc += (
-            f"; members={detail['observed_member_count']}"
-            f"/{detail['expected_member_count']}"
-        )
+    desc = f"completed coverage {len(counts)}/{len(expected_pairs)} slot/member pairs"
+    if missing:
+        desc += f"; missing={[{'slot': slot, 'member': member} for slot, member in missing]}"
+    if malformed:
+        desc += f"; malformed={len(malformed)}"
+    if unexpected:
+        desc += f"; unexpected={len(unexpected)}"
+    if duplicates:
+        desc += f"; duplicates={len(duplicates)}"
+    if not member_count_ok:
+        desc += f"; members={len(expected_members)}/{expected_member_count}"
     return ok, desc

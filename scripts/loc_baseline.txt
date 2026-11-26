@@ -183,6 +183,13 @@
 # the packet judge's HiddenJudgeReceipt and hidden_judge_output_digest come back (+37) for commissioning step 3.
 # Commission refuses a non-stock incumbent (docs +4), paid by the uncalled batch_request wrapper: cacheon -18.
 # Sealed one-sided per-load regression guard (load_margin): cacheon +17 after the uncalled sandbox.load_entry, docs +6.
+# Pause-order replay arrival (sealed setting, operator key): cacheon +18, docs +10, scripts +5 after deleting the
+# replay plan's fixed-value flags, the summed-latency rate, the opening-text session key, the test-only
+# SettlementCandidate.from_reproductions and the dashboard's paired-lane views (dashboard -20, tests -12): tree +1.
+# Merge of the arena branch's sealed helper vCPUs (4a0775e8): docs +1, examples +3, scripts +6.
+# Queue-order address, the scheduler target's first (new seam row, adapter, catalog row, contract page):
+# cacheon +107, docs +46, tests +1, scripts +3. No deletion was available in this change; the next one is the
+# per-target bundle resolution that multi-target submissions replace.
 # GLM-5.3-Flash PD go-live: steady-span load scoring and its import exemption, the pair T GPU-count fix, the twin
 # payment bar, the dashboard per-load view and the commissioned pin tables: cacheon +110, dashboard +9, docs +18,
 # examples +13, scripts +29, tests +9. The branch stays net -3,234 lines against main (retired arenas deleted).
@@ -199,14 +206,43 @@
 # Sealed first-lifetime payment-bar futility (bar_futility): cacheon +14, docs +6, examples +3, scripts +5, tests +6.
 # speed_first is keyed by the speed plan and its retry runs on its own stage clock (as written it was never found
 # after a release); replay-client failures are typed holds, not adapter-epoch failures: cacheon +58, docs +11.
+# The dashboard shows the payment bar, the first-boot stop line and served goodput per boot and per load (miners
+# could not read early-stopped runs): cacheon +16 (baseline_band.py), dashboard +18.
+# Copy fingerprinting computes each entry file's closure once per bundle, not once per op (47 per-layer ops held the
+# intake flock 14 min and looped settlement), less the dead manifest parameter of _op_identity: cacheon +6, scripts +4.
+# Engine-object addresses (`sglang.<dotted path>`: any class, method or function of the engine) replace the
+# queue-order address, whose adapter is deleted (-83): cacheon +60, docs +1, scripts +3. Names the engine lacks take
+# a function (+12), paid by the runtime of the engine-wide `setup` hook no target admits (-28): cacheon -16.
 # The seed harvest boots under the lease's interpreter (a seed harvested under the image's other python was wiped and
 # recompiled in every lease boot; no deletion available, next: the rig-only parts of the tool): docs +2, scripts +6.
-(root) 1163
+# A commission declares the crowned entries as a candidate's parent while the measured baseline stays stock, so a
+# change is assembled on the record and a miner no longer rebuilds it (GLM refused any crowned entry): cacheon +33,
+# docs +10, tests +62 (the end-to-end case on the standing supervisor). settlement.py shrinks 2 lines; no other
+# deletion available, next: the audit-recovery authorization nothing in the tree or the GLM operator calls.
+# Merging main into the slot branch carries main's re-timed crown bar (#161: 22211598, dded0189), reviewed there:
+# cacheon +36, docs +4, tests +23, scripts +2 (this note).
+# The wrong node control also scales Inkling 2's routed MoE rows: examples +1, scripts +1 (this note).
+# Inkling 2 MoE nodes bind via its `model` property; DSpark verify windows graded: cacheon +19, docs +7, scripts +1.
+# Hybrid prefix-cache audit on PR #51926 fields (#7, U9), timed gap and gate in docs: cacheon +7, docs +15, scripts +1.
+# The engine target opens queue_order and the listed scheduler decisions, not all of sglang (audit #3/#4/#8/#14, U3, U17):
+# the queue-order adapter returns (+83), intake refuses declared domains and parks engine-only changes before a crown, the
+# binder's new-name branch goes: cacheon +176/-50, docs +44/-15, examples +18/-40, tests +169/-11, scripts +3 (these notes).
+# The decode memory check and retraction join the list; the queue-order contract returns to the docs: cacheon +2, docs +30.
+# The Inkling 2 Mini H200 development check inputs and their results page: examples +108, docs +109, root +1 (nav),
+# scripts +2 (this note).
+# Speed policy 23 times one engine that owns the lane; operator.json names the node's sm target and NVLink class; the
+# engine options take bf16_gemm_backend and two decimals: cacheon +9, docs +5, examples +4, scripts +5 (these notes).
+# Scoring holes (slot audit #1/#2, owner 11-24): operator cold_span starts each load's span at the host's cold-round
+# release and quality_every_load draws the quality controls from every load: cacheon +47, docs +2 (a dated history
+# paragraph deleted), tests +23, scripts +14 (renderer, quality sealer, these notes). No unreferenced definition found.
+# A failing bundle review may name repackaged_upstream_pr (owner ruling 11-12; slot audit #11): cacheon +9, docs +4,
+# tests +20, scripts +2 (this note).
+(root) 1164
 .github 338
-cacheon 92404
+cacheon 93104
 cacheon_kernels 936
-dashboard 4420
-docs 13396
-examples 431
-scripts 4734
-tests 14184
+dashboard 4421
+docs 13667
+examples 570
+scripts 4788
+tests 14582

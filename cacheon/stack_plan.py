@@ -7,7 +7,7 @@ mutate incumbent state.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from cacheon.stack_identity import canonical_digest
 from cacheon.stack_manifest import (
@@ -133,7 +133,12 @@ class TargetTransition:
 
 @dataclass(frozen=True)
 class MarginalArmPlan:
-    """One exact target transition over a frozen incumbent stack."""
+    """One exact target transition over a frozen incumbent stack.
+
+    ``incumbent`` is the baseline B runs and C is measured against. ``parent``, when set, is the stack C is
+    assembled on instead: on an arena graded against stock, the record's crowned entries ride under the
+    candidate while B, the speed reference and the quality reference stay stock.
+    """
 
     incumbent: EvaluationStackManifest
     candidate: EvaluationStackManifest
@@ -143,12 +148,17 @@ class MarginalArmPlan:
     baseline_after: StackArmIdentity
     schema_version: int = _PLAN_SCHEMA_VERSION
     policy_version: str = _PLAN_POLICY_VERSION
+    parent: EvaluationStackManifest | None = field(default=None, metadata={"wire_optional": True})
 
     def __post_init__(self) -> None:
         if not isinstance(self.incumbent, EvaluationStackManifest) or not isinstance(
             self.candidate, EvaluationStackManifest
         ):
             raise StackPlanError("marginal arm stacks must be evaluation manifests")
+        if self.parent is not None and (
+            not isinstance(self.parent, EvaluationStackManifest) or self.parent.digest == self.incumbent.digest
+        ):
+            raise StackPlanError("marginal arm parent must be a stack other than the incumbent")
         if not isinstance(self.transition, TargetTransition):
             raise StackPlanError("marginal arm transition is invalid")
         if not all(
@@ -168,7 +178,7 @@ class MarginalArmPlan:
             raise StackPlanError("challenger arm does not bind candidate stack")
         if self.challenger.tree_digest == self.baseline_before.tree_digest:
             raise StackPlanError("challenger and incumbent tree digests must differ")
-        incumbent_entries = self.incumbent.entries
+        incumbent_entries = (self.incumbent if self.parent is None else self.parent).entries
         candidate_entries = self.candidate.entries
         target_id = self.transition.target_id
         if incumbent_entries.get(target_id) != self.transition.prior:
@@ -208,6 +218,7 @@ class MarginalArmPlan:
             "baseline_before": self.baseline_before.to_dict(),
             "challenger": self.challenger.to_dict(),
             "baseline_after": self.baseline_after.to_dict(),
+            **({} if self.parent is None else {"parent_stack_digest": self.parent.digest}),
         }
 
     @property
@@ -229,6 +240,7 @@ class MarginalArmPlan:
             incumbent_tree_digest=self.baseline_before.tree_digest,
             candidate_tree_digest=self.challenger.tree_digest,
             expected_context=expected_context,
+            parent=self.parent,
         )
         if expected.to_dict() != self.to_dict():
             raise StackPlanError("marginal arm does not reopen to its declared transition")
@@ -329,11 +341,14 @@ def plan_marginal_arm(
     incumbent_tree_digest: str,
     candidate_tree_digest: str,
     expected_context: EvaluationStackContext,
+    parent: EvaluationStackManifest | None = None,
 ) -> MarginalArmPlan:
-    """Bind an exact C transition to independently materialized tree identities."""
+    """Bind an exact C transition, over ``parent`` when given, to independently materialized tree identities."""
 
+    if parent is not None:
+        incumbent.validate_against(expected_context)
     candidate, transition = _candidate_transition(
-        incumbent,
+        incumbent if parent is None else parent,
         replacement,
         catalog=catalog,
         expected_context=expected_context,
@@ -350,4 +365,5 @@ def plan_marginal_arm(
         baseline_before=StackArmIdentity(incumbent.digest, incumbent_tree),
         challenger=StackArmIdentity(candidate.digest, candidate_tree),
         baseline_after=StackArmIdentity(incumbent.digest, incumbent_tree),
+        parent=parent,
     )

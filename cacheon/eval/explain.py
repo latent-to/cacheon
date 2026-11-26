@@ -748,7 +748,7 @@ def execution_lines(ranks: tuple[RankExecution, ...] | list[RankExecution]) -> l
                 f"  {'FAILED TO LOAD':<26s} GPU {row.rank}: {row.load_error} — that GPU "
                 "ran SGLang's own kernel instead of yours"
             )
-    eager = eager_slots()
+    eager = eager_slots(slot.slot for row in ranks for slot in row.slots)
     by_slot: dict[str, list[tuple[int, object]]] = {}
     for row in ranks:
         for slot in row.slots:

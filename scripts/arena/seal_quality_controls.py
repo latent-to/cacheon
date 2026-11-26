@@ -48,8 +48,8 @@ def _stock_speed_noise(path):
         costs = {}
         for r in reads.incumbent[i * count:(i + 1) * count]:
             work = reads.work(r.load)
-            cost = (steady_span_cost(r, work, policy.steady_span) if policy.steady_span else
-                    fixed_work_rate(r, work, wall_time=True).elapsed_s)
+            cost = (steady_span_cost(r, work, policy.steady_span, bool(policy.cold_span)) if policy.steady_span else
+                    fixed_work_rate(r, work).elapsed_s)
             costs.setdefault(r.load, []).append(cost)
         boots.append(statistics.mean(math.log(statistics.mean(v)) for v in costs.values()))
     stock = witness["goodput"]["value"]["incumbent"][:reads.reference_boots * count]

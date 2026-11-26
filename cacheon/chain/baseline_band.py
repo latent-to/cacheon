@@ -104,29 +104,22 @@ def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
     from cacheon.eval.qualification_runner import ResidentSpeedWitness
     from cacheon.eval.service_capacity import attainment, fixed_work_rate
 
-    speed: dict[str, Any] = {"metric": "warm_turn_latency", "lanes": []}
+    speed: dict[str, Any] = {"metric": "fixed_work_rate", "lanes": []}
     try:
         retained = ResidentSpeedWitness.from_dict(witness)
         reads, policy = retained.goodput, retained.resident_policy.goodput
         grade = reads.grade(policy)
-        if policy.error_rate:
-            speed["metric"] = "fixed_work_rate"
         lanes = []
         for role, windows in (("B", reads.incumbent), ("C", reads.candidate)):
-            arm = []
             for index, read in enumerate(windows):
                 work = fixed_work_rate(read, reads.work(read.load))
-                elapsed = fixed_work_rate(read, reads.work(read.load), wall_time=True)
                 # Whole boots: reference boots, then any retained bracket, per arm.
-                arm.append({"role": role, "window": read.window, "load": read.load,
-                            "physical_lane": read.lane, "boot": index // (reads.window_limit * len(reads.loads)),
-                            "warm_turns": work.turns, "request_time_s": work.elapsed_s,
-                            "mean_warm_latency_s": work.elapsed_s / work.turns,
-                            "elapsed_s": elapsed.elapsed_s, "turns_per_second": elapsed.rate,
-                            "attainment": attainment(read, policy.contract),
-                            "goodput_tps": _output_tokens(read) / elapsed.elapsed_s,
-                            **_replay_diagnostics(read)})
-            lanes.extend(arm)
+                lanes.append({"role": role, "window": read.window, "load": read.load,
+                              "boot": index // (reads.window_limit * len(reads.loads)),
+                              "warm_turns": work.turns, "elapsed_s": work.elapsed_s, "turns_per_second": work.rate,
+                              "attainment": attainment(read, policy.contract),
+                              "goodput_tps": _output_tokens(read) / work.elapsed_s,
+                              **_replay_diagnostics(read)})
         speed.update({
             "lanes": lanes, "speedup": float(grade.settled_speedup),
             "policy_version": retained.resident_policy.version,
@@ -142,11 +135,9 @@ def replay_measurements(witness: dict[str, Any]) -> dict[str, Any]:
             "grading": {"steady_span": policy.steady_span or None,"decision": grade.decision.value, "detail": grade.verdict.detail,
                         "required_speedup": grade.verdict.required,
                         "null_noise": policy.null_noise,
-                        "standard_error": grade.verdict.noise if policy.error_rate else None,
-                        "lower_speedup": (float(grade.settled_speedup) / grade.verdict.required
-                                          if policy.error_rate else None),
-                        "boot_noise": policy.boot_noise if policy.error_rate else None,
-                        "error_rate": policy.error_rate or None,
+                        "standard_error": grade.verdict.noise,
+                        "lower_speedup": float(grade.settled_speedup) / grade.verdict.required,
+                        "boot_noise": policy.boot_noise, "error_rate": policy.error_rate,
                         "attainment_tolerance": policy.attainment_tolerance,
                         "attainment_margin": policy.attainment_margin, "futility_margin": policy.futility_margin,
                         "attainment_pooled": bool(policy.attainment_pooled),
@@ -175,19 +166,21 @@ def _per_load(reads, policy) -> list[dict[str, Any]]:
 
     def cost(read):
         work = reads.work(read.load)
-        return (steady_span_cost(read, work, policy.steady_span) if policy.steady_span
-                else fixed_work_rate(read, work, wall_time=True).elapsed_s)
+        return (steady_span_cost(read, work, policy.steady_span, bool(policy.cold_span)) if policy.steady_span
+                else fixed_work_rate(read, work).elapsed_s)
 
     rows = []
     for load in reads.loads:
         base, cand = ([read for read in arm if read.load == load] for arm in (stock, reads.candidate))
         logs = [sum(math.log(cost(read)) for read in arm) / len(arm) for arm in (base, cand)]
-        rows.append({"load": load, "stock_cost": math.exp(logs[0]), "candidate_cost": math.exp(logs[1]),
-                     "gain": math.exp(logs[0] - logs[1]), "stock_decode_tps": decode_p50(base),
-                     "candidate_decode_tps": decode_p50(cand), "decode_floor_tps": floors.get(load),
-                     **{f"{name}_goodput_tps": sum(map(_output_tokens, arm)) / sum(
-                         fixed_work_rate(read, reads.work(read.load), wall_time=True).elapsed_s for read in arm)
-                        for name, arm in (("stock", base), ("candidate", cand))}})
+        row = {"load": load, "stock_cost": math.exp(logs[0]), "candidate_cost": math.exp(logs[1]),
+               "gain": math.exp(logs[0] - logs[1]), "stock_decode_tps": decode_p50(base),
+               "candidate_decode_tps": decode_p50(cand), "decode_floor_tps": floors.get(load)}
+        for name, arm in (("stock", base), ("candidate", cand)):
+            row[f"{name}_goodput_tps"] = sum(map(_output_tokens, arm)) / sum(
+                fixed_work_rate(read, reads.work(load)).elapsed_s for read in arm)
+            row[f"{name}_service"] = _service_goodput(arm, policy.contract)
+        rows.append(row)
     return rows
 
 
@@ -195,6 +188,16 @@ def _output_tokens(read) -> int:
     """Output tokens served by a window's timed warm turns: goodput is these over the warm wall span."""
     cold = min(row.credit_issued_ns for row in read.records)
     return sum(row.output_tokens for row in read.records if row.credit_issued_ns != cold)
+
+
+def _service_goodput(reads, contract) -> dict[str, float]:
+    """Pool successful turns meeting both service limits over the full observed time of each window."""
+    seconds = sum((max(r.request_end_ns for r in read.records) - min(r.credit_issued_ns for r in read.records))
+                  / 1e9 for read in reads)
+    qualified = [r for read in reads for r in read.records if r.meets(contract)]
+    return {"turns_per_second": len(qualified) / seconds,
+            "output_tps": sum(r.output_tokens for r in qualified) / seconds,
+            "attainment": len(qualified) / sum(len(read.records) for read in reads)}
 
 
 def _replay_diagnostics(read) -> dict[str, Any]:

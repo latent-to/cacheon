@@ -187,9 +187,13 @@ def _eager_audit_engine(kwargs: dict[str, Any]) -> None:
     ``disable_cuda_graph`` leaves nightly SGLang's ``cuda_graph_backend_prefill`` on: the
     DeepSeek-V4.1 audit then graded 74 prefill shapes' capture warmups, on which stock
     disagreed with itself by p90 0.15-0.65, and no replayed prefill (B300, 2026-10-15).
+    The key is set wherever the engine defines it, sealed or not: an unset key lets
+    Inkling's own default capture FULL prefill graphs (U3, 2026-11-23).
     """
+    from sglang.srt.server_args import ServerArgs
+
     kwargs["disable_cuda_graph"] = True
-    if "cuda_graph_backend_prefill" in kwargs:
+    if hasattr(ServerArgs, "cuda_graph_backend_prefill"):
         kwargs["cuda_graph_backend_prefill"] = "disabled"
 
 
@@ -253,7 +257,6 @@ def build_session_environment(
     *,
     active: bool,
     bundle_path: str,
-    framework_mode: bool,
     receipt_dir: str,
     audit_policy: object,
     install_seams: bool,
@@ -273,7 +276,6 @@ def build_session_environment(
         **(engine_env or {}),
         "CACHEON_ACTIVE": "1" if active else "0",
         "CACHEON_BUNDLE_PATH": bundle_path if active else "",
-        "CACHEON_FRAMEWORK_MODE": "1" if framework_mode else "0",
         "CACHEON_SEAM_RECEIPT_DIR": receipt_dir,
         "CACHEON_SLOT_AUDIT": (
             format(audit_policy.sample_rate_ppm / 1_000_000, ".17g") if audited else ""
@@ -355,8 +357,9 @@ def _require_execution_completion(
 ) -> str:
     """Fail closed unless every active member completed every registered slot."""
 
-    from cacheon import receipts
+    from cacheon import receipts, seams
     from cacheon.eval.resident_execution_evidence import eager_slots
+    from cacheon.integrations.sglang_cache import DECLINED
 
     completed = receipts.collect(receipt_dir, "completed")
     coverage = dict(
@@ -369,11 +372,29 @@ def _require_execution_completion(
     # its eager-warmup completion sits on disk. A slot SGLang serves outside the
     # graph, such as the scheduler's prefix cache, runs in every timed step without one,
     # and so does every slot on a prefill server, which captures no decode graph.
-    eager = eager_slots()
+    eager = eager_slots(row.get("slot") for row in completed)
     captured = [
         row for row in completed
         if row.get("captured") is True or row.get("slot") in eager or row.get("pid") in eager_members
     ]
+    # A cache entry may leave one engine's cache stock (``sglang_cache._bind``). That member is covered by its
+    # refusal only where another member served the address: declined everywhere is a candidate that never ran.
+    declined = [
+        row for row in receipts.collect(receipt_dir, "not_selected")
+        if row.get("slot") in eager
+        and any(reason.get("outcome") == DECLINED for reason in row.get("reasons") or ())
+    ]
+    # An engine object changes the engine where it is bound, and a bind that fails stops the scheduler at its
+    # entry, as does a name the engine lacks or an entry nothing selects (audit #14). Which of its methods a
+    # workload reaches is the engine's business: retraction may never run in a light window. Every member that
+    # loaded the bundle is covered for each engine object and the queue order, under the identity its own
+    # completions carry (an early active receipt may hold the pid alone).
+    done = {(row.get("slot"), row.get("pid")) for row in completed}
+    known = {row.get("pid"): row for row in completed}
+    bound = [{**known.get(member.get("pid"), member), "slot": slot}
+             for slot in expected_slots if not seams.audited(slot)
+             for member in active_receipts if (slot, member.get("pid")) not in done]
+    completed, captured = completed + declined + bound, captured + declined + bound
     passed, detail = receipts.completed_gate(
         captured if require_captured else completed, **coverage
     )
@@ -532,7 +553,7 @@ def _pin_engine_processes(plan: str | None, *, pinned: int, lane_engines: int, f
     if roles is not None and len(roles) != lane_engines:
         raise RuntimeError(f"CPU pin plan names {len(roles)} engines; the lane runs {lane_engines}")
     owner = {pid: side for side, (root, *_) in enumerate(engines) if root for pid in _process_tree(root)}
-    local = next(side for side, (root, *_) in enumerate(engines) if root is None)
+    local = next((side for side, (root, *_) in enumerate(engines) if root is None), len(engines) - 1)
     ranks: dict[int, list[int]] = {}
     controllers = [0] * len(engines)
     for pid in _process_tree(os.getpid()):
@@ -581,7 +602,6 @@ def isolated_engine_session(
     *,
     bundle_path: str,
     active: bool,
-    framework_mode: bool,
     install_seams: bool = True,
     audit_policy: object | None = None,
 ) -> Iterator[EngineWorkerHandle]:
@@ -596,7 +616,6 @@ def isolated_engine_session(
             _egress_is_blocked(),
             _process_sandbox_is_hardened(),
         ))
-        or (framework_mode and not active)
         or (active and not install_seams)
     ):
         raise RuntimeError("isolated engine session lacks its trusted OCI fence")
@@ -626,8 +645,10 @@ def isolated_engine_session(
     prefills = []
     # Only timed lifetimes run the pair; the eager audit and the seamless pristine reference run one engine.
     if pd_engine.is_pair(kwargs) and audit_policy is None and install_seams:
+        routing_policy = kwargs["pd_prefill"].get("routing_policy")
         prefills, kwargs, role_env = pd_engine.split(kwargs, {})
     else:
+        routing_policy = None
         kwargs, role_env = pd_engine.colocated(kwargs, {})
     tp = int(kwargs.get("tp_size", 1) or 1)
     companions: list = []
@@ -635,7 +656,6 @@ def isolated_engine_session(
         session_environment = build_session_environment(
             active=active,
             bundle_path=bundle_path,
-            framework_mode=framework_mode,
             receipt_dir=receipt_dir,
             audit_policy=audit_policy,
             install_seams=install_seams,
@@ -671,25 +691,32 @@ def isolated_engine_session(
                 _bind_engine_boot(plan, slice(server["base_gpu_id"], server["base_gpu_id"] + prefill_tp))
                 companions.append(pd_engine.start_prefill(server, server_env))
             _bind_engine_boot(plan, slice(decode_gpu, None) if prefills or lone else slice(0, tp))
+            prefill_processes = tuple(companions)
+            decode_pid = None
             with _environment(**role_env):
-                engine = sgl.Engine(**kwargs)
+                if routing_policy:
+                    engine, decode_pid = pd_engine._gateway(routing_policy, prefills, kwargs, companions)
+                else:
+                    engine = sgl.Engine(**kwargs)
             active_receipts: list[dict] = []
             expected_slots: list[str] = []
             expected_members = pinned if prefills else tp
             eager_members: frozenset[int] = frozenset()
             try:
-                _report_running_engine_failures(engine)
+                if not routing_policy:
+                    _report_running_engine_failures(engine)
                 dp = int(kwargs.get("dp_size") or 1)
-                running = ((None, decode_gpu if prefills or lone else 0, tp, dp),)
-                if prefills:
+                running = ((decode_pid, decode_gpu if prefills or lone else 0, tp, dp),)
+                if prefills and not routing_policy:
                     routes = [(pd_engine.wait_ready(process, server, time.monotonic() + 1800),
                                server["disaggregation_bootstrap_port"])
                               for process, (server, _) in zip(companions, prefills, strict=True)]
                     prefill_dp = int(prefills[0][0].get("dp_size") or 1)
                     engine = pd_engine.PrefillDecodePair(engine, routes, companions, prefill_dp, dp)
-                    eager_members = frozenset(pid for process in companions for pid in _process_tree(process.pid))
+                if prefills:
+                    eager_members = frozenset(pid for process in prefill_processes for pid in _process_tree(process.pid))
                     running = (*((process.pid, server["base_gpu_id"], prefill_tp, prefill_dp)
-                                 for process, (server, _) in zip(companions, prefills)), *running)
+                                 for process, (server, _) in zip(prefill_processes, prefills)), *running)
                 _pin_engine_processes(plan, pinned=pinned, lane_engines=servers + 1 if servers else 1,
                                       first=servers if lone else 0, engines=running)
                 if active:

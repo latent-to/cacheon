@@ -102,7 +102,7 @@ An unknown selector stays unclaimed and is subject to the ordinary intake SLA.
 | `entry` | yes | Entry callable name |
 | `variant` | conditional | Capability variant; required on every row when a slot repeats |
 | `prepare` | no | `prepare(module)`, called once per bound node |
-| `setup` | development only | Legacy parser/direct-framework diagnostic hook; every registered component target forbids it |
+| `setup` | refused | Retired engine-wide hook; every target forbids it and the loader refuses a bundle that declares it |
 | `dtypes` | no | Declared dtype capability domain; an empty array adds no dtype restriction |
 | `architectures` | no | Declared architecture capability domain; an empty array adds no architecture restriction |
 | `metadata` | no | Eligibility/capability JSON within the bundle |
@@ -127,9 +127,10 @@ two rows may overlap, and the bundle resolves to `forward_pass` whether or not
 `[competition]` names it. A `tree_cache` row's `entry(cache)` returns the cache class.
 
 For prepare/forward slots, `prepare` names the registered one-time weight
-transformation while `entry` names the runtime call. `setup` is a legacy direct
-framework hook and every current component target forbids it, so new
-competitive manifests should not use it.
+transformation while `entry` names the runtime call. `setup` is a retired
+engine-wide hook: no target admits it and the loader refuses it. A bundle that
+changes the scheduler names the [queue order](../architecture/slot-contract.md#the-queue-order) or the
+[listed decisions](../architecture/slot-contract.md#engine-objects) it replaces.
 
 ### Variants
 

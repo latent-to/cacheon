@@ -137,10 +137,10 @@ class RankExecution:
         )
 
 
-def eager_slots() -> frozenset[str]:
-    """Registered slots SGLang serves outside its CUDA graph: the scheduler's prefix cache."""
+def eager_slots(slots) -> frozenset[str]:
+    """Those of ``slots`` SGLang serves outside its CUDA graph: the scheduler's cache and engine objects."""
 
-    from cacheon.integrations.sglang_cache import ADDRESS
+    from cacheon.seams import scheduler_address
 
-    return frozenset({ADDRESS})
+    return frozenset(slot for slot in slots if isinstance(slot, str) and scheduler_address(slot))
 
