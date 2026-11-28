@@ -129,9 +129,9 @@ class ResidentCrossoverPlan:
         ):
             raise CrossoverRuntimeError("resident arms differ outside contribution identity")
         hardware = self.candidate.launch.hardware
-        # Policies 20-22 time a prefill/decode pair over the whole lane, policy 23 one engine; nothing else may.
+        # Policies 20-22 time a prefill/decode pair over the whole lane, policy 23+ one engine; nothing else may.
         kwargs = dict(self.candidate.session_plan.engine_config.engine_kwargs)
-        if (pd_engine.is_pair(kwargs) == (self.policy.version == 23)
+        if (pd_engine.is_pair(kwargs) == (self.policy.version >= 23)
                 or hardware.visible_gpu_count != pd_engine.lane_width(hardware.tp_size, kwargs)
                 or _expected_lane_digest(self.baseline) != _expected_lane_digest(self.candidate)):
             raise CrossoverRuntimeError("stock and candidate do not share one whole lane")

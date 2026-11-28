@@ -114,9 +114,29 @@ def test_api_revenue_ideal_cache_billing_and_policy24_gates():
                              prices=prices, itl_bound_s=0.5, decode_p10_floors={4: 90.0})
     assert v_tail.decision is SpeedStageDecision.FAIL and "service_tail_floor_not_met" in v_tail.detail
 
-    # Zero effective revenue returns inf cost (and FAIL verdict) rather than raising.
-    zero_turn = TurnRecord("s0", "main", 0, base, base, base + 5_000_000_000, base + 15_000_000_000, 10_000, 200, "ok", 0, 5_000_000_000, 9_000)
-    cost, usd_hr = effective_revenue_summary([zero_turn], 15.0, prices=prices, contract=contract, gpus=2)
+    # Candidate breaching TTFT p95 (> 2.0s) fails service_ttft_not_met.
+    slow_ttft = tuple(
+        LoadRead(
+            "candidate", 1, "lane0", 4,
+            tuple(
+                TurnRecord(f"s{i}", "main", ord_, (b + 1) * 100_000_000_000 + ord_ * 5_000_000_000,
+                           (b + 1) * 100_000_000_000 + ord_ * 5_000_000_000,
+                           (b + 1) * 100_000_000_000 + ord_ * 5_000_000_000 + 2_500_000_000,
+                           (b + 1) * 100_000_000_000 + ord_ * 5_000_000_000 + 3_500_000_000,
+                           10_000, 200, "ok", 0, 100_000_000, 0 if ord_ == 0 else 9_000)
+                for i in range(4) for ord_ in (0, 1)
+            ),
+        )
+        for b in (6, 7)
+    )
+    v_ttft = reference_grade(slow_ttft, stock, contract, work, window_noise=0.01, boot_noise=0.01, error_rate=0.05,
+                             boots=2, attainment_tolerance=0.1, attainment_margin=0.05,
+                             prices=prices, itl_bound_s=0.5, decode_p10_floors={4: 90.0})
+    assert v_ttft.decision is SpeedStageDecision.FAIL and "service_ttft_not_met" in v_ttft.detail
+
+    # Zero completed revenue returns inf cost (and FAIL verdict) rather than raising.
+    err_turn = TurnRecord("s0", "main", 0, base, base, base + 5_000_000_000, base + 15_000_000_000, 10_000, 200, "error", 0, 5_000_000_000, 9_000)
+    cost, usd_hr = effective_revenue_summary([err_turn], 15.0, prices=prices, contract=contract, gpus=2)
     assert cost == float("inf") and usd_hr == 0.0
 
     # Historical Policy 21 omits new Policy 24 optional wire keys.
@@ -469,3 +489,153 @@ def test_reference_request_preserves_per_role_input_ids_orq4():
     assert tuple(r.input_ids for r in req.prompts[0].roles) == ((1, 2, 3), (1, 2, 4), (1, 2, 5))
     decoded = decode_reference_request(encode_reference_request(req))
     assert decoded == req
+
+
+def test_ore3_teacher_entropy_protocol_and_martingale_scoring():
+    import hashlib
+    from cacheon.eval.calibration import (
+        CalibrationContext, CalibrationControl, CalibrationManifest, MetricCalibration, SpeedCalibration,
+    )
+    from cacheon.eval.reference_protocol import (
+        ENTROPY_EVIDENCE_MAGIC, ReferenceEvidence, ReferencePromptEvidence, ReferencePromptInput,
+        ReferenceRequest, ReferenceRoleEvidence, ReferenceRoleInput, ReferenceTokenEvidence,
+        decode_reference_evidence, encode_reference_evidence, request_sha256,
+    )
+    from cacheon.eval.reference_quality import (
+        HiddenTaskEvidence, PromptQualityEvidence, ReferenceQualityEvidence, RolloutQualityEvidence,
+        TeacherNLLEvidence, score_reference_quality,
+    )
+
+    roles = (
+        ReferenceRoleInput((10, 11), ((), ()), (1, 2, 3)),
+        ReferenceRoleInput((12, 13), ((), ()), (1, 2, 4)),
+        ReferenceRoleInput((14, 15), ((), ()), (1, 2, 5)),
+    )
+    p_dig = "c" * 64
+    req = ReferenceRequest("1" * 32, "a" * 64, "b" * 64, "2" * 32, "3" * 32, 0, 2, 0,
+                           (ReferencePromptInput(p_dig, "", roles, (1, 2, 3)),))
+    assert req.evidence_magic == ENTROPY_EVIDENCE_MAGIC
+    ev_roles = tuple(
+        ReferenceRoleEvidence((
+            ReferenceTokenEvidence(-0.5, 10, (), 0.52),
+            ReferenceTokenEvidence(-0.4, 11, (), 0.41),
+        ))
+        for _ in range(3)
+    )
+    p_sha = hashlib.sha256(req.prompts[0].input_bytes).hexdigest()
+    ev = ReferenceEvidence("1" * 32, "a" * 64, "b" * 64, request_sha256(req), "2" * 32, "3" * 32, 0, 100,
+                           (ReferencePromptEvidence(p_dig, 3, p_sha, ev_roles),))
+    wire = encode_reference_evidence(ev, req)
+    assert wire[:4] == ENTROPY_EVIDENCE_MAGIC
+    assert decode_reference_evidence(wire, req) == ev
+
+    # Martingale entropy_residual tests candidate D = mean_nll - mean_H directly against 0,
+    # invariant to baseline branching (here baseline mean_nll=0.90 vs candidate mean_nll=0.30).
+    d = "a" * 64
+    ctx = CalibrationContext(d, d, d, d, d, d, d, d, d, d)
+    ctrls = (
+        CalibrationControl("negative", "1" * 64, d, "FAIL"),
+        CalibrationControl("positive", "2" * 64, d, "PASS"),
+        CalibrationControl("stock", "3" * 64, d, "PASS"),
+    )
+    ent_metric = MetricCalibration("entropy_residual", "lower", "0.05", "0.05", two_sided=True)
+    manifest = CalibrationManifest(
+        context=ctx, algorithm_id="teacher-familywise-upper-bound-v1", status="frozen",
+        speed=SpeedCalibration("0.01", "2", "0.02"), quality_metrics=(ent_metric,),
+        familywise_z="2", raw_evidence_digest=d, seed_digests=("1" * 64, "2" * 64, "3" * 64), controls=ctrls,
+    )
+
+    def _ev(cand_nll: str, cand_ent: str) -> ReferenceQualityEvidence:
+        def _roll(nll: str, ent: str) -> RolloutQualityEvidence:
+            return RolloutQualityEvidence(
+                TeacherNLLEvidence(10, f"{float(nll) * 10:g}", nll, 0, "0", f"{float(ent) * 10:g}"),
+                None, HiddenTaskEvidence("0", 0),
+            )
+        prompts = tuple(
+            PromptQualityEvidence(f"{i:064x}", _roll("0.9", "0.9"), _roll(cand_nll, cand_ent), _roll("0.5", "0.5"), 5, 10)
+            for i in range(1, 5)
+        )
+        return ReferenceQualityEvidence(
+            reference_manifest_digest=d, calibration_digest=manifest.digest,
+            raw_evidence_digest=d, prompts=prompts, hidden_tasks_present=False,
+        )
+
+    assert score_reference_quality(_ev("0.3", "0.3"), calibration=manifest, expected_context=ctx).decision == "PASS"
+    sharp = score_reference_quality(_ev("0.2", "0.3"), calibration=manifest, expected_context=ctx)
+    assert sharp.decision == "FAIL" and "entropy_residual.lower_bound" in sharp.failed_metrics
+    corrupt = score_reference_quality(_ev("0.42", "0.3"), calibration=manifest, expected_context=ctx)
+    assert corrupt.decision == "FAIL" and "entropy_residual" in corrupt.failed_metrics
+
+
+def test_policy24_single_engine_crossover_plan_accepts_version_24(tmp_path: Path):
+    """Policy 24 shares Policy 23's single-engine lane topology (not PD pair); regression for == 23 check."""
+    from cacheon.eval.agent_replay import AgentReplayPlan
+    from cacheon.eval.api_revenue import ApiPriceTable
+    from cacheon.eval.crossover_runtime import ResidentArmPlan, ResidentCrossoverPlan, ResidentSpeedPolicy
+    from cacheon.eval.engine_launch import (
+        EngineLaunchSpec, LogicalHardwareSpec, NativeBuildSpec, PhysicalHardwareBinding, TrustedLaunchBinding,
+        native_compiler_policy_digest, native_patcher_digest, native_toolchain_digest,
+    )
+    from cacheon.eval.goodput_runtime import GoodputPolicy
+    from cacheon.eval.oci_backend import RuntimePreflightReceipt, expected_runtime_preflight
+    from cacheon.eval.oci_outer_session import SessionExecutionPlan
+    from cacheon.eval.oci_session_protocol import CONTAINER_MODEL_PATH, EngineSessionConfig
+    from cacheon.eval.service_capacity import ServiceContract
+    from cacheon.stack_identity import canonical_digest
+
+    sdir = tmp_path / "sessions"; sdir.mkdir()
+    body = json.dumps({"id": "s0", "turns": [{"prompt_ids": [1, 2], "out_len": 4, "asst_len": 4, "think_time": 0.0}]}, separators=(",", ":")).encode()
+    (sdir / "000_s0.json").write_bytes(body)
+    manifest_p = tmp_path / "manifest.json"
+    manifest_p.write_text(json.dumps({
+        "dataset": "t", "revision": "v1", "loader": "multi_turn_tokens", "rules": {"seed": 1}, "rejected": {},
+        "dir": "sessions", "files": 1, "order": "sorted filename = sealed order",
+        "sha256_of_named_files": hashlib.sha256(b"000_s0.json" + body).hexdigest(),
+        "sessions": [{"id": "s0", "n_main_total": 1, "start": 0, "k": 1, "groups": 0, "inner": 0,
+                      "cold_prefix": 2, "peak": 6, "new_input": 2, "reused_input": 0, "output": 4,
+                      "inner_input": 0, "inner_output": 0, "recorded_span_s": 0.0}],
+    }))
+    tok_dir = tmp_path / "tok"; tok_dir.mkdir()
+    aiperf = tmp_path / "aiperf"; aiperf.write_text("#!/bin/sh\n"); aiperf.chmod(0o755)
+    tree_dir = tmp_path / "tree"; tree_dir.mkdir()
+    d = "a" * 64
+    contract = ServiceContract(100.0, 2.0, 0.8)
+    replay = AgentReplayPlan(manifest_p, (1,), aiperf, tok_dir, tmp_path / "rep", contract, "incumbent", 1, "p")
+    cfg = EngineSessionConfig(CONTAINER_MODEL_PATH, "bfloat16", False, "fa4", False, 0.85, "error", 64, 2, "auto", False)
+    hw = LogicalHardwareSpec(2, "sm90", "nvlink-sxm5", d, 2, 2, 1, d)
+    phw = PhysicalHardwareBinding(("0", "1"), "sm90", "nvlink-sxm5", d, 2, 2, 1, d)
+    from cacheon.compat import PINNED_SGLANG
+    from cacheon.eval.runtime_preflight import HOST_RECEIPT_SCHEMA
+    pf = RuntimePreflightReceipt(
+        HOST_RECEIPT_SCHEMA, "img@sha256:" + d, d, d, ("img@sha256:" + d,),
+        "linux/amd64", d, "/usr/bin/docker", 65534, 65534, PINNED_SGLANG, "cacheon", "0.1.0", d,
+        10, 1024, "CPython", "/usr/bin/python3.12", "3.12.0", "cp312", "linux", "x86_64",
+        (("sglang", PINNED_SGLANG),), "libcudart.so", "", "void", d,
+    )
+    nb = NativeBuildSpec(
+        d, pf.image_digest, pf.platform_digest, pf.worker_distribution_digest,
+        native_toolchain_digest(image_digest=pf.image_digest, platform_digest=pf.platform_digest),
+        native_patcher_digest(worker_distribution_digest=pf.worker_distribution_digest),
+        native_compiler_policy_digest(
+            image_digest=pf.image_digest, worker_distribution_digest=pf.worker_distribution_digest,
+            dependency_policy_digest=d, target_architecture="sm90",
+        ),
+        "sm90", d,
+    )
+    launch = EngineLaunchSpec(d, d, d, d, d, pf.image_digest, pf.platform_digest, d, d, d, d, d, d, cfg.digest, d, d, nb.digest, hw)
+    binding = TrustedLaunchBinding(tree_dir, d, nb, pf, phw)
+    splan = SessionExecutionPlan(
+        launch_digest=launch.digest, expected_engine_config_digest=cfg.digest, engine_config=cfg,
+        expected_preflight=expected_runtime_preflight(launch, pf), prompt_batches=(("hi",), ("hi",)),
+        warmup_count=1, conditioning_count=1, max_new_tokens=4, top_logprobs_num=0, temperature=1.0,
+        expected_prompt_tokens=1, measure_phase_latency=True, replay=replay,
+        batch_max_new_tokens=(4, 4), batch_expected_prompt_tokens=(1, 1),
+    )
+    arm = ResidentArmPlan(launch, binding, splan, d, d, d)
+    gp = GoodputPolicy(
+        contract, 1.0, 0.01, 1.0, 0.0, error_rate=0.125, boot_noise=0.01, attainment_pooled=1.0,
+        decode_floor=1.0, decode_floors=((1, 100.0),), api_prices=ApiPriceTable(0.075, 0.015, 0.30),
+    )
+    rsp = ResidentSpeedPolicy(3600, 0.0, 2.0, 0.02, d, d, version=24, goodput=gp)
+    plan = ResidentCrossoverPlan(canonical_digest("test", {"c": 1}), arm, arm, rsp)
+    assert plan.policy.version == 24

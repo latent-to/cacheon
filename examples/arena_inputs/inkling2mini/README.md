@@ -16,7 +16,7 @@ TP2 with expert parallelism 2 and DSpark speculative decoding. There is no
 prefill/decode split, because SGLang's Inkling 2 DSpark worker refuses disaggregation.
 `engine-config.json` seals FA4 attention, torch BF16 GEMMs, 128-token pages, a
 300K-token context, 64 running requests, 32,768-token prefill chunks
-(`chunked_prefill_size` and `max_prefill_tokens`), 93% of device memory for
+(`chunked_prefill_size` and `max_prefill_tokens`, avoiding SGLang's SWA eviction cliff on 65K+ prompts), 93% of device memory for
 weights and cache, and a sliding-window pool at 5% of the full-attention pool's
 tokens (Inkling's default is 10%). It also sizes the hierarchical cache at 1×
 the device pool (~205 GiB per TP2 lane, 410 GiB per NUMA socket so all four

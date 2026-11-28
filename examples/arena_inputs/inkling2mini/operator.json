@@ -5,10 +5,10 @@
   "model_profile_key": "Inkling-2-Mini",
   "tensor_parallel_size": 2,
   "replay_load": [6, 8],
-  "load_sessions": {"6": 18, "8": 115},
-  "decode_floors": {"6": "150", "8": "120"},
-  "decode_p10_floors": {"6": "75", "8": "60"},
-  "itl_bound_s": "2.2",
+  "load_sessions": {"6": 48, "8": 115},
+  "decode_floors": {"6": "150", "8": "95"},
+  "decode_p10_floors": {"6": "45", "8": "32"},
+  "itl_bound_s": "5.5",
   "api_prices": {
     "input_per_m": "0.075",
     "cached_input_per_m": "0.015",
@@ -16,9 +16,8 @@
   },
   "service_contract": {
     "decode_floor_tps": "100",
-    "ttft_bound_s": "2",
-    "attainment": "0.8",
-    "max_itl_s": "0.5"
+    "ttft_bound_s": "3",
+    "attainment": "0.8"
   },
   "load_margin": "0.03",
   "steady_span": "0.5",
@@ -38,9 +37,9 @@
     "select_count": 32,
     "nll_tail_threshold": "5",
     "limits": {
-      "mean_nll": {
-        "stock_envelope": "0.4",
-        "candidate_delta": "0.22",
+      "entropy_residual": {
+        "stock_envelope": "0.12",
+        "candidate_delta": "0.065",
         "two_sided": true
       },
       "tail_excess_nll": {

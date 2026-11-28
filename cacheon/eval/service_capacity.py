@@ -19,6 +19,7 @@ from cacheon.eval.api_revenue import (
     decode_p10,
     effective_revenue_summary,
     itl_p99_s,
+    ttft_p95_s,
 )
 from cacheon.eval.speed_verdict import SpeedStageDecision
 
@@ -423,6 +424,12 @@ def reference_grade(
             gap = itl_p99_s([read for read in candidate if read.load == load])
             if gap is None or gap > itl_bound_s:
                 itl_breach.append((load, gap))
+    ttft_breach = []
+    if prices is not None:
+        for load in sorted(lifetimes[0][0]):
+            t95 = ttft_p95_s([read for read in candidate if read.load == load])
+            if t95 > contract.ttft_bound_s:
+                ttft_breach.append((load, t95))
     if below:
         load, rate, floor = below[0]
         # One load keeps the detail its historical verdicts were sealed with.
@@ -434,6 +441,11 @@ def reference_grade(
         decision, detail = SpeedStageDecision.FAIL, (
             f"service_tail_floor_not_met: candidate decode p10 {rate:.1f} tok/s at {load} sessions "
             f"is below the sealed tail floor {floor:.4g}")
+    elif ttft_breach:
+        load, t95 = ttft_breach[0]
+        decision, detail = SpeedStageDecision.FAIL, (
+            f"service_ttft_not_met: candidate TTFT p95 {t95:.3f} s at {load} sessions "
+            f"exceeds the sealed bound {contract.ttft_bound_s:.4g} s")
     elif itl_breach:
         load, gap = itl_breach[0]
         observed = "missing" if gap is None else f"{gap:.3f} s"

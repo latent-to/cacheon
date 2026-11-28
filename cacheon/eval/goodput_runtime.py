@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 
-from cacheon.eval.api_revenue import ApiPriceTable, decode_p10, itl_p99_s, mean_quality_weight
+from cacheon.eval.api_revenue import ApiPriceTable, decode_p10, itl_p99_s, ttft_p95_s
 from cacheon.eval.continuation_codec import ContinuationCodec
 from cacheon.eval.service_capacity import LoadRead, ServiceContract, ServiceVerdict, fixed_work_rate
 from cacheon.eval.scoring import CrossoverRuntimeError, SpeedupVerdict, marginal_workload_digest
@@ -501,13 +501,13 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
                     f"{plan.policy.goodput.itl_bound_s:.4g} s"
                 )
     if plan.policy.goodput.api_prices is not None:
+        bound = plan.policy.goodput.contract.ttft_bound_s
         for load in loads:
             load_reads = tuple(read for row in executions for read in row.session.replay_reads if read.load == load)
-            mean_w = mean_quality_weight(load_reads, plan.policy.goodput.contract)
-            if mean_w <= 0.0:
+            t95 = ttft_p95_s(load_reads)
+            if t95 > bound:
                 raise CrossoverRuntimeError(
-                    f"stock reference mean API quality weight {mean_w:.3f} at {load} sessions is zero: "
-                    f"the sealed load sits below the API revenue floor"
+                    f"stock reference TTFT p95 {t95:.3f} s at {load} sessions exceeds sealed bound {bound:.4g} s"
                 )
     return executions
 

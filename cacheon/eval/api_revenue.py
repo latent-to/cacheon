@@ -1,10 +1,11 @@
-"""Commercial API-price effective revenue and tail latency metrics for replay grading.
+"""Commercial API-price list revenue and tail latency metrics for replay grading.
 
 Every turn's list value uses the validator-sealed ideal prefix-cache overlap, never the
 candidate's self-reported cache hits, so evicting prefixes can never inflate billable
-input revenue. Per-turn continuous weights discount turns that fall below the sealed API
-decode, TTFT, or streaming inter-token latency (ITL) promises so batch-tier degradation,
-tail starvation, and oversized-chunk streaming freezes lose revenue directly.
+input revenue. Policy 24 scores unweighted ideal-cached list revenue per GPU-hour while
+enforcing per-user decode p50, tail decode p10, TTFT p95, and host-clocked streaming ITL
+p99 as hard per-load gates (measuring continuous quality weighting on 4×H200 stock boots
+on 2026-11-28 tripled boot SD from 0.64% to 1.98% and inflated bundle ratios by +16–21%).
 """
 
 from __future__ import annotations
@@ -12,9 +13,6 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-
-# Default floor of the linear per-turn decode speed ramp as a share of the API speed promise.
-DECODE_RAMP_FLOOR = 0.6
 
 
 def _finite_nonneg(value: object) -> bool:
@@ -76,33 +74,6 @@ def turn_list_value(record, prices: ApiPriceTable, *, ideal_cached: int | None =
     ) / 1e6
 
 
-def turn_quality_weight(
-    record, contract, *, decode_ramp_floor: float = DECODE_RAMP_FLOOR
-) -> float:
-    """Smooth [0, 1] API-promise weight across per-user decode speed, TTFT, and streaming ITL."""
-    if record.status != "ok":
-        return 0.0
-    rate = record.decode_tps
-    if rate is None:
-        w_dec = 1.0
-    else:
-        low = decode_ramp_floor * contract.decode_floor_tps
-        span = contract.decode_floor_tps - low
-        w_dec = 1.0 if span <= 0 else min(1.0, max(0.0, (rate - low) / span))
-    t_bound = contract.ttft_bound_s
-    w_ttft = min(1.0, max(0.0, (2.0 * t_bound - record.ttft_s) / t_bound))
-    itl_bound = getattr(contract, "max_itl_s", 0.0)
-    if itl_bound > 0.0 and record.output_tokens > 1:
-        if record.max_itl_ns is None:
-            w_itl = 0.0
-        else:
-            gap_s = record.max_itl_ns / 1e9
-            w_itl = min(1.0, max(0.0, (3.0 * itl_bound - gap_s) / (2.0 * itl_bound)))
-    else:
-        w_itl = 1.0
-    return w_dec * w_ttft * w_itl
-
-
 def _percentile(values: Sequence[float], q: float) -> float:
     ordered = sorted(values)
     return ordered[min(len(ordered) - 1, max(0, int(q * (len(ordered) - 1))))]
@@ -114,6 +85,14 @@ def decode_p10(reads: Sequence[object]) -> float:
     if not rates:
         raise ValueError("reads hold no turn with a per-user decode rate")
     return _percentile(rates, 0.10)
+
+
+def ttft_p95_s(reads: Sequence[object]) -> float:
+    """95th-percentile time-to-first-token (seconds) across every turn of ``reads``."""
+    ttfts = [r.ttft_s for read in reads for r in read.records]
+    if not ttfts:
+        raise ValueError("reads hold no turn records")
+    return _percentile(ttfts, 0.95)
 
 
 def itl_p99_s(reads: Sequence[object]) -> float | None:
@@ -129,40 +108,30 @@ def itl_p99_s(reads: Sequence[object]) -> float | None:
     return _percentile(gaps, 0.99)
 
 
-def mean_quality_weight(reads: Sequence[object], contract) -> float:
-    """Value-unweighted mean API-promise weight across all turns of ``reads``."""
-    records = [r for read in reads for r in read.records]
-    if not records:
-        return 0.0
-    return math.fsum(turn_quality_weight(r, contract) for r in records) / len(records)
-
-
 def effective_revenue_summary(
-    records: Sequence[object], duration_s: float, *, prices: ApiPriceTable, contract, gpus: int = 1
+    records: Sequence[object], duration_s: float, *, prices: ApiPriceTable, contract=None, gpus: int = 1
 ) -> tuple[float, float]:
-    """Return ``(cost_s_per_effective_usd, effective_usd_per_gpu_hr)`` over ``records``.
+    """Return ``(cost_s_per_usd, usd_per_gpu_hr)`` over completed turns of ``records``.
 
-    ``cost_s_per_effective_usd`` is ``math.inf`` when effective revenue is zero so the caller
-    can classify a stalled or batch-degraded candidate as FAIL rather than an infra error.
+    Revenue bills each completed turn at its validator-sealed ideal-cached list price without
+    per-turn quality weighting; decode p50, tail decode p10, TTFT p95, and streaming ITL p99
+    are enforced as separate hard gates. ``cost_s_per_usd`` is ``math.inf`` when zero turns
+    completed cleanly so failed engines classify as FAIL rather than an infra error.
     """
     if duration_s <= 0 or gpus < 1:
         raise ValueError("effective revenue span must be positive")
-    effective_usd = math.fsum(
-        turn_list_value(r, prices) * turn_quality_weight(r, contract) for r in records
-    )
-    if effective_usd <= 0.0:
+    list_usd = math.fsum(turn_list_value(r, prices) for r in records if r.status == "ok")
+    if list_usd <= 0.0:
         return math.inf, 0.0
-    usd_per_gpu_hr = effective_usd / (gpus * (duration_s / 3600.0))
-    return duration_s / effective_usd, usd_per_gpu_hr
+    usd_per_gpu_hr = list_usd / (gpus * (duration_s / 3600.0))
+    return duration_s / list_usd, usd_per_gpu_hr
 
 
 __all__ = [
     "ApiPriceTable",
-    "DECODE_RAMP_FLOOR",
     "decode_p10",
     "effective_revenue_summary",
     "itl_p99_s",
-    "mean_quality_weight",
+    "ttft_p95_s",
     "turn_list_value",
-    "turn_quality_weight",
 ]

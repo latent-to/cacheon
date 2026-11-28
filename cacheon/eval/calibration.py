@@ -48,6 +48,7 @@ _METRIC_DIRECTIONS = {
     "coverage_dev": "lower",
     "mean_nll": "lower",
     "tail_excess_nll": "lower",
+    "entropy_residual": "lower",
     "tail_rate": "lower",
     "task_score": "higher",
     "topk_kl": "lower",

@@ -15,11 +15,18 @@ def _read(path, threshold):
     prompts = {}
     for row in json.loads(raw):
         key = row["key"]
-        nll = [-token[0] for token in row["tok"]]
+        toks = row["tok"]
+        nll = [-token[0] for token in toks]
         if key in prompts or not nll or any(not math.isfinite(x) or x < 0 for x in nll):
             raise ValueError(f"{path}: malformed teacher control")
-        prompts[key] = {"tokens": len(nll), "mean_nll": statistics.mean(nll),
-                        "tail_excess_nll": statistics.mean(max(0, x - threshold) for x in nll)}
+        entry = {"tokens": len(nll), "mean_nll": statistics.mean(nll),
+                 "tail_excess_nll": statistics.mean(max(0, x - threshold) for x in nll)}
+        if len(toks[0]) >= 3:
+            ent = [token[2] for token in toks]
+            if any(not math.isfinite(x) or x < 0 for x in ent):
+                raise ValueError(f"{path}: malformed teacher entropy")
+            entry["entropy_residual"] = statistics.mean(x - h for x, h in zip(nll, ent))
+        prompts[key] = entry
     return prompts, hashlib.sha256(raw).hexdigest()
 
 
@@ -82,7 +89,9 @@ def measure(files, policy, speed_witness):
         for offset in (0, size):
             bounds = {}
             for name in policy["limits"]:
-                deltas = [values[key][name] - reference[key][name] for key in order[offset:offset + size]]
+                deltas = ([values[key][name] for key in order[offset:offset + size]]
+                          if name == "entropy_residual" else
+                          [values[key][name] - reference[key][name] for key in order[offset:offset + size]])
                 scored = list(map(abs, deltas)) if arm == "stock" else deltas
                 low, high = _interval(scored, z)
                 limit = float(policy["limits"][name]["stock_envelope" if arm == "stock" else "candidate_delta"])

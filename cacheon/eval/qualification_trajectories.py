@@ -231,7 +231,7 @@ def create_controls(value, reference, candidate, candidate_directory, candidate_
             for ids, batch in zip(role_ids, role_batches):
                 if (hashlib.sha256(struct.pack(f">{len(ids)}I", *ids)).hexdigest(),) != batch.input_ids_sha256:
                     raise QualificationError("selected replay input bytes changed after execution")
-            per_role = replay.feedback_turns and len(set(role_ids)) > 1
+            per_role = replay.feedback_turns
             roles = tuple(
                 ReferenceRoleInput(
                     tuple(batch.evidence.prompts[0].output_ids),
@@ -338,7 +338,9 @@ def _rollout(
     )):
         if raw_position:
             raise owner.QualificationRunnerError("rollout support differs from its T request")
+        ent_val = getattr(teacher, "teacher_entropy", None)
+        ent = None if ent_val is None else owner.target_nll_from_f32(-ent_val)
         tokens.append(owner.RawTokenEvidence(
-            position, output_id, owner.target_nll_from_f32(teacher.target_logprob), None, None,
+            position, output_id, owner.target_nll_from_f32(teacher.target_logprob), None, None, ent,
         ))
     return owner.RawRolloutEvidence(tuple(tokens), ())

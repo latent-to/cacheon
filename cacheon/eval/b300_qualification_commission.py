@@ -512,10 +512,10 @@ def _compose_locked(
         inputs, calibration_context, screen_lane
     )
     if float(session_block["temperature"]) == 1.0 and not any(
-        m.name == "mean_nll" and m.two_sided for m in calibration_manifest.quality_metrics
+        m.name in {"mean_nll", "entropy_residual"} and m.two_sided for m in calibration_manifest.quality_metrics
     ):
         raise B300QualificationCommissionError(
-            "temperature-1 replay requires two-sided mean_nll calibration to block greedy/sharpening cheats"
+            "temperature-1 replay requires two-sided mean_nll or entropy_residual calibration"
         )
     evidence_root = _private_root(inputs.root / "qualification-evidence")
     materialization_root = _private_root(inputs.root / "qualification-candidates")

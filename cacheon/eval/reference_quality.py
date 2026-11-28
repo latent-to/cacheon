@@ -42,7 +42,7 @@ RAW_QUALITY_DOMAIN = "reference-quality.raw"
 RAW_QUALITY_SCHEMA = "cacheon.reference-quality-raw.v1"
 SUPPORT_POLICY_ID = "retained-support-f32-q18.v1"
 QUALITY_DECISIONS = frozenset({"PASS", "FAIL", "NO_DECISION"})
-_METRICS = frozenset({"mean_nll", "worst_nll", "tail_rate", "tail_excess_nll",
+_METRICS = frozenset({"mean_nll", "worst_nll", "tail_rate", "tail_excess_nll", "entropy_residual",
                       "topk_kl", "argmax_rate", "coverage_dev", "task_score"})
 _MAX_PROMPTS = 4096
 _TAIL_EVENT_PROMPTS = 4
@@ -145,6 +145,7 @@ class TeacherNLLEvidence(_Record):
     nll_max: str
     tail_count: int
     tail_excess_sum: str | None = dc_field(default=None, metadata={"wire_optional": True})
+    entropy_sum: str | None = dc_field(default=None, metadata={"wire_optional": True})
     def __post_init__(self) -> None:
         object.__setattr__(self, "token_count", _integer(self.token_count, "token_count", 1, _MAX_TOKENS))
         object.__setattr__(self, "nll_sum", _decimal(self.nll_sum, "nll_sum"))
@@ -154,6 +155,8 @@ class TeacherNLLEvidence(_Record):
             raise ReferenceQualityError("NLL sum exceeds token_count * max")
         if self.tail_excess_sum is not None:
             _decimal(self.tail_excess_sum, "tail excess sum", decimal_value(self.nll_sum))
+        if self.entropy_sum is not None:
+            _decimal(self.entropy_sum, "entropy sum")
     @property
     def mean(self) -> float:
         return float(_ratio(decimal_value(self.nll_sum), self.token_count))
@@ -165,8 +168,9 @@ class TeacherNLLEvidence(_Record):
         return self.tail_count / self.token_count
     @classmethod
     def from_dict(cls, value: object) -> "TeacherNLLEvidence":
-        if isinstance(value, Mapping) and "tail_excess_sum" not in value:
-            value = {**value, "tail_excess_sum": None}
+        if isinstance(value, Mapping):
+            value = {**({"tail_excess_sum": None} if "tail_excess_sum" not in value else {}),
+                     **({"entropy_sum": None} if "entropy_sum" not in value else {}), **value}
         return _load(cls, value, "teacher NLL")
 @dataclass(frozen=True)
 class RolloutKLEvidence(_Record):
@@ -453,10 +457,13 @@ class RawTokenEvidence(_Record):
     target_nll: str
     teacher_topk: NormalizedTopKDistribution | None
     rollout_topk: NormalizedTopKDistribution | None
+    teacher_entropy: str | None = dc_field(default=None, metadata={"wire_optional": True})
     def __post_init__(self) -> None:
         object.__setattr__(self, "position", _integer(self.position, "position", 0, _MAX_TOKENS - 1))
         object.__setattr__(self, "token_id", _integer(self.token_id, "token_id"))
         object.__setattr__(self, "target_nll", _decimal(self.target_nll, "target NLL", _MAX_NLL))
+        if self.teacher_entropy is not None:
+            object.__setattr__(self, "teacher_entropy", _decimal(self.teacher_entropy, "teacher entropy", _MAX_NLL))
         # Both distributions are absent together only in the teacher-NLL-only
         # mode (topk_width 0): no retained candidate top-k exists, so neither
         # a rollout nor a comparison teacher distribution may be fabricated.
@@ -469,6 +476,8 @@ class RawTokenEvidence(_Record):
                 raise ReferenceQualityError("teacher and rollout top-k support differs")
     @classmethod
     def from_dict(cls, value: object) -> "RawTokenEvidence":
+        if isinstance(value, Mapping) and "teacher_entropy" not in value:
+            value = {**value, "teacher_entropy": None}
         optional = lambda row: None if row is None else NormalizedTopKDistribution.from_dict(row)
         return _load(cls, value, "raw token", teacher_topk=optional, rollout_topk=optional)
 @dataclass(frozen=True)
@@ -533,30 +542,13 @@ def raw_trajectory_projection_digest(prompts: tuple[RawPromptQualityEvidence, ..
     def rollout(row: RawRolloutEvidence) -> dict[str, object]:
         return {
             "output_ids": [token.token_id for token in row.tokens],
-            "rollout_topk": [
-                None if token.rollout_topk is None else token.rollout_topk.to_dict()
-                for token in row.tokens
-            ],
+            "rollout_topk": [None if token.rollout_topk is None else token.rollout_topk.to_dict() for token in row.tokens],
         }
     return canonical_digest(
         "cacheon.qualification.selected-trajectory-projection",
-        {
-            "support_policy_digest": retained_support_policy_digest(),
-            "prompts": [
-                {
-                    "prompt": prompt.prompt_digest,
-                    "rollouts": [
-                        rollout(row)
-                        for row in (
-                            prompt.baseline,
-                            prompt.candidate,
-                            prompt.stock_control,
-                        )
-                    ],
-                }
-                for prompt in prompts
-            ],
-        },
+        {"support_policy_digest": retained_support_policy_digest(),
+         "prompts": [{"prompt": p.prompt_digest, "rollouts": [rollout(r) for r in (p.baseline, p.candidate, p.stock_control)]}
+                     for p in prompts]},
     )
 @dataclass(frozen=True)
 class ReferenceQualityRawArtifact(_Record):
@@ -583,24 +575,11 @@ class ReferenceQualityRawArtifact(_Record):
             raise ReferenceQualityError("raw token coverage differs from its bound maximum")
         for prompt in prompts:
             for rollout in (prompt.baseline, prompt.candidate, prompt.stock_control):
-                if (
-                    len(rollout.hidden_tasks) != self.binding.hidden_tasks_per_prompt
-                    or (
-                        self.binding.topk_width == 0
-                        and any(
-                            token.teacher_topk is not None for token in rollout.tokens
-                        )
-                    )
-                    or (
-                        self.binding.topk_width > 0
-                        and any(
-                            token.teacher_topk is None
-                            or len(token.teacher_topk.entries) != self.binding.topk_width
-                            or len(token.rollout_topk.entries) != self.binding.topk_width
-                            for token in rollout.tokens
-                        )
-                    )
-                ):
+                if (len(rollout.hidden_tasks) != self.binding.hidden_tasks_per_prompt
+                    or (self.binding.topk_width == 0 and any(t.teacher_topk is not None for t in rollout.tokens))
+                    or (self.binding.topk_width > 0 and any(
+                        t.teacher_topk is None or len(t.teacher_topk.entries) != self.binding.topk_width
+                        or len(t.rollout_topk.entries) != self.binding.topk_width for t in rollout.tokens))):
                     raise ReferenceQualityError("raw quality coverage differs from its binding")
         if hidden_task_plan_digest(prompts) != self.binding.hidden_task_plan_digest:
             raise ReferenceQualityError("raw hidden-task plan differs from its binding")
@@ -644,9 +623,14 @@ def _rollout(raw: RawRolloutEvidence, tail_threshold: Decimal, *, measure_excess
             _text(_ratio(_sumd(coverages), count), "coverage deviation", Decimal(1)))
     excess = (_text(_sumd(value - tail_threshold for value in nlls if value > tail_threshold), "tail excess sum")
               if measure_excess else None)
+    entropy_sum = (
+        _text(_sumd(decimal_value(token.teacher_entropy) for token in raw.tokens), "entropy sum")
+        if all(token.teacher_entropy is not None for token in raw.tokens) else None
+    )
     return RolloutQualityEvidence(
         TeacherNLLEvidence(count, _text(_sumd(nlls), "NLL sum"),
-                           _text(max(nlls), "NLL max", _MAX_NLL), sum(value > tail_threshold for value in nlls), excess),
+                           _text(max(nlls), "NLL max", _MAX_NLL), sum(value > tail_threshold for value in nlls),
+                           excess, entropy_sum),
         rollout_kl,
         HiddenTaskEvidence(str(sum(task.passed for task in raw.hidden_tasks)), len(raw.hidden_tasks)),
     )
@@ -748,6 +732,11 @@ def _metric(prompt: PromptQualityEvidence, policy: MetricCalibration) -> tuple[f
             if excess is None:
                 raise ReferenceQualityError("tail_excess_nll requires the sealed per-token excess")
             return float(_ratio(decimal_value(excess), row.teacher_nll.token_count))
+        if policy.name == "entropy_residual":
+            ent = row.teacher_nll.entropy_sum
+            if ent is None:
+                raise ReferenceQualityError("entropy_residual requires sealed per-token teacher entropy")
+            return row.teacher_nll.mean - float(_ratio(decimal_value(ent), row.teacher_nll.token_count))
         values = {
             "mean_nll": row.teacher_nll.mean,
             "worst_nll": row.teacher_nll.worst,
@@ -803,7 +792,10 @@ def stock_drift_upper_bound(
         raise ReferenceQualityError("quality evidence or calibration metric is not exact or supported")
     z = float(decimal_value(_decimal(familywise_z, "familywise z", Decimal(10))))
     triplets = [_metric(prompt, policy) for prompt in evidence.prompts]
-    drifts = [abs(baseline - control) for baseline, _candidate, control in triplets]
+    # Martingale entropy_residual has exact theoretical mean 0 under T=1 sampling; test stock against 0 directly.
+    drifts = ([abs(control) for _b, _c, control in triplets]
+              if policy.name == "entropy_residual" else
+              [abs(baseline - control) for baseline, _candidate, control in triplets])
     bound = _bounds(drifts, z)[2]
     if policy.name == "worst_nll" and len(drifts) >= _TAIL_EVENT_PROMPTS:
         # 2026-09-28 mainnet request 4903f33c: the stock control drew one 15.06-nat token, the
@@ -849,9 +841,15 @@ def score_reference_quality(
         raise ReferenceQualityError("familywise z is nonfinite or outside (0, 10]")
     for policy in calibration.quality_metrics:
         triplets = [_metric(prompt, policy) for prompt in evidence.prompts]
-        regressions = ([candidate - baseline for baseline, candidate, _control in triplets]
-                       if policy.direction == "lower" else
-                       [baseline - candidate for baseline, candidate, _control in triplets])
+        if policy.name == "entropy_residual":
+            # Exact martingale difference D_t = -log p_t(y_t) - H(p_t): E[D_t | prefix] = 0 regardless of branch.
+            regressions = [candidate for _baseline, candidate, _control in triplets]
+            collapse = [-candidate for _baseline, candidate, _control in triplets]
+        else:
+            regressions = ([candidate - baseline for baseline, candidate, _control in triplets]
+                           if policy.direction == "lower" else
+                           [baseline - candidate for baseline, candidate, _control in triplets])
+            collapse = [baseline - candidate for baseline, candidate, _control in triplets]
         if stock_drift_upper_bound(evidence, policy, calibration.familywise_z) > float(decimal_value(policy.stock_envelope)):
             overlap.add(f"{policy.name}.stock_drift")
             continue
@@ -864,7 +862,7 @@ def score_reference_quality(
         if policy.two_sided:
             # Under temperature-1 sampling, secretly sharpening logits or forcing greedy decoding
             # inflates speculative acceptance while lowering teacher NLL; fail collapse too.
-            clow, chigh = _bounds([baseline - candidate for baseline, candidate, _c in triplets], z)[1:]
+            clow, chigh = _bounds(collapse, z)[1:]
             if clow > limit or (require_quality_bound and chigh > limit):
                 failed.add(f"{policy.name}.lower_bound")
             elif chigh > limit:

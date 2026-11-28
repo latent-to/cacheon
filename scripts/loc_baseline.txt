@@ -245,12 +245,16 @@
 # retained mainnet audit_recovery/commissioning packets; shrinks 4 oversized files and drops oci_outer_session &
 # calibration below 900L; next casualty: ~650L AIPerf/ReplayBridge once all arenas move to multi_turn_tokens),
 # docs +46/-15 (+31), examples +81/-1 (+80), scripts +93/-28 (+65), tests +473/-2 (+471).
+# Eval parity follow-up: unweighted ideal-cached list revenue + hard ttft_p95 SLA gate (-31L quality weights);
+# ORE3 fp32 teacher Shannon entropy martingale D_t=-log p_t(y_t)-H(p_t) via logprob_processor hook; Policy 24
+# crossover_runtime >=23 fix; Inkling L=6:48/L=8:115, chunk=32768, ORE3 limits: cacheon +42 (oci_session_worker
+# 930->905, reference_quality 895<900), examples -1 (649), scripts +13 (sealer + these notes), tests +170.
 (root) 1164
 .github 338
-cacheon 94063
+cacheon 94105
 cacheon_kernels 936
 dashboard 4421
 docs 13698
-examples 650
-scripts 4852
-tests 15053
+examples 649
+scripts 4865
+tests 15223

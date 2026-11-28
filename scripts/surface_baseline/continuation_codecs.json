@@ -35,7 +35,7 @@
  "qualification_continuation:cacheon.eval.reference_protocol.ReferenceRequest": ["launch_digest","nonce","plan_digest","prompts","request_id","request_index","session_id","support_width","tokens_per_prompt"],
  "qualification_continuation:cacheon.eval.reference_protocol.ReferenceRoleEvidence": ["tokens"],
  "qualification_continuation:cacheon.eval.reference_protocol.ReferenceRoleInput": ["input_ids","output_ids","supports"],
- "qualification_continuation:cacheon.eval.reference_protocol.ReferenceTokenEvidence": ["support_logprobs","target_logprob","true_argmax_token_id"],
+ "qualification_continuation:cacheon.eval.reference_protocol.ReferenceTokenEvidence": ["support_logprobs","target_logprob","teacher_entropy","true_argmax_token_id"],
  "qualification_continuation:cacheon.eval.scoring.SpeedupVerdict": ["confident","detail","n_baselines","n_candidates","noise","passed_speedup","required","speedup"],
  "qualification_continuation:cacheon.eval.service_capacity.LoadRead": ["arm","lane","load","records","window"],
  "qualification_continuation:cacheon.eval.service_capacity.ServiceContract": ["attainment","decode_floor_tps","max_itl_s","ttft_bound_s"],

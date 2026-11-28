@@ -82,24 +82,24 @@ Speed policy 24 adds commercial API-revenue and streaming-tail gates on top of t
 same single-lane boot statistics without changing policies 20–23:
 
 - `api_prices` (`input_per_m`, `cached_input_per_m`, `output_per_m`) replaces raw
-  elapsed seconds with `duration_s / effective_usd` per load window, where each
-  turn's list value uses only validator-sealed ideal prefix-cache overlap
-  (`ideal_cached_tokens`, never candidate-reported cache hits) multiplied by a
-  continuous `[0, 1]` quality weight across per-user decode speed, TTFT, and
-  host-clocked streaming inter-token latency (ITL). Zero effective revenue grades
-  candidate `FAIL` (`service_revenue_zero`). At `open_reference`, the stock
-  reference must earn positive effective revenue (`mean_quality_weight > 0`) on
-  every sealed load.
+  elapsed seconds with `duration_s / list_usd` per load window, where each
+  completed turn's list value uses only validator-sealed ideal prefix-cache
+  overlap (`ideal_cached_tokens`, never candidate-reported cache hits) without
+  per-turn quality-weight amplification. Zero revenue grades candidate `FAIL`
+  (`service_revenue_zero`). Each load's 95th-percentile TTFT is hard-gated at
+  `contract.ttft_bound_s` (`service_ttft_not_met`) on both `open_reference` and
+  candidate reads.
 - `decode_p10_floors` enforces a hard 10th-percentile per-user decode floor per
   load (`service_tail_floor_not_met`) so a candidate cannot sacrifice slow-tail
   users to lift the median.
 - `itl_bound_s` enforces a hard 99th-percentile host-observed inter-token gap
   bound (`service_itl_not_met`), timed strictly on the trusted host from
   token-verified streaming progress frames (`phase_latency.HostTokenClock`).
-- Temperature-1 sampled replay requires two-sided `mean_nll` calibration
+- Temperature-1 sampled replay requires two-sided `mean_nll` and/or
+  `entropy_residual` ($-\log p_t(y_t) - H(p_t)$) calibration
   (`MetricCalibration(..., two_sided=True)`) so Pristine `T` rejects both
-  degraded outputs (`mean_nll`) and greedy/logit-sharpening cheats that lower
-  teacher NLL (`mean_nll.lower_bound`) to inflate draft acceptance.
+  degraded outputs and greedy/logit-sharpening cheats that lower teacher NLL
+  (`.lower_bound`) to inflate draft acceptance.
 
 The exact thresholds come from a frozen `CalibrationManifest` bound to the
 measured reference, arena, runtime, model, hardware, workload, and verifier.
