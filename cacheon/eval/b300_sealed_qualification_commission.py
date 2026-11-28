@@ -355,20 +355,30 @@ def sealed_qualification_commission(value: object) -> dict[str, object]:
         raise B300RegisteredQualificationError(
             "sealed qualification resident-speed block is not closed"
         )
-    if "version" in speed and _commission_int(speed["version"], "resident speed version", minimum=21) not in (21, 22, 23):
+    if "version" in speed and _commission_int(speed["version"], "resident speed version", minimum=21) not in (21, 22, 23, 24):
         raise B300RegisteredQualificationError("unsupported commissioned resident speed version")
     from cacheon.eval.goodput_runtime import GoodputPolicy
     replay = session["replay"]
     if type(replay) is not dict or set(replay) - {
         "max_work_seconds", "warm_windows", "pause_order", "quality_every_load",
+        "flush_each_load", "load_sessions", "feedback_turns",
     } != {
         "manifest_path", "slice_digest", "load", "windows", "aiperf_binary", "tokenizer_path",
-    } or replay.get("pause_order", True) is not True or replay.get("quality_every_load", True) is not True:
+    } or any(replay.get(flag, True) is not True for flag in (
+        "pause_order", "quality_every_load", "flush_each_load", "feedback_turns",
+    )):
         raise B300RegisteredQualificationError("sealed replay fields differ")
     _digest(replay["slice_digest"], "replay slice")
     # One load is an integer; several (low, mid, high concurrency) a list, replayed highest first.
     for load in replay["load"] if type(replay["load"]) is list and replay["load"] else [replay["load"]]:
         _commission_int(load, "replay load", minimum=1)
+    if "load_sessions" in replay:
+        ls = replay["load_sessions"]
+        if type(ls) is not dict or not ls or any(
+            type(k) is not str or not k.isdigit() or type(v) is not int or v < int(k)
+            for k, v in ls.items()
+        ):
+            raise B300RegisteredQualificationError("sealed replay load_sessions is invalid")
     _commission_int(replay["windows"], "replay windows", minimum=1)
     if "max_work_seconds" in replay:
         _commission_int(replay["max_work_seconds"], "replay work seconds", minimum=1)

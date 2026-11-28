@@ -16,5 +16,7 @@
   "swa_full_tokens_ratio": 0.05,
   "enable_hierarchical_cache": true,
   "hicache_ratio": 2,
-  "engine_env": {}
+  "engine_env": {
+    "SGLANG_HICACHE_HOST_PARALLEL_ALLOC_THREADS": "6"
+  }
 }

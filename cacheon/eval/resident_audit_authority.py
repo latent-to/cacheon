@@ -41,6 +41,24 @@ def _digest(value: object, field: str) -> str:
         raise ResidentAuditAuthorityError(str(exc)) from None
 
 
+_AUDIT_HICACHE_GB = 8
+
+
+def _audit_engine_config(charged_config):
+    """Derive the eager audit engine config: CUDA graphs off and a compact host HiCache.
+
+    When HiCache is enabled on the charged arm (390 GB on H200, 1.4 TB on B300), capping
+    the untimed audit's host pool to ``_AUDIT_HICACHE_GB`` eliminates multi-minute host
+    page allocation and teardown while still exercising host-tier eviction and reload.
+    """
+
+    kwargs = dict(charged_config.engine_kwargs)
+    if kwargs.get("enable_hierarchical_cache"):
+        kwargs.pop("hicache_ratio", None)
+        kwargs["hicache_size"] = min(int(kwargs.get("hicache_size") or _AUDIT_HICACHE_GB), _AUDIT_HICACHE_GB)
+    return replace(charged_config, disable_cuda_graph=True, engine_kwargs=kwargs)
+
+
 def _same_except(left: object, right: object, allowed: frozenset[str]) -> bool:
     fields = getattr(left, "__dataclass_fields__", None)
     return (
@@ -246,10 +264,13 @@ class ResidentAuditExecutionAuthority:
             or self.launch.engine_config_digest
             == self.charged_launch.engine_config_digest
             or self.binding != self.charged_binding
-            or not _same_except(
-                eager.engine_config,
-                charged.engine_config,
-                frozenset({"disable_cuda_graph"}),
+            or not (
+                _same_except(
+                    eager.engine_config,
+                    charged.engine_config,
+                    frozenset({"disable_cuda_graph"}),
+                )
+                or eager.engine_config == _audit_engine_config(charged.engine_config)
             )
             or not _same_except(
                 self.launch,
@@ -301,7 +322,7 @@ class ResidentAuditExecutionAuthority:
 
         if type(audit_policy) is not SlotAuditPolicy:
             raise ResidentAuditAuthorityError("resident audit policy is not exact")
-        eager_config = replace(charged_plan.engine_config, disable_cuda_graph=True)
+        eager_config = _audit_engine_config(charged_plan.engine_config)
         eager_launch = replace(
             charged_launch, engine_config_digest=eager_config.digest
         )

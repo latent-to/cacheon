@@ -255,7 +255,10 @@ The slot's numerical comparison and acceptance thresholds are unchanged.
 The eager audit preserves the charged workload's prompt batches, concurrency,
 and per-batch input-token expectations, including mixed-length workloads.
 It runs one warmup batch, then the first charged batch of each distinct concurrency
-and request shape, in charged order. Generation
+and request shape, in charged order, with CUDA graphs disabled and host HiCache
+capped to 8 GB when HiCache is enabled on the charged arm. Prefix-cache audit
+recording covers 100% of finished requests whenever auditing is enabled, and
+looped-layer models audit only the layer actually being visited. Generation
 length remains bounded by the audit policy. Reducing these batches to single
 prompts can select a different DP padding or dispatch path and leave a serving
 collective completely unaudited. The host verifies the exact derivation; missing
@@ -263,18 +266,13 @@ slot/rank coverage never passes the audit and grades `NO_DECISION`. Semantic qua
 pristine T reference's responsibility.
 
 Reference errors and incomplete audit coverage produce an infrastructure HOLD,
-preserving completed speed evidence. Only complete, attributable numerical
-violations produce a candidate FAIL. The validator may correct its own audit
-failure with `qualification_recovery.authorize_recovery`: an append-only child
-continuation retains the original speed and historical disposition, binds the
-corrected audit execution, and runs only missing pristine T. A passed audit can
-also be reused when only T is missing. The operator must authenticate the original
-request and establish executor quiescence before authorizing recovery.
+preserving completed speed evidence through stage checkpoints. Only complete,
+attributable numerical violations produce a candidate FAIL.
 
-Recovery charges completed speed, audit and reference execution against the
+Resumption charges completed speed, audit and reference execution against the
 existing qualification budget; downtime between durable stages is excluded.
 Original timestamps, speed policy, numerical thresholds and bundle identity stay
-intact. Conflicting evidence, exhausted time or a clock reset stop before launch. Recovery grants no PASS or reward by itself: the
+intact. Conflicting evidence, exhausted time or a clock reset stop before launch. Resumed stages grant no PASS or reward by itself: the
 normal grader, evidence import and settlement still consume the completed result.
 
 ### Interrupted replay controllers
@@ -819,6 +817,16 @@ that paused for an hour returns behind those that paused for seconds and finds i
 prefix wherever the cache left it. Without the setting each session sends its next
 turn when the last completes and no session is ever idle. The fixed work is the
 same; the setting is part of the workload identity, so references do not cross it.
+Optional `flush_each_load: true` flushes device and host caches before every load
+so lower loads do not inherit cached KV from earlier loads. Optional
+`load_sessions` maps each active concurrency `L` to an explicit resident session
+count `S >= L`, decoupling per-user interactive load from resident KV/HiCache
+pressure. Pre-tokenized `multi_turn_tokens` slices (`eval/multiturn_replay.py`)
+replay directly over the isolated session exchange without an external HTTP
+client, and optional `feedback_turns: true` appends each turn's actual generated
+output tokens into turn `t+1` so finish-time cache exploits cannot bypass real
+continuation prefixes; pristine T then scores per-role prompts over wire magic
+`ORQ4` using a graph-off, non-HiCache, non-speculative teacher configuration.
 Optional `max_work_seconds` bounds each boot's replay work; expiry aborts, never
 grades incomplete work. Optional `warm_windows` (1 or 2) replays that many whole
 windows untimed at the highest load before the sealed windows, each after its own

@@ -799,12 +799,8 @@ def stock_drift_upper_bound(
     The candidate's regression bound keeps every prompt.
     """
 
-    if type(evidence) is not ReferenceQualityEvidence:
-        raise ReferenceQualityError("quality evidence is not typed")
-    if type(policy) is not MetricCalibration or policy.name not in _METRICS:
-        raise ReferenceQualityError(
-            "quality calibration metric is not exact or supported"
-        )
+    if type(evidence) is not ReferenceQualityEvidence or type(policy) is not MetricCalibration or policy.name not in _METRICS:
+        raise ReferenceQualityError("quality evidence or calibration metric is not exact or supported")
     z = float(decimal_value(_decimal(familywise_z, "familywise z", Decimal(10))))
     triplets = [_metric(prompt, policy) for prompt in evidence.prompts]
     drifts = [abs(baseline - control) for baseline, _candidate, control in triplets]
@@ -856,9 +852,7 @@ def score_reference_quality(
         regressions = ([candidate - baseline for baseline, candidate, _control in triplets]
                        if policy.direction == "lower" else
                        [baseline - candidate for baseline, candidate, _control in triplets])
-        if stock_drift_upper_bound(
-            evidence, policy, calibration.familywise_z
-        ) > float(decimal_value(policy.stock_envelope)):
+        if stock_drift_upper_bound(evidence, policy, calibration.familywise_z) > float(decimal_value(policy.stock_envelope)):
             overlap.add(f"{policy.name}.stock_drift")
             continue
         low, high = _bounds(regressions, z)[1:]
@@ -867,6 +861,14 @@ def score_reference_quality(
             failed.add(policy.name)
         elif high > limit:
             overlap.add(policy.name)
+        if policy.two_sided:
+            # Under temperature-1 sampling, secretly sharpening logits or forcing greedy decoding
+            # inflates speculative acceptance while lowering teacher NLL; fail collapse too.
+            clow, chigh = _bounds([baseline - candidate for baseline, candidate, _c in triplets], z)[1:]
+            if clow > limit or (require_quality_bound and chigh > limit):
+                failed.add(f"{policy.name}.lower_bound")
+            elif chigh > limit:
+                overlap.add(f"{policy.name}.lower_bound")
         if policy.absolute_floor is not None:
             candidate = [value for _baseline, value, _control in triplets]
             low, high = _bounds(candidate, z)[1:]

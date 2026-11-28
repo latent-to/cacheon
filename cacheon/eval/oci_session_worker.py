@@ -747,11 +747,12 @@ def _reference_evidence(engine: object, request: object) -> object:
     roles = [
         _reference_role_evidence(
             engine,
-            prompt_ids,
-            [prompt.roles[index] for prompt in request.prompts],
+            [_canonical_prompt_ids(engine, p.roles[i].input_ids) if p.roles[i].input_ids else pids
+             for p, pids in zip(request.prompts, prompt_ids, strict=True)],
+            [prompt.roles[i] for prompt in request.prompts],
             vocab_size=vocab_size,
         )
-        for index in range(3)
+        for i in range(3)
     ]
     prompts = []
     for index, (prompt, ids) in enumerate(zip(request.prompts, prompt_ids, strict=True)):
@@ -763,15 +764,8 @@ def _reference_evidence(engine: object, request: object) -> object:
             tuple(role[index] for role in roles),
         ))
     return ReferenceEvidence(
-        request.session_id,
-        request.launch_digest,
-        request.plan_digest,
-        request_sha256(request),
-        request.request_id,
-        request.nonce,
-        request.request_index,
-        vocab_size,
-        tuple(prompts),
+        request.session_id, request.launch_digest, request.plan_digest, request_sha256(request),
+        request.request_id, request.nonce, request.request_index, vocab_size, tuple(prompts),
     )
 
 

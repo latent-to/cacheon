@@ -237,12 +237,18 @@
 # paragraph deleted), tests +23, scripts +14 (renderer, quality sealer, these notes). No unreferenced definition found.
 # A failing bundle review may name repackaged_upstream_pr (owner ruling 11-12; slot audit #11): cacheon +9, docs +4,
 # tests +20, scripts +2 (this note).
+# Eval real-world parity & overhead cuts (speed policy 24, direct multi-turn feedback replay with staggered openings,
+# ideal-cached API revenue $/GPU-hr, host-clocked streaming ITL, ORQ4 Light Pristine T, two-sided T=1 mean_nll gate,
+# Per-Visit compact Audit A with first-block stratified coverage, HiCache alloc threads=6): cacheon +1,145/-579 (+566;
+# deletes qualification_recovery, SealedTokenizerDecoder, read_current_weight_offer, _REPLAY_INPUTS; shrinks 4 oversized
+# files and drops oci_outer_session & calibration below 900L; next casualty: ~650L AIPerf/ReplayBridge once all arenas
+# move to multi_turn_tokens), docs +46/-15 (+31), examples +3/-1 (+2), scripts +76/-28 (+48), tests +310/-2 (+308).
 (root) 1164
 .github 338
-cacheon 93104
+cacheon 93670
 cacheon_kernels 936
 dashboard 4421
-docs 13667
-examples 570
-scripts 4788
-tests 14582
+docs 13698
+examples 572
+scripts 4836
+tests 14890

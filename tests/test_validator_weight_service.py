@@ -34,7 +34,7 @@ from cacheon.chain.weight_push_auth import (
     PushCredential, PushCredentialSet, mint_push_credential, write_push_credentials,
 )
 from cacheon.chain.weight_share import (
-    AuthenticatedWeightOffer, CurrentWeightOffer, authenticate_weight_offer, read_current_weight_offer,
+    AuthenticatedWeightOffer, CurrentWeightOffer, authenticate_weight_offer, read_offer_storage,
 )
 from cacheon.eval.qualification import QualificationDecision
 from tests.support import e2e
@@ -234,7 +234,7 @@ def test_a_signer_shares_only_its_confirmed_vector_through_a_read_only_gateway(t
     e2e.run(*sign, "--dry-run", env=e2e.chain_env())
     assert not gateway.offer.exists()
     assert "status=pending" in e2e.run(*sign, env=e2e.chain_env()) and _commits(state) == [["validator", 100, [2]]]
-    offer = read_current_weight_offer(gateway.offer).projection
+    offer = read_offer_storage(gateway.offer).projection
     assert (offer.effective_block, dict(offer.weights_ppm)) == (100, {"burn-sink": 1_000_000})
     # A peer validator follows it; the gateway, holding no push credentials, takes no pushes.
     peer = roles.Follower(root, state, gateway.url, "validator-peer")

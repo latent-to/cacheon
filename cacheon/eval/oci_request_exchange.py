@@ -277,6 +277,7 @@ class RequestExchange:
                     item.tokens.finish(evidence, completed) if request.measure_phase_latency else (),
                     tuple(hashlib.sha256(struct.pack(f">{len(ids)}I", *ids)).hexdigest()
                           for ids in request.input_ids),
+                    item.tokens.max_gaps(evidence) if request.measure_phase_latency else (),
                 )
                 del self.requests[request.request_id]
                 del self.pending[request.request_id]

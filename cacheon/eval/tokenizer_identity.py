@@ -98,46 +98,7 @@ def tokenizer_identity_digest(tokenizer: object, model_content_digest: str) -> s
     )
 
 
-class SealedTokenizerDecoder:
-    """Decode only after the supplied tokenizer matches one sealed identity."""
-
-    def __init__(
-        self,
-        tokenizer: object,
-        *,
-        model_content_digest: str,
-        expected_tokenizer_digest: str,
-    ) -> None:
-        expected = _digest(expected_tokenizer_digest, "expected tokenizer")
-        observed = tokenizer_identity_digest(tokenizer, model_content_digest)
-        if observed != expected:
-            raise TokenizerIdentityError(
-                "tokenizer behavior differs from the sealed tokenizer identity"
-            )
-        decode = getattr(tokenizer, "decode", None)
-        if not callable(decode):
-            raise TokenizerIdentityError("tokenizer has no callable decode method")
-        self.tokenizer_digest = observed
-        self._decode = decode
-
-    def __call__(self, token_ids: tuple[int, ...]) -> str:
-        if type(token_ids) is not tuple or any(
-            type(token) is not int or token < 0 for token in token_ids
-        ):
-            raise TokenizerIdentityError(
-                "tokenizer decoder input must be non-negative token IDs"
-            )
-        try:
-            result = self._decode(list(token_ids), skip_special_tokens=True)
-        except Exception as exc:
-            raise TokenizerIdentityError("sealed tokenizer decode failed") from exc
-        if type(result) is not str:
-            raise TokenizerIdentityError("sealed tokenizer decode did not return text")
-        return result
-
-
 __all__ = [
-    "SealedTokenizerDecoder",
     "TOKENIZER_IDENTITY_DOMAIN",
     "TOKENIZER_IDENTITY_PROBES",
     "TokenizerIdentityError",

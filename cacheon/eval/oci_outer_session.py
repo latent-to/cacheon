@@ -437,6 +437,7 @@ class BatchExecutionEvidence:
     audit_receipts: tuple[AuditReceiptFacts, ...] = ()
     prompt_latencies: tuple[tuple[float, float], ...] = field(default=(), metadata={"wire_optional": True})
     input_ids_sha256: tuple[str, ...] = field(default=(), metadata={"wire_optional": True})
+    prompt_max_itl_s: tuple[float, ...] = field(default=(), metadata={"wire_optional": True})
 
     @property
     def elapsed_seconds(self) -> float:
@@ -488,23 +489,15 @@ def _now(clock: Callable[[], float], *, previous: float | None = None) -> float:
 
 
 def _control_or_error(
-    transport: SessionTransport,
-    *,
-    session_id: str,
-    launch_digest: str,
-    deadline: float,
+    transport: SessionTransport, *, session_id: str, launch_digest: str, deadline: float,
 ) -> dict:
     message = transport.read_control(max_bytes=MAX_CONTROL_BYTES, deadline=deadline)
     try:
-        detail = parse_error_message(
-            message, session_id=session_id, launch_digest=launch_digest
-        )
+        detail = parse_error_message(message, session_id=session_id, launch_digest=launch_digest)
     except SessionProtocolError as exc:
         raise OuterSessionProtocolError(str(exc)) from None
     if detail is not None:
-        raise _worker_error(
-            detail, diagnostic_provider=diagnostic_provider(transport)
-        )
+        raise _worker_error(detail, diagnostic_provider=diagnostic_provider(transport))
     return message
 
 

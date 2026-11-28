@@ -191,7 +191,8 @@ def _once(tensors: list[torch.Tensor]) -> list[torch.Tensor]:
 
 
 def _state_rows(
-    runner, call: tuple, layer: int | None = None,
+    runner, call: tuple, layer: int | bool | None = None,
+    *, conv_layer: int | bool | None = None,
 ) -> list[tuple[torch.Tensor, int, torch.Tensor, StateFormat]]:
     """Engine-state rows this call may write, as ``(buffer, dim, index, graded dtype)``.
 
@@ -212,7 +213,7 @@ def _state_rows(
     )
     if batch is None:
         return []
-    rows = _recurrent_rows(runner, batch, layer)
+    rows = _recurrent_rows(runner, batch, layer if conv_layer is None else conv_layer)
     if batch.out_cache_loc is None:
         return rows
     rows += _cache_rows(runner.token_to_kv_pool, batch, layer)
@@ -237,6 +238,8 @@ def _recurrent_rows(runner, batch, layer):
     SGLang PR #51926). Other speculative layouts raise: GDN native-MTP scratch and request rings served only the
     retired Qwen arena, whose 21,400-call MTP audit never graded the rings (2026-09-22).
     """
+    if layer is False:
+        return []
     requests = runner.req_to_token_pool
     pool = getattr(requests, "mamba_pool", None)
     if pool is None:
@@ -283,10 +286,12 @@ def _recurrent_rows(runner, batch, layer):
     return rows
 
 
-def _cache_rows(pool, batch, layer: int | None) -> list[tuple]:
+def _cache_rows(pool, batch, layer: int | bool | None) -> list[tuple]:
     """The cache rows this batch writes, in the pool's own addressing: by page or by slot,
     with a mapped sliding-window sub-pool's rows at the translated slots."""
 
+    if layer is False:
+        return []
     paged = dsv4_state_rows(pool, batch, layer)
     if paged is not None:
         return paged
@@ -294,11 +299,32 @@ def _cache_rows(pool, batch, layer: int | None) -> list[tuple]:
     if dsa is not None:
         return dsa
     loc = batch.out_cache_loc.long()
+    mapping = getattr(pool, "layers_mapping", None)
+    if type(layer) is int and isinstance(mapping, dict):
+        if layer not in mapping:
+            raise RuntimeError(f"layer {layer} has no cache entry in {type(pool).__name__}")
+        pool_idx, is_swa = mapping[layer]
+        if is_swa:
+            return _inkling.window_rows(pool, loc, _kv_rows, layer=pool_idx)
+        return _kv_rows(getattr(pool, "full_kv_pool", pool), loc, layer=pool_idx)
+    if type(layer) is int:
+        full = getattr(pool, "full_kv_pool", pool)
+        local = layer - getattr(full, "start_layer", 0)
+        return _kv_rows(full, loc, layer=local)
     return _kv_rows(getattr(pool, "full_kv_pool", pool), loc) + _inkling.window_rows(pool, loc, _kv_rows)
 
 
-def _kv_rows(pool, index: torch.Tensor) -> list[tuple]:
-    buffers = [b for name in _KV_BUFFERS for b in (getattr(pool, name, None) or ()) if torch.is_tensor(b)]
+def _kv_rows(pool, index: torch.Tensor, layer: int | None = None) -> list[tuple]:
+    buffers = []
+    for name in _KV_BUFFERS:
+        group = getattr(pool, name, None)
+        if not group:
+            continue
+        if layer is not None:
+            if not 0 <= layer < len(group):
+                raise RuntimeError(f"layer {layer} out of range for {name} on {type(pool).__name__}")
+            group = (group[layer],)
+        buffers.extend(b for b in group if torch.is_tensor(b))
     if not buffers:
         raise RuntimeError(f"no cache buffer recognized on {type(pool).__name__}")
     held = getattr(pool, "dtype", None)
@@ -369,7 +395,8 @@ def _errors(outputs: list, rows: list, expected: list, *, module=None) -> list[t
 
 
 def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs: dict,
-                layer: int | None = None, step: tuple | None = None):
+                layer: int | bool | None = None, step: tuple | None = None,
+                *, conv_layer: int | bool | None = None):
     """Stock's ``(tensor, row dim)`` answer, the honest twin's row errors against it, and
     with a ``step`` stock's result pruned one step heavier (``sglang_dsv4_prune``).
 
@@ -390,7 +417,7 @@ def _references(slot: str, module, stock: Callable, runner, args: tuple, kwargs:
     # The stream's residual and released fields are restored by value too, once each.
     handed = _once(_tensors((args, kwargs, stream and (stream[2][0], [fields for _, fields in stream[3]])), [])
                    + _inkling.held(carry))
-    rows = _state_rows(runner, (*args, *kwargs.values()), layer)
+    rows = _state_rows(runner, (*args, *kwargs.values()), layer, conv_layer=conv_layer)
     before = [t.clone() for t in handed]
     state = []
     for buffer, dim, index, _ in rows:
@@ -688,7 +715,10 @@ def make_node_dispatcher(
         # must not affect the seeded audit draws, and a node with a collective hangs unless
         # every rank runs it the same number of times with the same seeded draws.
         expected = twin = heavier = step = None
-        if not in_graph and _audit.sampled():
+        kv_layer = conv_layer = layer
+        if not in_graph and _audit.sampled(node_name or slot):
+            if every_layer:
+                kv_layer, conv_layer = _inkling._visit_layers(module, kwargs)
             changed = _rebound(sealed)
             if changed is not None:
                 failure = RuntimeError(
@@ -702,7 +732,7 @@ def make_node_dispatcher(
             step = _prune.heavier_step(args, kwargs, steps) if pruned_moe else None
             steps += step is not None
             expected, twin, heavier = _references(
-                slot, module, stock, runner, args, kwargs, layer, step)
+                slot, module, stock, runner, args, kwargs, kv_layer, step, conv_layer=conv_layer)
         facts = _call_facts(module, args, kwargs)
         if facts is None:
             return stock(*args, **kwargs)
@@ -729,7 +759,8 @@ def make_node_dispatcher(
                 outputs = _once(_tensors(result, [], fields=True) + _stream_left(stream)) + _inkling.left(carry)
                 actual = _errors(
                     [(t, 0) for t in outputs],
-                    _state_rows(runner, (*args, *kwargs.values()), layer), expected, module=module,
+                    _state_rows(runner, (*args, *kwargs.values()), kv_layer, conv_layer=conv_layer),
+                    expected, module=module,
                 )
                 pruned = heavier and _prune.distances(outputs, expected, heavier)
                 grade = _grade(slot, id(module), actual, twin, node_name=node_name or slot,

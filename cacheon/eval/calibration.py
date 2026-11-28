@@ -175,55 +175,48 @@ class MetricCalibration:
     stock_envelope: str
     candidate_delta: str
     absolute_floor: str | None = None
+    two_sided: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", _name(self.name, field="metric name"))
         if self.name not in _METRIC_DIRECTIONS or self.direction != _METRIC_DIRECTIONS[self.name]:
             raise CalibrationError("metric name/direction is unsupported")
-        object.__setattr__(
-            self,
-            "stock_envelope",
-            _decimal(self.stock_envelope, field=f"{self.name} stock_envelope"),
-        )
+        object.__setattr__(self, "stock_envelope", _decimal(self.stock_envelope, field=f"{self.name} stock_envelope"))
         object.__setattr__(self, "candidate_delta", _decimal(self.candidate_delta, field=f"{self.name} candidate_delta"))
         if self.absolute_floor is not None:
-            object.__setattr__(
-                self,
-                "absolute_floor",
-                _decimal(self.absolute_floor, field=f"{self.name} absolute_floor"),
-            )
+            object.__setattr__(self, "absolute_floor", _decimal(self.absolute_floor, field=f"{self.name} absolute_floor"))
         if self.direction == "lower" and self.absolute_floor is not None:
             raise CalibrationError("a lower-is-better metric cannot declare an absolute floor")
+        if type(self.two_sided) is not bool or (self.two_sided and self.direction != "lower"):
+            raise CalibrationError("two_sided must be a boolean on a lower-is-better metric")
         values = (decimal_value(self.stock_envelope), decimal_value(self.candidate_delta))
         if self.name in _UNIT_METRICS and any(value > 1 for value in values):
             raise CalibrationError("rate metric thresholds must not exceed one")
         if self.absolute_floor is not None and decimal_value(self.absolute_floor) > 1:
             raise CalibrationError("absolute quality floor must not exceed one")
 
-    def to_dict(self) -> dict[str, str | None]:
-        return {
-            "absolute_floor": self.absolute_floor,
-            "candidate_delta": self.candidate_delta,
-            "direction": self.direction,
-            "name": self.name,
-            "stock_envelope": self.stock_envelope,
+    def to_dict(self) -> dict[str, object]:
+        row: dict[str, object] = {
+            "absolute_floor": self.absolute_floor, "candidate_delta": self.candidate_delta,
+            "direction": self.direction, "name": self.name, "stock_envelope": self.stock_envelope,
         }
+        if self.two_sided:
+            row["two_sided"] = True
+        return row
 
     @classmethod
     def from_dict(cls, value: object) -> "MetricCalibration":
-        raw = _strict(
-            value,
-            frozenset(
-                {"name", "direction", "stock_envelope", "candidate_delta", "absolute_floor"}
-            ),
-            label="metric calibration",
-        )
+        if not isinstance(value, Mapping):
+            raise CalibrationError("metric calibration must be an object")
+        required = frozenset({"name", "direction", "stock_envelope", "candidate_delta", "absolute_floor"})
+        if not required.issubset(value) or set(value) - required - {"two_sided"}:
+            raise CalibrationError("metric calibration keys are invalid")
+        if "two_sided" in value and value["two_sided"] is not True:
+            raise CalibrationError("metric calibration two_sided must be omitted when false")
         return cls(
-            name=raw["name"],
-            direction=raw["direction"],
-            stock_envelope=raw["stock_envelope"],
-            candidate_delta=raw["candidate_delta"],
-            absolute_floor=raw["absolute_floor"],
+            name=value["name"], direction=value["direction"], stock_envelope=value["stock_envelope"],
+            candidate_delta=value["candidate_delta"], absolute_floor=value["absolute_floor"],
+            two_sided=bool(value.get("two_sided", False)),
         )
 
 
