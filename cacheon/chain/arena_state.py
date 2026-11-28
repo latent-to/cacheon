@@ -132,17 +132,27 @@ class ArenaStateMixin:
         return tuple(self._row(row) for row in rows)
 
 
-    def target_lineage_tips(self, competition_arena: str | None = None) -> Mapping[str, object]:
-        """Reopen each target's contiguous active root-to-tip lineage."""
+    def target_lineage_tips(self, competition_arena: str | None = None, challenger=None) -> Mapping[str, object]:
+        """Reopen each target's contiguous active root-to-tip lineage.
 
+        The settlement candidate ``challenger`` meets a tip whose winner its commission re-timed on a new
+        scale as one edge from its own baseline at that re-time: the stored speedups are in the earlier
+        commission's units (``reward_group_remeasurements``; read as stored, Inkling's 2.1454 tip would have
+        held every policy-24 PASS as lost potential).
+        """
+
+        from cacheon.chain.evaluation_order import _reward_group_remeasurements, reward_group_continuations
         from cacheon.chain.intake import IntakeError
         from cacheon.settlement import TargetLineage, TargetLineageNode
 
         scope = self._competition_arena if competition_arena is None else competition_arena
+        retimed = None if challenger is None else _reward_group_remeasurements(
+            self._db, reward_group_continuations(self._db),
+        ).get(f"{challenger.arena_digest}:{challenger.incumbent_stack_digest}")
         try:
             lineages: dict[str, TargetLineage] = {}
             for tip in self._db.execute(
-                "SELECT target_id,artifact_digest FROM target_lineage_tips "
+                "SELECT target_id,artifact_digest,transition_event_id FROM target_lineage_tips "
                 "WHERE competition_arena=? ORDER BY target_id", (scope,),
             ):
                 nodes: list[TargetLineageNode] = []
@@ -160,26 +170,22 @@ class ArenaStateMixin:
                     if row is None:
                         if nodes:
                             break
-                        raise IntakeError(
-                            "target lineage tips require a successful backfill"
-                        )
-                    nodes.append(
-                        TargetLineageNode(
-                            row["artifact_digest"],
-                            row["parent_artifact_digest"],
-                            row["winner_speedup"],
-                            row["transition_event_id"],
-                        )
-                    )
+                        raise IntakeError("target lineage tips require a successful backfill")
+                    nodes.append(TargetLineageNode(row["artifact_digest"], row["parent_artifact_digest"],
+                                                   row["winner_speedup"], row["transition_event_id"]))
                     artifact = row["parent_artifact_digest"]
-                lineages[tip["target_id"]] = TargetLineage(
-                    tuple(reversed(nodes))
-                )
+                if retimed is not None and retimed[2] and self._db.execute(
+                    "SELECT 1 FROM settlement_events WHERE event_id=? AND reservation_id=?",
+                    (tip["transition_event_id"], retimed[0]),
+                ).fetchone() is not None:
+                    baseline = challenger.incumbent_manifest.entries.get(tip["target_id"])
+                    nodes = [TargetLineageNode(
+                        tip["artifact_digest"], "" if baseline is None else baseline.artifact_digest,
+                        format(retimed[1].normalize(), "f"), tip["transition_event_id"])]
+                lineages[tip["target_id"]] = TargetLineage(tuple(reversed(nodes)))
             return MappingProxyType(lineages)
         except (TypeError, ValueError, IntakeError) as exc:
-            raise IntakeError(
-                f"target lineage tips require a successful backfill: {exc}"
-            ) from None
+            raise IntakeError(f"target lineage tips require a successful backfill: {exc}") from None
 
 
     def backfill_target_lineage_tips(self) -> Mapping[str, object]:

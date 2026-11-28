@@ -133,14 +133,16 @@ def test_another_baseline_does_not_compete_and_missing_margin_is_an_error(tmp_pa
             store.passed_reward_claims()
 
 
-@pytest.mark.parametrize(("retimed", "middle", "previous", "bar"), [
-    (None, "1.065", "1.06", "1.07590"),  # continued: 1.065 must beat the carried 1.06 by 1%
-    ("1.07", "1.08", "1.07", "1.08605"),  # re-timed up: 1.08 beat 1.06 by 1% but not 1.07
-    ("1.05", "1.065", "1.06", "1.07590"),  # re-timed down: the higher carried 1.06 stands
+@pytest.mark.parametrize(("retimed", "new_scale", "middle", "previous", "bar"), [
+    (None, False, "1.065", "1.06", "1.07590"),  # continued: 1.065 must beat the carried 1.06 by 1%
+    ("1.07", False, "1.08", "1.07", "1.08605"),  # re-timed up: 1.08 beat 1.06 by 1% but not 1.07
+    ("1.05", False, "1.065", "1.06", "1.07590"),  # re-timed down: the higher carried 1.06 stands
+    ("1.05", True, "1.065", "1.05", "1.06575"),  # re-timed on a new scale: the carried 1.06 is in other units
 ])
-def test_a_declared_recommission_continues_the_reward_record(tmp_path, retimed, middle, previous, bar):
+def test_a_declared_recommission_continues_the_reward_record(tmp_path, retimed, new_scale, middle, previous, bar):
     from decimal import Decimal
     from cacheon.chain.evaluation_order import payment_bar, reward_comparisons
+    from tests.test_chain_intake import _settlement_plan
 
     with _store(tmp_path) as store:
         first = _qualified_settlement_candidate(store, speedups=("1.06", "1.06"))
@@ -152,7 +154,7 @@ def test_a_declared_recommission_continues_the_reward_record(tmp_path, retimed, 
         groups = [f"{p['arena_digest']}:{p['incumbent_stack_digest']}" for p in (
             json.loads(r[0])["primary"] for r in store._db.execute(
                 "SELECT candidate_json FROM settlement_candidates ORDER BY rowid"))]
-        record = {"reservation_id": first.reservation_digest, "speedup": retimed}
+        record = {"reservation_id": first.reservation_digest, "speedup": retimed} | ({"new_scale": True} if new_scale else {})
         store._db.execute("INSERT INTO metadata(key,value) VALUES('reward_group_continuations',?)",
                           (json.dumps({groups[1]: groups[0]}),))
         if retimed:
@@ -166,6 +168,11 @@ def test_a_declared_recommission_continues_the_reward_record(tmp_path, retimed, 
         stack = later[0].incumbent_manifest
         assert [payment_bar(store._db, stack, c.reservation_digest) for c in (later[0], later[2])] == [
             bar, "1.1165"]
+        # Settlement crowns the later commission against the same record: the stored 1.06, or its new-scale re-time.
+        lease = store.lease_settlement_cohort(current_block=11)
+        store.commit_settlement(lease, *_settlement_plan(store, lease), current_block=11)
+        tip = store.lease_settlement_cohort(current_block=12).lineage_tips["forward_pass"]
+        assert tip.winner_speedup == ("1.05" if new_scale else "1.06")
         store._db.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('reward_group_remeasurements',?)",
                           (json.dumps({groups[0]: record}),))
         with pytest.raises(ValueError, match="continued"):

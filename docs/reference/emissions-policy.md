@@ -54,11 +54,22 @@ restarting the reward record, record the intake `metadata` key
 comparison, duplicate detection, and the stall clock then treat the later commission
 as the earlier one. Chains resolve to their first pair; a cycle is refused. Non-empty
 continuations are part of the projection's source identity. A new stock baseline is
-not a continuation and starts a new record. When a continued commission measures a
+not a continuation and starts a new record, unless it re-times the record on a new
+scale as described below. When a continued commission measures a
 different stock reference (a new host), record the continued record's best PASS
 re-timed there in `reward_group_remeasurements`, mapping the later pair to
 `{"reservation_id": ..., "speedup": "<decimal>"}`; until a later PASS replaces it,
 comparison, score ratios, and the payment bar use the higher of it and the carried one.
+
+A commission that changes what the speedup measures (the workload, the speed policy, or
+the stock recipe) keeps the crown but not its number. Continue the record, re-time its
+best PASS on the new commission, and add `"new_scale": true` to that entry. The carried
+speedup is then in other units and is not compared: the re-time alone is the record
+there, so the payment bar is 1.5% over it, and settlement reads the crown lineage of
+that commission's candidates as one edge from its baseline at the re-time. The re-time
+must exceed 1. The entry's reservation must both hold the reward record and have crowned
+the target's lineage tip; a tip crowned by another reservation keeps its stored speedup.
+A later PASS on the commission replaces the re-time in both places.
 
 The rule applies to existing and future non-grandfathered PASSes; it does not
 rewrite qualification, settlement, or already published weights. A crown is

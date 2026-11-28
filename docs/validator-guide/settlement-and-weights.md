@@ -91,7 +91,9 @@ product of winning edges from its measured ancestor to the current tip. With `A 
 a candidate D measured on A must beat `(B/A) * (C/B)`. Equality does not pass. If D wins,
 the active lineage becomes `A -> D`, with crown reason `qualified_ancestor_win`; the old
 branch remains auditable history. Qualification keeps the operator's commissioned
-baseline until an explicit recommission.
+baseline until an explicit recommission. A recommission that changes the scale compares
+its candidates with the crown's declared re-time instead of the stored speedups
+(`new_scale`, see the [emissions policy](../reference/emissions-policy.md)).
 
 A candidate at/below the composed performance threshold receives `lost_potential`.
 The dashboard also uses `lost_potential` when a finalized queue comparison does not
@@ -213,8 +215,9 @@ promotion, integration, or release cannot renew the same bounty.
 
 The reward builder reopens retained PASS evidence and pays only records that beat
 the preceding rewarded record against the same baseline by at least 1.5%
-(`V17_REWARD_MARGIN`); a declared recommission of that baseline continues its record
-(`reward_group_continuations`, see the emissions policy). Credit remains the
+(`V17_REWARD_MARGIN`); a declared recommission of that baseline continues its record,
+re-timed when its stock reference or its scale changes (`reward_group_continuations`,
+`reward_group_remeasurements`; see the emissions policy). Credit remains the
 unshrunken marginal logarithmic reward. An
 unpaid estimate does not advance the reward record. Historical policies retain
 their configured minimum margin against the preceding rewarded record.

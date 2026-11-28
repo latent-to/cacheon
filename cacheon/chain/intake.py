@@ -1847,7 +1847,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
             if cursor.rowcount != len(ids):
                 raise IntakeError("settlement cohort changed while leasing")
             sequence, previous = self._event_head()
-            tips = self.target_lineage_tips(self.get(candidates[0].reservation_digest).competition_arena)
+            tips = self.target_lineage_tips(self.get(candidates[0].reservation_digest).competition_arena, candidates[0])
         return SettlementLease(
             lease_id,
             chosen[0]["authority_digest"],
@@ -1919,7 +1919,7 @@ class FinalizedIntakeStore(ArenaStateMixin, EvaluationLeaseStoreMixin):
                 lease.initial_event_sequence, lease.previous_event_digest
             ):
                 raise IntakeError("settlement incumbent or journal advanced")
-            if dict(self.target_lineage_tips(arena)) != dict(lease.lineage_tips):
+            if dict(self.target_lineage_tips(arena, lease.candidates[0])) != dict(lease.lineage_tips):
                 raise IntakeError("target lineage advanced while evidence was open")
             ids = tuple(row.reservation_digest for row in lease.candidates)
             cohort_ids = frozenset(ids)

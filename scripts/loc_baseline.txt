@@ -249,12 +249,16 @@
 # ORE3 fp32 teacher Shannon entropy martingale D_t=-log p_t(y_t)-H(p_t) via logprob_processor hook; Policy 24
 # crossover_runtime >=23 fix; Inkling L=6:48/L=8:115, chunk=32768, ORE3 limits: cacheon +42 (oci_session_worker
 # 930->905, reference_quality 895<900), examples -1 (649), scripts +13 (sealer + these notes), tests +170.
+# A re-time on a new scale replaces the carried record for the payment bar and the crown lineage (Inkling's
+# 2.1454 policy-23 crown measures near 1.40 under policy 24: carried, the bar was 2.1776 and every PASS under
+# 2.1454 was held lost_potential): cacheon +43/-31 (+12), docs +18/-4 (+14), tests +13/-6 (+7), +4 notes. No
+# deletion was available; next: the unused `contract` argument of effective_revenue_summary and its plumbing.
 (root) 1164
 .github 338
-cacheon 94105
+cacheon 94117
 cacheon_kernels 936
 dashboard 4421
-docs 13698
+docs 13712
 examples 649
-scripts 4865
-tests 15223
+scripts 4869
+tests 15230
