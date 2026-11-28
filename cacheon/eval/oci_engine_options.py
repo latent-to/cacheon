@@ -62,7 +62,10 @@ ENGINE_ENV_KINDS: Mapping[str, str] = dict.fromkeys(
      # Mooncake's intra-node NVLink KV transport (legacy CUDA IPC handles, as NIXL's cuda_ipc): the same steady
      # throughput as NIXL, a 165 s faster boot, and no whole-pool descriptor registration the first time a decode
      # rank meets a prefill rank, which cost NIXL ~500 s of every boot's first window (8xB300, 2026-10-27).
-     "MC_INTRANODE_NVLINK", "MC_TCP_ENABLE_CONNECTION_POOL", "SGLANG_MOONCAKE_CUSTOM_MEM_POOL"), "token")
+     "MC_INTRANODE_NVLINK", "MC_TCP_ENABLE_CONNECTION_POOL", "SGLANG_MOONCAKE_CUSTOM_MEM_POOL",
+     # Parallel MADV_HUGEPAGE prefaulting for HiCache host pools: cut 394 GB Inkling H200 boot alloc from
+     # 124.9 s to 16.2 s and SIGKILL teardown from 47.3 s to 8.8 s (2026-11-27).
+     "SGLANG_HICACHE_HOST_PARALLEL_ALLOC_THREADS"), "token")
 _ROLE_FIELDS = frozenset({"engine_kwargs", "engine_env", "servers", "routing_policy"})
 
 _TOKEN = re.compile(r"[A-Za-z0-9_.:+/@-]{1,256}\Z")

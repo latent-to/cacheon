@@ -45,9 +45,10 @@ KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size
 # audit_sample_rate_ppm: the share of node calls the eager audit replays and grades, absent when it grades every call;
 # cold_span: true starts each load's steady span at the host's cold-round release, sealed with steady_span;
 # quality_every_load: true draws the quality controls from every load's first window, not only the top load's.
-OPTIONAL_KEYS = {"decode_floors", "replay_windows", "audit_row_floor_ppm", "load_margin", "replay_warm_windows",
-                 "steady_span", "quality", "speed_policy_version", "bar_futility", "pause_order", "audit_sample_rate_ppm",
-                 "cold_span", "quality_every_load"}
+OPTIONAL_KEYS = {"decode_floors", "decode_p10_floors", "replay_windows", "audit_row_floor_ppm", "load_margin",
+                 "replay_warm_windows", "steady_span", "quality", "speed_policy_version", "bar_futility",
+                 "pause_order", "audit_sample_rate_ppm", "cold_span", "quality_every_load", "flush_each_load",
+                 "load_sessions", "feedback_turns", "itl_bound_s", "api_prices", "service_contract", "temperature"}
 # architecture and topology_class: the GPU's sm target and NVLink class the deployment profile seals (sm103 and
 # nvlink-sxm6 on the B300 pods, sm90 and nvlink-sxm5 on H200).
 NODE_KEYS = {"name", "scheduler_starts", "helper_starts", "client_cpus", "architecture", "topology_class"}
@@ -128,8 +129,40 @@ def load_operator(path: Path) -> dict:
         raise SystemExit(f"{path}: cold_span is true, sealed with steady_span")
     if "quality_every_load" in operator and operator["quality_every_load"] is not True:
         raise SystemExit(f"{path}: quality_every_load is true when present")
-    if "speed_policy_version" in operator and (type(operator["speed_policy_version"]) is not int or operator["speed_policy_version"] not in (21, 22, 23)):
-        raise SystemExit(f"{path}: speed_policy_version must be 21, 22 or 23")
+    for flag in ("flush_each_load", "feedback_turns"):
+        if flag in operator and operator[flag] is not True:
+            raise SystemExit(f"{path}: {flag} is true when present")
+    if "load_sessions" in operator:
+        ls = operator["load_sessions"]
+        if type(ls) is not dict or sorted(ls) != sorted(map(str, loads)) or any(
+            type(v) is not int or v < int(k) for k, v in ls.items()
+        ):
+            raise SystemExit(f"{path}: load_sessions maps every replay load to resident sessions >= load")
+    if "decode_p10_floors" in operator:
+        p10 = operator["decode_p10_floors"]
+        if sorted(p10) != sorted(map(str, loads)) or not all(
+            re.fullmatch(r"[1-9][0-9]*(\.[0-9]*[1-9])?", value) for value in p10.values()
+        ):
+            raise SystemExit(f"{path}: decode_p10_floors maps every replay load to a canonical decimal tok/s floor")
+    if "itl_bound_s" in operator and not re.fullmatch(r"(?:0\.[0-9]*[1-9]|[1-9][0-9]*(\.[0-9]*[1-9])?)", operator["itl_bound_s"]):
+        raise SystemExit(f"{path}: itl_bound_s must be a positive canonical decimal")
+    if "api_prices" in operator:
+        ap = operator["api_prices"]
+        if type(ap) is not dict or set(ap) != {"input_per_m", "cached_input_per_m", "output_per_m"} or any(
+            type(v) is not str for v in ap.values()
+        ):
+            raise SystemExit(f"{path}: api_prices must carry input_per_m, cached_input_per_m, output_per_m strings")
+    if "service_contract" in operator:
+        sc = operator["service_contract"]
+        if (type(sc) is not dict
+                or not {"decode_floor_tps", "ttft_bound_s", "attainment"} <= set(sc)
+                <= {"decode_floor_tps", "ttft_bound_s", "attainment", "max_itl_s"}
+                or any(type(v) is not str for v in sc.values())):
+            raise SystemExit(f"{path}: service_contract carries decode_floor_tps, ttft_bound_s, attainment[, max_itl_s] strings")
+    if "speed_policy_version" in operator and (type(operator["speed_policy_version"]) is not int or operator["speed_policy_version"] not in (21, 22, 23, 24)):
+        raise SystemExit(f"{path}: speed_policy_version must be 21, 22, 23 or 24")
+    if "temperature" in operator and (type(operator["temperature"]) is not int or operator["temperature"] not in (0, 1)):
+        raise SystemExit(f"{path}: temperature must be 0 or 1")
     starts, helpers = operator["node"]["scheduler_starts"], operator["node"]["helper_starts"]
     if len(helpers) != len(starts) or not all(type(c) is int for c in (*starts, *helpers)):
         raise SystemExit(f"{path}: helper_starts names one helper vCPU per scheduler start, in GPU order")
@@ -279,16 +312,34 @@ def main() -> None:
         margin += f', steady_span={operator["steady_span"]}' if "steady_span" in operator else ""
         margin += ", bar_futility=1.0" if "bar_futility" in operator else ""
         margin += ", cold_span=1.0" if "cold_span" in operator else ""
+        if "itl_bound_s" in operator:
+            margin += f', itl_bound_s={operator["itl_bound_s"]}'
+        if "decode_p10_floors" in operator:
+            p10s = ", ".join(f"({l}, {operator['decode_p10_floors'][l]})" for l in sorted(operator["decode_p10_floors"], key=int))
+            margin += f", decode_p10_floors=({p10s},)"
+        if "api_prices" in operator:
+            ap = operator["api_prices"]
+            margin += f', api_prices=__import__("cacheon.eval.api_revenue", fromlist=["ApiPriceTable"]).ApiPriceTable({ap["input_per_m"]}, {ap["cached_input_per_m"]}, {ap["output_per_m"]})'
         rewrites.append((r"decode_floor=1\.0\)", lambda _: f"decode_floor=1.0, decode_floors=({floors},){margin})"))
-    # The commission refuses a pause_order or quality_every_load that is not true.
-    if {"replay_windows", "pause_order", "quality_every_load"} & set(operator):
-        pause = "".join(f', "{key}": {operator[key]!r}' for key in ("pause_order", "quality_every_load") if key in operator)
-        rewrites.append((r'"windows": (\d+)', lambda m: f'"windows": {operator.get("replay_windows", m[1])}{pause}'))
+    # The commission refuses boolean replay flags that are not true.
+    replay_flags = ("pause_order", "quality_every_load", "flush_each_load", "feedback_turns", "load_sessions")
+    if ({"replay_windows", *replay_flags}) & set(operator):
+        extra = "".join(f', "{key}": {operator[key]!r}' for key in replay_flags if key in operator)
+        rewrites.append((r'"windows": (\d+)', lambda m: f'"windows": {operator.get("replay_windows", m[1])}{extra}'))
     # The commission refuses a zero count, so no warm windows drops the packet's key.
     if "replay_warm_windows" in operator:
         warm = operator["replay_warm_windows"]
         rewrites.append((r'\n[ \t]*"warm_windows": \d+,' if not warm else r'"warm_windows": \d+',
                          (lambda _: "") if not warm else (lambda _: f'"warm_windows": {warm}')))
+    if "service_contract" in operator:
+        sc = operator["service_contract"]
+        itl = f', max_itl_s={sc["max_itl_s"]}' if "max_itl_s" in sc else ""
+        rewrites.append((
+            r"ServiceContract\([^)]+\)",
+            lambda _: f'ServiceContract({sc["decode_floor_tps"]}, {sc["ttft_bound_s"]}, {sc["attainment"]}{itl})',
+        ))
+    if "temperature" in operator:
+        rewrites.append((r'"temperature": (?:"\d+(?:\.\d+)?"|\d+(?:\.\d+)?)', lambda _: f'"temperature": "{operator["temperature"]}"'))
     for pattern, value in rewrites:
         text, count = re.subn(pattern, value, text)
         if count != 1:

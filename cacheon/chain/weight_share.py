@@ -508,24 +508,6 @@ def write_authenticated_weight_offer(
     return _write_offer_storage(path, stored)
 
 
-def read_current_weight_offer(path: str | Path) -> CurrentWeightOffer:
-    """Reopen one persisted local current-weight offer."""
-
-    target = Path(path)
-    try:
-        raw = target.read_bytes()
-    except FileNotFoundError as exc:
-        raise WeightShareError("current weight offer is missing") from exc
-    except OSError as exc:
-        raise WeightShareError(f"current weight offer cannot be read: {exc}") from None
-    stored = _parse_offer_storage(raw)
-    if type(stored) is not CurrentWeightOffer:
-        raise WeightShareError(
-            "current weight offer is authenticated storage, not a raw offer"
-        )
-    return stored
-
-
 def read_offer_storage(
     path: str | Path,
 ) -> CurrentWeightOffer | AuthenticatedWeightOffer:
@@ -611,27 +593,6 @@ def put_authenticated_weight_offer(
             "authenticated weight offer requires an exact envelope"
         )
     return _put_offer_storage(store, stored, key=key)
-
-
-def load_current_weight_offer_from_store(
-    store: ObjectStore,
-    *,
-    key: str = DEFAULT_REMOTE_OFFER_KEY,
-) -> CurrentWeightOffer:
-    """Load the current offer from object storage (serve-weights path)."""
-
-    try:
-        raw = store.get_bytes(key)
-    except ObjectStoreError as exc:
-        if getattr(exc, "retryable", False):
-            raise WeightShareRetryableError(str(exc)) from None
-        raise WeightShareError(str(exc)) from None
-    stored = _parse_offer_storage(raw)
-    if type(stored) is not CurrentWeightOffer:
-        raise WeightShareError(
-            "current weight offer is authenticated storage, not a raw offer"
-        )
-    return stored
 
 
 def load_offer_storage_from_store(
@@ -1496,7 +1457,6 @@ __all__ = [
     "default_offer_path",
     "default_verify_fn",
     "fetch_current_weights",
-    "load_current_weight_offer_from_store",
     "load_offer_storage_from_store",
     "local_offer_loader",
     "object_store_offer_loader",
@@ -1508,7 +1468,6 @@ __all__ = [
     "put_authenticated_weight_offer",
     "put_current_weight_offer",
     "read_offer_storage",
-    "read_current_weight_offer",
     "rebind_offer_signer",
     "rebind_projection_signer",
     "request_auth_digest",

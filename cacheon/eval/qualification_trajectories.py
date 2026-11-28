@@ -46,15 +46,23 @@ def _load_pool(replay, load: int) -> dict[str, int]:
         path = replay.slice.directory / f"{index:03d}_{session.id}.json"
         trace = json.loads(path.read_text())
         counts = [0, 0]
-        for outer, request in enumerate(trace["requests"]):
-            nested = request.get("requests")
-            rows = [(None, request)] if nested is None else enumerate(nested)
-            for inner, row in rows:
-                count = row["out"]
+        if replay.slice.loader == "multi_turn_tokens":
+            for outer, turn in enumerate(trace["turns"]):
+                count = turn["out_len"]
                 if type(count) is not int or count < 1:
                     raise QualificationError("replay quality requires a positive recorded output budget")
-                result[source_digest(replay, session.id, outer, inner, load)] = count
-                counts[inner is not None] += 1
+                result[source_digest(replay, session.id, outer, None, load)] = count
+                counts[0] += 1
+        else:
+            for outer, request in enumerate(trace["requests"]):
+                nested = request.get("requests")
+                rows = [(None, request)] if nested is None else enumerate(nested)
+                for inner, row in rows:
+                    count = row["out"]
+                    if type(count) is not int or count < 1:
+                        raise QualificationError("replay quality requires a positive recorded output budget")
+                    result[source_digest(replay, session.id, outer, inner, load)] = count
+                    counts[inner is not None] += 1
         if tuple(counts) != (session.main_turns, session.inner_requests):
             raise QualificationError("replay prompt pool differs from the sealed turn counts")
     return result
@@ -98,20 +106,51 @@ def selected_frames(lifecycle):
 def _source_rows(replay, directory: Path, batches, load: int):
     rows = {row.request_id: row for row in batches}
     result = {}
-    # Every window replays the same prompts; the first is the one every sequential read retains.
-    path = _window(directory, replay, load) / "aiperf" / "profile_export.jsonl"
-    for line in path.read_text().splitlines():
-        meta = json.loads(line)["metadata"]
-        if meta["benchmark_phase"] != "profiling":
-            continue
-        key = source_digest(replay, meta["source_trace_id"], meta["source_outer_idx"], meta.get("source_inner_idx"),
-                            load)
-        request_id = UUID(meta["x_request_id"]).hex
-        if key in result or request_id not in rows:
-            raise QualificationError("replay source-to-request join is not one-to-one")
-        result[key] = rows[request_id]
+    if replay.slice.loader == "multi_turn_tokens":
+        path = _window(directory, replay, load) / "bridge.jsonl"
+        for line in path.read_text().splitlines():
+            meta = json.loads(line)
+            key = source_digest(replay, meta["root_session_id"], meta["outer"], None, load)
+            request_id = meta["request_id"]
+            if key in result or request_id not in rows:
+                raise QualificationError("replay source-to-request join is not one-to-one")
+            result[key] = rows[request_id]
+    else:
+        # Every window replays the same prompts; the first is the one every sequential read retains.
+        path = _window(directory, replay, load) / "aiperf" / "profile_export.jsonl"
+        for line in path.read_text().splitlines():
+            meta = json.loads(line)["metadata"]
+            if meta["benchmark_phase"] != "profiling":
+                continue
+            key = source_digest(replay, meta["source_trace_id"], meta["source_outer_idx"], meta.get("source_inner_idx"),
+                                load)
+            request_id = UUID(meta["x_request_id"]).hex
+            if key in result or request_id not in rows:
+                raise QualificationError("replay source-to-request join is not one-to-one")
+            result[key] = rows[request_id]
     if set(result) != set(_load_pool(replay, load)):
         raise QualificationError("replay quality sources differ from the committed prompt pool")
+    return result
+
+
+def _matched_by_records(execution, arm, replay, load: int):
+    """Join one stored lifetime's window to source digests using its validated turn records."""
+    rows = _timed_rows(execution, arm, replay, load)
+    read = next(r for r in execution.session.replay_reads if r.load == load and r.window == 1)
+    by_start = sorted(rows, key=lambda r: (
+        r.request_started_at, r.response_completed_at,
+        r.evidence.prompts[0].prompt_tokens, len(r.evidence.prompts[0].output_ids),
+    ))
+    records = sorted(read.records, key=lambda r: (
+        r.request_start_ns, r.request_end_ns, r.prompt_tokens, r.output_tokens,
+    ))
+    result = {}
+    for row, record in zip(by_start, records, strict=True):
+        prompt = row.evidence.prompts[0]
+        if prompt.prompt_tokens != record.prompt_tokens or len(prompt.output_ids) != record.output_tokens:
+            raise QualificationError("stored turn record differs from its timed batch evidence")
+        key = source_digest(replay, record.root_session_id, record.ordinal, None, load)
+        result[key] = row
     return result
 
 
@@ -147,6 +186,7 @@ def create_controls(value, reference, candidate, candidate_directory, candidate_
     """Select stored stock controls after the candidate's timed reads and teardown; no engine runs."""
     from cacheon.eval.agent_replay import _PROMPTS
     from cacheon.eval.goodput_runtime import _reference_arm
+    from cacheon.eval.multiturn_replay import reconstruct_turn_inputs
 
     plan = value.resident_speed_plan
     replay = plan.baseline.session_plan.replay
@@ -158,7 +198,10 @@ def create_controls(value, reference, candidate, candidate_directory, candidate_
         sources = _source_rows(replay, candidate_directory, candidate.session.batches, load)
         compared.update(sources)
         for joined, row in zip((stock, control), lifetimes):
-            joined.update(_matched(_timed_rows(row, arm, replay, load), sources, pool))
+            if replay.feedback_turns:
+                joined.update(_matched_by_records(row, arm, replay, load))
+            else:
+                joined.update(_matched(_timed_rows(row, arm, replay, load), sources, pool))
     pairs = tuple((key, stock[key].batch_index, compared[key].batch_index) for key in sorted(compared))
     entropy = entropy_provider(value.commitment, candidate_quiescence)
     selection = SelectionReceipt.reveal(
@@ -168,6 +211,37 @@ def create_controls(value, reference, candidate, candidate_directory, candidate_
             lifetimes[0].session.batches, candidate.session.batches,
         ),
     )
+    if replay.slice.loader == "multi_turn_tokens":
+        role_maps = ({}, {}, {})
+        for load in quality_loads(replay):
+            sessions = replay.sessions_at(load)
+            for role_map, joined in zip(role_maps, (stock, compared, control)):
+                outputs = {
+                    (s.id, ordinal): tuple(joined[source_digest(replay, s.id, ordinal, None, load)].evidence.prompts[0].output_ids)
+                    for s in replay.slice.sessions[:sessions] for ordinal in range(s.main_turns)
+                }
+                for (root_id, ordinal), ids in reconstruct_turn_inputs(
+                    replay.slice, sessions, outputs, feedback=replay.feedback_turns,
+                ).items():
+                    role_map[source_digest(replay, root_id, ordinal, None, load)] = ids
+        result = []
+        for key in selection.selected_prompt_digests:
+            role_batches = (stock[key], compared[key], control[key])
+            role_ids = tuple(role_map[key] for role_map in role_maps)
+            for ids, batch in zip(role_ids, role_batches):
+                if (hashlib.sha256(struct.pack(f">{len(ids)}I", *ids)).hexdigest(),) != batch.input_ids_sha256:
+                    raise QualificationError("selected replay input bytes changed after execution")
+            per_role = replay.feedback_turns
+            roles = tuple(
+                ReferenceRoleInput(
+                    tuple(batch.evidence.prompts[0].output_ids),
+                    ((),) * len(batch.evidence.prompts[0].output_ids),
+                    ids if per_role else (),
+                )
+                for batch, ids in zip(role_batches, role_ids)
+            )
+            result.append(ReferencePromptInput(key, "", roles, role_ids[0]))
+        return pairs, tuple(result), entropy
     by_request = {compared[key].request_id: key for key in selection.selected_prompt_digests}
     # bridge.jsonl names each input by digest; its IDs are the ones this evaluator process primed and sent.
     primed = {digest: ids for ids, digest, _place in _PROMPTS.values()}
@@ -217,7 +291,9 @@ def validate_controls(evidence, plan, stock_arm):
             raise QualificationError("replay source pairs do not cover the timed requests exactly")
     joined = {key: (rows[0][b], rows[1][c]) for key, b, c in pairs}
     for key, (baseline, candidate) in joined.items():
-        if (not baseline.input_ids_sha256 or baseline.input_ids_sha256 != candidate.input_ids_sha256
+        if (not baseline.input_ids_sha256
+            or (not replay.feedback_turns and baseline.input_ids_sha256 != candidate.input_ids_sha256)
+            or (replay.feedback_turns and not candidate.input_ids_sha256)
             or any(len(row.evidence.prompts[0].output_ids) != pool[key] for row in (baseline, candidate))):
             raise QualificationError("replay source inputs or output budgets differ")
     keys = tuple(row.prompt_digest for row in evidence.reference_inputs)
@@ -229,12 +305,16 @@ def validate_controls(evidence, plan, stock_arm):
         for load in quality_loads(replay) for row in _timed_rows(control, stock_arm, replay, load)}
     for prompt in evidence.reference_inputs:
         baseline, candidate = joined[prompt.prompt_digest]
+        base_sha = hashlib.sha256(prompt.roles[0].input_bytes or prompt.input_bytes).hexdigest()
+        cand_sha = hashlib.sha256(prompt.roles[1].input_bytes or prompt.input_bytes).hexdigest()
+        ctrl_sha = hashlib.sha256(prompt.roles[2].input_bytes or prompt.input_bytes).hexdigest()
         if (prompt.roles[0].output_ids != baseline.evidence.prompts[0].output_ids
             or prompt.roles[1].output_ids != candidate.evidence.prompts[0].output_ids
-            or (hashlib.sha256(prompt.input_bytes).hexdigest(),) != baseline.input_ids_sha256
+            or (base_sha,) != baseline.input_ids_sha256
+            or (cand_sha,) != candidate.input_ids_sha256
             or any(any(role.supports) for role in prompt.roles)
             or (stored is not None
-                and (baseline.input_ids_sha256, tuple(prompt.roles[2].output_ids)) not in stored)):
+                and ((ctrl_sha,), tuple(prompt.roles[2].output_ids)) not in stored)):
             raise QualificationError("selected reference inputs differ from their timed replay requests")
 
 
@@ -258,7 +338,9 @@ def _rollout(
     )):
         if raw_position:
             raise owner.QualificationRunnerError("rollout support differs from its T request")
+        ent_val = getattr(teacher, "teacher_entropy", None)
+        ent = None if ent_val is None else owner.target_nll_from_f32(-ent_val)
         tokens.append(owner.RawTokenEvidence(
-            position, output_id, owner.target_nll_from_f32(teacher.target_logprob), None, None,
+            position, output_id, owner.target_nll_from_f32(teacher.target_logprob), None, None, ent,
         ))
     return owner.RawRolloutEvidence(tuple(tokens), ())

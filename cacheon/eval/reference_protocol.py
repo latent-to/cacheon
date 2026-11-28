@@ -21,7 +21,9 @@ REQUEST_MAGIC = b"ORQ1"
 EVIDENCE_MAGIC = b"ORE1"
 MIXED_REQUEST_MAGIC = b"ORQ2"
 TOKEN_REQUEST_MAGIC = b"ORQ3"
+ROLE_TOKEN_REQUEST_MAGIC = b"ORQ4"
 MIXED_EVIDENCE_MAGIC = b"ORE2"
+ENTROPY_EVIDENCE_MAGIC = b"ORE3"
 FRAME_HEADER_BYTES = 8
 MAX_REQUEST_BYTES = 128 * 1024 * 1024
 MAX_EVIDENCE_BYTES = 512 * 1024 * 1024
@@ -49,6 +51,7 @@ _U32 = struct.Struct(">I")
 _EVIDENCE_HEADER = struct.Struct(">16s32s32s32s16s16sIIIIH2x")
 _EVIDENCE_PROMPT = struct.Struct(">32sI32s")
 _TOKEN_EVIDENCE = struct.Struct(">fI")
+_TOKEN_ENTROPY_EVIDENCE = struct.Struct(">fIf")
 _F32 = struct.Struct(">f")
 
 
@@ -101,6 +104,7 @@ def _roles(value: object, expected: type, field: str) -> tuple:
 class ReferenceRoleInput:
     output_ids: tuple[int, ...]
     supports: tuple[tuple[int, ...], ...]
+    input_ids: tuple[int, ...] = field(default=(), metadata={"wire_optional": True})
 
     def __post_init__(self) -> None:
         outputs = tuple(
@@ -114,12 +118,23 @@ class ReferenceRoleInput:
             )
             for row in _tuple(self.supports, "supports")
         )
+        ids = _tuple(self.input_ids, "role canonical input IDs")
+        if ids:
+            if len(ids) > MAX_PROMPT_BYTES // _U32.size:
+                raise ReferenceProtocolError("role canonical prompt exceeds its byte bound")
+            for token in ids:
+                _integer(token, "role prompt token ID", 0, MAX_TOKEN_ID)
         if not outputs or len(supports) != len(outputs):
             raise ReferenceProtocolError("role output/support token coverage differs")
         if any(row != tuple(sorted(set(row))) for row in supports):
             raise ReferenceProtocolError("support rows must be unique and token-sorted")
         object.__setattr__(self, "output_ids", outputs)
         object.__setattr__(self, "supports", supports)
+        object.__setattr__(self, "input_ids", ids)
+
+    @property
+    def input_bytes(self) -> bytes:
+        return struct.pack(f">{len(self.input_ids)}I", *self.input_ids) if self.input_ids else b""
 
 
 @dataclass(frozen=True)
@@ -217,13 +232,21 @@ class ReferenceRequest:
         return tuple(len(prompt.roles[0].output_ids) for prompt in self.prompts)
 
     @property
+    def has_role_inputs(self) -> bool:
+        return any(role.input_ids for prompt in self.prompts for role in prompt.roles)
+
+    @property
     def request_magic(self) -> bytes:
+        if self.has_role_inputs:
+            return ROLE_TOKEN_REQUEST_MAGIC
         if bool(self.prompts[0].input_ids):
             return TOKEN_REQUEST_MAGIC
         return MIXED_REQUEST_MAGIC if len(set(self.token_counts)) > 1 else REQUEST_MAGIC
 
     @property
     def evidence_magic(self) -> bytes:
+        if self.request_magic == ROLE_TOKEN_REQUEST_MAGIC:
+            return ENTROPY_EVIDENCE_MAGIC
         return MIXED_EVIDENCE_MAGIC if self.request_magic != REQUEST_MAGIC else EVIDENCE_MAGIC
 
 
@@ -232,12 +255,20 @@ class ReferenceTokenEvidence:
     target_logprob: float
     true_argmax_token_id: int
     support_logprobs: tuple[float, ...]
+    teacher_entropy: float | None = field(default=None, metadata={"wire_optional": True})
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "target_logprob", _f32(self.target_logprob, "target logprob"))
         object.__setattr__(self, "true_argmax_token_id", _integer(self.true_argmax_token_id, "true argmax token", 0, MAX_TOKEN_ID))
         support = tuple(_f32(value, "support logprob") for value in _tuple(self.support_logprobs, "support logprobs"))
         object.__setattr__(self, "support_logprobs", support)
+        if self.teacher_entropy is not None:
+            if isinstance(self.teacher_entropy, bool) or not isinstance(self.teacher_entropy, (int, float)):
+                raise ReferenceProtocolError("teacher entropy must be numeric")
+            ent = float(self.teacher_entropy)
+            if not math.isfinite(ent) or not 0.0 <= ent <= -_LOGPROB_MIN:
+                raise ReferenceProtocolError("teacher entropy is nonfinite or outside its bound")
+            object.__setattr__(self, "teacher_entropy", _F32.unpack(_F32.pack(ent))[0])
 
 
 @dataclass(frozen=True)
@@ -294,9 +325,11 @@ class ReferenceEvidence:
 
 def _request_payload_size(request: ReferenceRequest) -> int:
     total = _REQUEST_HEADER.size
+    per_role = request.request_magic == ROLE_TOKEN_REQUEST_MAGIC
     for prompt, count in zip(request.prompts, request.token_counts, strict=True):
         geometry = _ROLE_COUNT * count * (1 + request.support_width) * _U32.size
-        total += (_PROMPT_HEADER.size + len(prompt.input_bytes) + geometry
+        role_inputs = sum(_U32.size + len(role.input_bytes) for role in prompt.roles) if per_role else 0
+        total += (_PROMPT_HEADER.size + len(prompt.input_bytes) + geometry + role_inputs
                   + (_U32.size if request.request_magic != REQUEST_MAGIC else 0))
     if total > MAX_REQUEST_BYTES:
         raise ReferenceProtocolError("reference request exceeds its hard byte bound")
@@ -336,6 +369,10 @@ def encode_reference_request(request: ReferenceRequest) -> bytes:
             payload.extend(_U32.pack(count))
         payload.extend(text)
         for role in prompt.roles:
+            if request.request_magic == ROLE_TOKEN_REQUEST_MAGIC:
+                rbytes = role.input_bytes
+                payload.extend(_U32.pack(len(rbytes)))
+                payload.extend(rbytes)
             for token in role.output_ids:
                 payload.extend(_U32.pack(token))
             for support in role.supports:
@@ -347,7 +384,8 @@ def encode_reference_request(request: ReferenceRequest) -> bytes:
 
 
 def decode_reference_request(frame: bytes) -> ReferenceRequest:
-    magic = frame[:4] if isinstance(frame, bytes) and frame[:4] in (MIXED_REQUEST_MAGIC, TOKEN_REQUEST_MAGIC) else REQUEST_MAGIC
+    magic = (frame[:4] if isinstance(frame, bytes)
+             and frame[:4] in (MIXED_REQUEST_MAGIC, TOKEN_REQUEST_MAGIC, ROLE_TOKEN_REQUEST_MAGIC) else REQUEST_MAGIC)
     payload = _payload(frame, magic, MAX_REQUEST_BYTES, "reference request")
     if len(payload) < _REQUEST_HEADER.size:
         raise ReferenceProtocolError("reference request binding is truncated")
@@ -376,7 +414,8 @@ def decode_reference_request(frame: bytes) -> ReferenceRequest:
         if text_size > MAX_PROMPT_BYTES:
             raise ReferenceProtocolError("reference prompt exceeds its byte bound")
         raw = take(text_size)
-        if magic == TOKEN_REQUEST_MAGIC:
+        is_tokens = magic in (TOKEN_REQUEST_MAGIC, ROLE_TOKEN_REQUEST_MAGIC)
+        if is_tokens:
             if text_size % _U32.size:
                 raise ReferenceProtocolError("canonical input bytes are not aligned token IDs")
             text = tuple(row[0] for row in struct.iter_unpack(">I", raw))
@@ -387,13 +426,19 @@ def decode_reference_request(frame: bytes) -> ReferenceRequest:
                 raise ReferenceProtocolError(f"reference prompt is not UTF-8: {exc}") from None
         roles = []
         for _role in range(_ROLE_COUNT):
+            role_ids: tuple[int, ...] = ()
+            if magic == ROLE_TOKEN_REQUEST_MAGIC:
+                rsize = _U32.unpack(take(_U32.size))[0]
+                if rsize > MAX_PROMPT_BYTES or rsize % _U32.size:
+                    raise ReferenceProtocolError("role canonical input bytes are invalid")
+                role_ids = tuple(row[0] for row in struct.iter_unpack(">I", take(rsize)))
             outputs = tuple(_U32.unpack(take(_U32.size))[0] for _ in range(count))
             supports = tuple(tuple(
                 _U32.unpack(take(_U32.size))[0] for _ in range(support_width)
             ) for _ in range(count))
-            roles.append(ReferenceRoleInput(outputs, supports))
-        prompts.append(ReferencePromptInput(prompt_digest.hex(), "" if magic == TOKEN_REQUEST_MAGIC else text,
-                                           tuple(roles), text if magic == TOKEN_REQUEST_MAGIC else ()))
+            roles.append(ReferenceRoleInput(outputs, supports, role_ids))
+        prompts.append(ReferencePromptInput(prompt_digest.hex(), "" if is_tokens else text,
+                                           tuple(roles), text if is_tokens else ()))
     if offset != len(payload):
         raise ReferenceProtocolError("reference request contains trailing bytes")
     result = ReferenceRequest(
@@ -412,7 +457,7 @@ def request_sha256(request: ReferenceRequest) -> str:
 def read_reference_request(read: Callable[[int], bytes]) -> ReferenceRequest:
     """Bound the frame before reading its payload from the worker's exact reader."""
     header = read(FRAME_HEADER_BYTES)
-    if header[:4] not in (REQUEST_MAGIC, MIXED_REQUEST_MAGIC, TOKEN_REQUEST_MAGIC):
+    if header[:4] not in (REQUEST_MAGIC, MIXED_REQUEST_MAGIC, TOKEN_REQUEST_MAGIC, ROLE_TOKEN_REQUEST_MAGIC):
         raise ReferenceProtocolError("reference request frame magic/version mismatch")
     size = _U32.unpack(header[4:])[0]
     if size > MAX_REQUEST_BYTES:
@@ -423,7 +468,8 @@ def read_reference_request(read: Callable[[int], bytes]) -> ReferenceRequest:
 def expected_evidence_payload_bytes(request: ReferenceRequest) -> int:
     if type(request) is not ReferenceRequest:
         raise ReferenceProtocolError("reference request is not typed")
-    per_token = _TOKEN_EVIDENCE.size + request.support_width * _F32.size
+    tok_struct = _TOKEN_ENTROPY_EVIDENCE if request.evidence_magic == ENTROPY_EVIDENCE_MAGIC else _TOKEN_EVIDENCE
+    per_token = tok_struct.size + request.support_width * _F32.size
     total = (_EVIDENCE_HEADER.size + len(request.prompts) * _EVIDENCE_PROMPT.size
              + _ROLE_COUNT * sum(request.token_counts) * per_token)
     if total > MAX_EVIDENCE_BYTES:
@@ -448,6 +494,7 @@ def _bind_evidence(evidence: ReferenceEvidence, request: ReferenceRequest) -> No
         row.prompt_digest for row in request.prompts
     ):
         raise ReferenceProtocolError("reference evidence prompt order differs from request")
+    want_entropy = request.evidence_magic == ENTROPY_EVIDENCE_MAGIC
     for prompt, expected_prompt, count in zip(evidence.prompts, request.prompts, request.token_counts, strict=True):
         if bool(expected_prompt.input_ids) and (
             prompt.prompt_token_count != len(expected_prompt.input_ids)
@@ -456,7 +503,9 @@ def _bind_evidence(evidence: ReferenceEvidence, request: ReferenceRequest) -> No
             raise ReferenceProtocolError("reference evidence changed the canonical input IDs")
         for role in prompt.roles:
             if len(role.tokens) != count or any(
-                len(token.support_logprobs) != request.support_width for token in role.tokens
+                len(token.support_logprobs) != request.support_width
+                or (token.teacher_entropy is not None) != want_entropy
+                for token in role.tokens
             ):
                 raise ReferenceProtocolError("reference evidence geometry differs from request")
             if any(token.true_argmax_token_id >= evidence.vocab_size for token in role.tokens):
@@ -467,6 +516,7 @@ def encode_reference_evidence(evidence: ReferenceEvidence, request: ReferenceReq
     if type(evidence) is not ReferenceEvidence or type(request) is not ReferenceRequest:
         raise ReferenceProtocolError("reference evidence/request is not typed")
     _bind_evidence(evidence, request)
+    want_entropy = request.evidence_magic == ENTROPY_EVIDENCE_MAGIC
     payload = bytearray(_EVIDENCE_HEADER.pack(
         bytes.fromhex(evidence.session_id), bytes.fromhex(evidence.launch_digest),
         bytes.fromhex(evidence.plan_digest), bytes.fromhex(evidence.request_sha256),
@@ -481,9 +531,14 @@ def encode_reference_evidence(evidence: ReferenceEvidence, request: ReferenceReq
         ))
         for role in prompt.roles:
             for token in role.tokens:
-                payload.extend(_TOKEN_EVIDENCE.pack(
-                    token.target_logprob, token.true_argmax_token_id
-                ))
+                if want_entropy:
+                    payload.extend(_TOKEN_ENTROPY_EVIDENCE.pack(
+                        token.target_logprob, token.true_argmax_token_id, token.teacher_entropy
+                    ))
+                else:
+                    payload.extend(_TOKEN_EVIDENCE.pack(
+                        token.target_logprob, token.true_argmax_token_id
+                    ))
                 for value in token.support_logprobs:
                     payload.extend(_F32.pack(value))
     if len(payload) != expected_evidence_payload_bytes(request):  # pragma: no cover
@@ -502,6 +557,7 @@ def decode_reference_evidence(frame: bytes, request: ReferenceRequest) -> Refere
         len(request.prompts), request.tokens_per_prompt, request.support_width
     ):
         raise ReferenceProtocolError("reference evidence geometry binding mismatch")
+    want_entropy = request.evidence_magic == ENTROPY_EVIDENCE_MAGIC
     offset = _EVIDENCE_HEADER.size
     prompts = []
     for count in request.token_counts:
@@ -511,14 +567,19 @@ def decode_reference_evidence(frame: bytes, request: ReferenceRequest) -> Refere
         for _role in range(_ROLE_COUNT):
             tokens = []
             for _position in range(count):
-                target, argmax = _TOKEN_EVIDENCE.unpack_from(payload, offset)
-                offset += _TOKEN_EVIDENCE.size
+                if want_entropy:
+                    target, argmax, entropy = _TOKEN_ENTROPY_EVIDENCE.unpack_from(payload, offset)
+                    offset += _TOKEN_ENTROPY_EVIDENCE.size
+                else:
+                    target, argmax = _TOKEN_EVIDENCE.unpack_from(payload, offset)
+                    offset += _TOKEN_EVIDENCE.size
+                    entropy = None
                 support = []
                 for _support in range(support_width):
                     (value,) = _F32.unpack_from(payload, offset)
                     offset += _F32.size
                     support.append(value)
-                tokens.append(ReferenceTokenEvidence(target, argmax, tuple(support)))
+                tokens.append(ReferenceTokenEvidence(target, argmax, tuple(support), entropy))
             roles.append(ReferenceRoleEvidence(tuple(tokens)))
         prompts.append(ReferencePromptEvidence(
             prompt_digest.hex(), prompt_tokens, prompt_token_digest.hex(), tuple(roles)
@@ -536,9 +597,9 @@ def decode_reference_evidence(frame: bytes, request: ReferenceRequest) -> Refere
 
 
 __all__ = [
-    "EVIDENCE_MAGIC", "FRAME_HEADER_BYTES", "MAX_EVIDENCE_BYTES",
+    "ENTROPY_EVIDENCE_MAGIC", "EVIDENCE_MAGIC", "FRAME_HEADER_BYTES", "MAX_EVIDENCE_BYTES",
     "MAX_DERIVED_LOGPROBS", "MAX_REQUEST_BYTES", "MAX_SUPPORT_UNION",
-    "REQUEST_MAGIC", "MIXED_REQUEST_MAGIC", "TOKEN_REQUEST_MAGIC", "MIXED_EVIDENCE_MAGIC", "ROLE_NAMES", "ReferenceEvidence",
+    "REQUEST_MAGIC", "MIXED_REQUEST_MAGIC", "TOKEN_REQUEST_MAGIC", "ROLE_TOKEN_REQUEST_MAGIC", "MIXED_EVIDENCE_MAGIC", "ROLE_NAMES", "ReferenceEvidence",
     "ReferencePromptEvidence",
     "ReferencePromptInput", "ReferenceProtocolError", "ReferenceRequest",
     "ReferenceRoleEvidence", "ReferenceRoleInput", "ReferenceTokenEvidence",

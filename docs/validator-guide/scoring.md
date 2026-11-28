@@ -78,6 +78,29 @@ the same reads, sealed noise and look z as the speedup, has its upper bound
 under it (`load_regression` names the load). It is one-sided, so a flat or noisy
 load and a smaller tradeoff pass; GLM-5.3-Flash PD seals `0.01`.
 
+Speed policy 24 adds commercial API-revenue and streaming-tail gates on top of the
+same single-lane boot statistics without changing policies 20–23:
+
+- `api_prices` (`input_per_m`, `cached_input_per_m`, `output_per_m`) replaces raw
+  elapsed seconds with `duration_s / list_usd` per load window, where each
+  completed turn's list value uses only validator-sealed ideal prefix-cache
+  overlap (`ideal_cached_tokens`, never candidate-reported cache hits) without
+  per-turn quality-weight amplification. Zero revenue grades candidate `FAIL`
+  (`service_revenue_zero`). Each load's 95th-percentile TTFT is hard-gated at
+  `contract.ttft_bound_s` (`service_ttft_not_met`) on both `open_reference` and
+  candidate reads.
+- `decode_p10_floors` enforces a hard 10th-percentile per-user decode floor per
+  load (`service_tail_floor_not_met`) so a candidate cannot sacrifice slow-tail
+  users to lift the median.
+- `itl_bound_s` enforces a hard 99th-percentile host-observed inter-token gap
+  bound (`service_itl_not_met`), timed strictly on the trusted host from
+  token-verified streaming progress frames (`phase_latency.HostTokenClock`).
+- Temperature-1 sampled replay requires two-sided `mean_nll` and/or
+  `entropy_residual` ($-\log p_t(y_t) - H(p_t)$) calibration
+  (`MetricCalibration(..., two_sided=True)`) so Pristine `T` rejects both
+  degraded outputs and greedy/logit-sharpening cheats that lower teacher NLL
+  (`.lower_bound`) to inflate draft acceptance.
+
 The exact thresholds come from a frozen `CalibrationManifest` bound to the
 measured reference, arena, runtime, model, hardware, workload, and verifier.
 Provenance still records the exact controller, but measurement reuse is not
@@ -91,7 +114,10 @@ quality is the teacher-NLL-only mode, digest-bound by a zero top-k width in the
 qualification profile and the raw quality binding. The pristine engine
 teacher-force-scores the exact retained token stream (target NLL and the
 teacher's own argmax per position) — the text the candidate was fast at is the
-text it is judged on, and no candidate code executes during scoring. No
+text it is judged on, and no candidate code executes during scoring. A replay
+decodes greedily or samples at temperature 1, the distribution the teacher
+scores; other temperatures are refused at commission. Sampling noise shows as
+stock-control drift, which above its frozen envelope yields `NO_DECISION`. No
 candidate distributions are retained, so no distribution evidence exists:
 absence is explicit (null, uniformly enforced at every layer), never zeros, and
 a threshold policy naming a distribution metric (`topk_kl`, `argmax_rate`,
@@ -168,9 +194,6 @@ returns.
 
 Finite-debt V2 is a retained design, not an implemented lane; it does not reuse this
 standing-decay formula. See [Emissions policy](../reference/emissions-policy.md).
-
-Read [Settlement and weights](settlement-and-weights.md) for transaction and publication
-details.
 
 ## What a result means
 

@@ -15,11 +15,18 @@ def _read(path, threshold):
     prompts = {}
     for row in json.loads(raw):
         key = row["key"]
-        nll = [-token[0] for token in row["tok"]]
+        toks = row["tok"]
+        nll = [-token[0] for token in toks]
         if key in prompts or not nll or any(not math.isfinite(x) or x < 0 for x in nll):
             raise ValueError(f"{path}: malformed teacher control")
-        prompts[key] = {"tokens": len(nll), "mean_nll": statistics.mean(nll),
-                        "tail_excess_nll": statistics.mean(max(0, x - threshold) for x in nll)}
+        entry = {"tokens": len(nll), "mean_nll": statistics.mean(nll),
+                 "tail_excess_nll": statistics.mean(max(0, x - threshold) for x in nll)}
+        if len(toks[0]) >= 3:
+            ent = [token[2] for token in toks]
+            if any(not math.isfinite(x) or x < 0 for x in ent):
+                raise ValueError(f"{path}: malformed teacher entropy")
+            entry["entropy_residual"] = statistics.mean(x - h for x, h in zip(nll, ent))
+        prompts[key] = entry
     return prompts, hashlib.sha256(raw).hexdigest()
 
 
@@ -35,7 +42,7 @@ def _number(value):
 
 def _stock_speed_noise(path):
     from cacheon.eval.goodput_runtime import GoodputPolicy, GoodputReadSet
-    from cacheon.eval.service_capacity import fixed_work_rate, steady_span_cost
+    from cacheon.eval.service_capacity import _read_cost
     from cacheon.stack_identity import canonical_json_bytes
 
     attempt = json.loads(path.read_bytes())
@@ -48,8 +55,10 @@ def _stock_speed_noise(path):
         costs = {}
         for r in reads.incumbent[i * count:(i + 1) * count]:
             work = reads.work(r.load)
-            cost = (steady_span_cost(r, work, policy.steady_span, bool(policy.cold_span)) if policy.steady_span else
-                    fixed_work_rate(r, work).elapsed_s)
+            cost = _read_cost(
+                r, work, steady_span=policy.steady_span, cold_span=bool(policy.cold_span),
+                prices=policy.api_prices, contract=policy.contract,
+            )
             costs.setdefault(r.load, []).append(cost)
         boots.append(statistics.mean(math.log(statistics.mean(v)) for v in costs.values()))
     stock = witness["goodput"]["value"]["incumbent"][:reads.reference_boots * count]
@@ -80,12 +89,19 @@ def measure(files, policy, speed_witness):
         for offset in (0, size):
             bounds = {}
             for name in policy["limits"]:
-                deltas = [values[key][name] - reference[key][name] for key in order[offset:offset + size]]
+                deltas = ([values[key][name] for key in order[offset:offset + size]]
+                          if name == "entropy_residual" else
+                          [values[key][name] - reference[key][name] for key in order[offset:offset + size]])
                 scored = list(map(abs, deltas)) if arm == "stock" else deltas
                 low, high = _interval(scored, z)
                 limit = float(policy["limits"][name]["stock_envelope" if arm == "stock" else "candidate_delta"])
                 bounds[name] = {"lower": low, "upper": high, "limit": limit}
-                if offset == 0:
+                if policy["limits"][name].get("two_sided") and arm != "stock":
+                    clow, chigh = _interval([-d for d in deltas], z)
+                    bounds[f"{name}.lower_bound"] = {"lower": clow, "upper": chigh, "limit": limit}
+                    if offset == 0:
+                        sample[name] = _number(max(0, max(low, clow) if arm == "negative" else max(high, chigh)))
+                elif offset == 0:
                     # The calibrated observation is the measured one-sided bound over the panel. Zero is the
                     # lower bound on deterioration. Preserve the signed interval in the receipt.
                     sample[name] = _number(max(0, low if arm == "negative" else high))

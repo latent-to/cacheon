@@ -67,6 +67,49 @@ from cacheon.target_catalog import default_target_catalog
 _STAGES = QUALIFICATION_STAGES
 
 
+_TEACHER_STRIPPED_KWARGS = frozenset({
+    "enable_hierarchical_cache",
+    "hicache_ratio",
+    "hicache_size",
+    "hicache_mem_layout",
+    "hicache_io_backend",
+    "hicache_write_policy",
+    "speculative_algorithm",
+    "speculative_num_steps",
+    "speculative_eagle_topk",
+    "speculative_num_draft_tokens",
+    "speculative_draft_model_path",
+    "speculative_draft_attention_backend",
+    "speculative_dspark_block_size",
+    "speculative_use_block_verification",
+    "enable_linear_replayssm_spec",
+    "cuda_graph_bs",
+    "cuda_graph_bs_decode",
+    "cuda_graph_max_bs_decode",
+    "cuda_graph_max_bs_prefill",
+    "cuda_graph_backend_prefill",
+})
+
+
+def _light_teacher_config(config):
+    """Strip decode graphs, speculation, and host HiCache from the prefill-only teacher T.
+
+    Pristine T runs only ``max_new_tokens=0`` teacher-forced prefill logprobs on a handful of
+    retained transcripts. Booting full serving graphs, draft workers, and 390 GB–1.4 TB HiCache
+    pools added 3–6 minutes of startup and SIGKILL teardown per PASS with zero numerical change
+    (H200 Inkling parity check 2026-11-27: max_abs_diff=0.0 across 2,048 tokens; 276 s -> 99 s).
+    """
+
+    stripped = {
+        key: value
+        for key, value in config.engine_kwargs.items()
+        if key not in _TEACHER_STRIPPED_KWARGS
+    }
+    # Leave CUDA driver headroom for symmetric-memory buffers (cuMemCreate) during 32K eager teacher prefill.
+    mem = min(config.mem_fraction_static, 0.80) if config.mem_fraction_static is not None else None
+    return replace(config, disable_cuda_graph=True, mem_fraction_static=mem, engine_kwargs=stripped)
+
+
 def _pristine_reference_authority(
     incumbent_launch: EngineLaunchSpec,
     baseline_session_plan: SessionExecutionPlan,
@@ -84,15 +127,19 @@ def _pristine_reference_authority(
     tree is what keeps T stock.
     """
 
+    pristine_config = _light_teacher_config(baseline_session_plan.engine_config)
     pristine_launch = replace(
         incumbent_launch,
         stack_digest=pristine_tree.stack_digest,
         tree_digest=pristine_tree.tree_digest,
         native_build_spec_digest=pristine_native.digest,
+        engine_config_digest=pristine_config.digest,
     )
     pristine_session_plan = replace(
         baseline_session_plan,
         launch_digest=pristine_launch.digest,
+        expected_engine_config_digest=pristine_config.digest,
+        engine_config=pristine_config,
         expected_preflight=expected_runtime_preflight(
             pristine_launch, runtime_preflight
         ),
@@ -331,13 +378,13 @@ def compose_commissioned_qualifications(
 
 
 def _require_replay_quality(policy, session_block) -> None:
-    """Replay quality is teacher NLL under greedy decoding; a sealed profile
-    asking for sampled or numeric hidden-task quality must die at commission,
-    not forty minutes into a measured run.
+    """Replay quality is teacher NLL of tokens decoded greedily or sampled at temperature 1, the unscaled
+    distribution the teacher scores; any other temperature, top-k evidence, or numeric hidden-task quality
+    must die at commission, not forty minutes into a measured run.
     """
 
-    if policy.topk_width != 0 or float(session_block["temperature"]) != 0:
-        raise B300QualificationCommissionError("goodput replay requires greedy decoding and teacher-NLL quality")
+    if policy.topk_width != 0 or float(session_block["temperature"]) not in (0, 1):
+        raise B300QualificationCommissionError("goodput replay requires greedy or temperature-1 decoding and teacher-NLL quality")
     if policy.hidden_tasks_required or policy.hidden_tasks_per_prompt:
         raise B300QualificationCommissionError("replay prompts require a teacher-only profile without numeric hidden tasks")
 
@@ -374,6 +421,9 @@ def _compose_locked(
     from cacheon.eval.goodput_runtime import GoodputPolicy
     settings = session_block["replay"]
     goodput = GoodputPolicy.from_dict(speed_block["goodput"])
+    load_sessions = tuple(
+        sorted(((int(k), int(v)) for k, v in settings.get("load_sessions", {}).items()), reverse=True)
+    )
     replay = AgentReplayPlan(
         Path(settings["manifest_path"]),
         tuple(sorted(settings["load"], reverse=True)) if type(settings["load"]) is list else (settings["load"],),
@@ -384,6 +434,9 @@ def _compose_locked(
         warm_windows=settings.get("warm_windows", 0),
         pause_order=settings.get("pause_order", False),
         quality_every_load=settings.get("quality_every_load", False),
+        flush_each_load=settings.get("flush_each_load", False),
+        load_sessions=load_sessions,
+        feedback_turns=settings.get("feedback_turns", False),
     )
     if replay.slice.digest != settings["slice_digest"]:
         raise B300QualificationCommissionError("replay slice differs from its sealed authority")
@@ -458,6 +511,12 @@ def _compose_locked(
     threshold, calibration_manifest, calibration_evidence = calibration_loader(
         inputs, calibration_context, screen_lane
     )
+    if float(session_block["temperature"]) == 1.0 and not any(
+        m.name in {"mean_nll", "entropy_residual"} and m.two_sided for m in calibration_manifest.quality_metrics
+    ):
+        raise B300QualificationCommissionError(
+            "temperature-1 replay requires two-sided mean_nll or entropy_residual calibration"
+        )
     evidence_root = _private_root(inputs.root / "qualification-evidence")
     materialization_root = _private_root(inputs.root / "qualification-candidates")
     calibration_ref = publish_calibration_evidence(

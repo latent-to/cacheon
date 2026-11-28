@@ -628,46 +628,25 @@ def _logprob_entry(value: object, *, label: str) -> tuple[float, int]:
 
 
 def _reference_role_evidence(
-    engine: object,
-    prompt_ids: list[list[int]],
-    role_inputs: list[object],
-    *,
-    vocab_size: int,
+    engine: object, prompt_ids: list[list[int]], role_inputs: list[object],
+    *, vocab_size: int, include_entropy: bool = False,
 ) -> list[object]:
-    from cacheon.eval.reference_protocol import (
-        ReferenceRoleEvidence,
-        ReferenceTokenEvidence,
-    )
+    from cacheon.eval.reference_protocol import ReferenceRoleEvidence, ReferenceTokenEvidence
 
     output_ids = [list(getattr(role, "output_ids")) for role in role_inputs]
-    support_ids = [
-        sorted({token for row in getattr(role, "supports") for token in row})
-        for role in role_inputs
-    ]
-    if any(
-        token >= vocab_size
-        for rows in (*output_ids, *support_ids)
-        for token in rows
-    ):
+    support_ids = [sorted({t for row in getattr(role, "supports") for t in row}) for role in role_inputs]
+    if any(token >= vocab_size for rows in (*output_ids, *support_ids) for token in rows):
         raise SessionProtocolError("pristine reference request contains an OOV token")
     outputs = getattr(engine, "generate", None)
     if not callable(outputs):
         raise SessionProtocolError("pristine reference does not expose generate()")
-    # Width-zero (teacher-NLL-only) requests carry no support tokens: the
-    # teacher still scores every retained target and its own argmax, but no
-    # targeted support gather is asked of the engine at all.
-    targeted_kwargs = (
-        {"token_ids_logprob": support_ids} if any(support_ids) else {}
-    )
+    targeted_kwargs = {"token_ids_logprob": support_ids} if any(support_ids) else {}
     rows = outputs(
-        input_ids=[
-            prefix + response
-            for prefix, response in zip(prompt_ids, output_ids, strict=True)
-        ],
+        input_ids=[prefix + response for prefix, response in zip(prompt_ids, output_ids, strict=True)],
         sampling_params={"temperature": 0.0, "max_new_tokens": 0, "ignore_eos": True},
         return_logprob=True,
         logprob_start_len=[max(0, len(prefix) - 1) for prefix in prompt_ids],
-        top_logprobs_num=1,
+        top_logprobs_num=2 if include_entropy else 1,
         **targeted_kwargs,
     )
     if isinstance(rows, dict):
@@ -675,9 +654,7 @@ def _reference_role_evidence(
     if not isinstance(rows, list) or len(rows) != len(role_inputs):
         raise SessionProtocolError("pristine reference returned wrong prompt coverage")
     result: list[object] = []
-    for role, response, requested, row in zip(
-        role_inputs, output_ids, support_ids, rows, strict=True
-    ):
+    for role, response, requested, row in zip(role_inputs, output_ids, support_ids, rows, strict=True):
         metadata = row.get("meta_info") if isinstance(row, dict) else None
         if not isinstance(metadata, dict):
             raise SessionProtocolError("pristine reference output metadata is missing")
@@ -685,28 +662,31 @@ def _reference_role_evidence(
         top_one = metadata.get("input_top_logprobs")
         targeted = metadata.get("input_token_ids_logprobs")
         if targeted is None and not requested:
-            # No support gather was requested (teacher-NLL-only): the
-            # evidence carries exact empty support rows.
             targeted = [[] for _ in range(len(targets or []))]
         if not all(isinstance(value, list) for value in (targets, top_one, targeted)):
             raise SessionProtocolError("pristine reference omitted teacher logprobs")
-        targets = targets[-len(response):]
-        top_one = top_one[-len(response):]
-        targeted = targeted[-len(response):]
+        targets, top_one, targeted = targets[-len(response):], top_one[-len(response):], targeted[-len(response):]
         if not (len(targets) == len(top_one) == len(targeted) == len(response)):
             raise SessionProtocolError("pristine reference teacher coverage is incomplete")
         tokens = []
+        want_top = 2 if include_entropy else 1
         for position, (expected, raw_target, raw_top, raw_support) in enumerate(
             zip(response, targets, top_one, targeted, strict=True)
         ):
             target_logprob, target_id = _logprob_entry(raw_target, label="target")
             if target_id != expected:
                 raise SessionProtocolError("pristine reference scored the wrong target")
-            if not isinstance(raw_top, list) or len(raw_top) != 1:
+            if not isinstance(raw_top, list) or len(raw_top) != want_top:
                 raise SessionProtocolError("pristine reference true-argmax evidence is malformed")
             argmax_logprob, argmax_id = _logprob_entry(raw_top[0], label="argmax")
             if not 0 <= argmax_id < vocab_size:
                 raise SessionProtocolError("pristine reference argmax is out of vocabulary")
+            teacher_entropy = None
+            if include_entropy:
+                neg_ent, ent_id = _logprob_entry(raw_top[1], label="entropy")
+                if ent_id != 0 or neg_ent > 1e-4:
+                    raise SessionProtocolError("pristine reference teacher entropy entry is malformed")
+                teacher_entropy = max(0.0, -neg_ent)
             if not isinstance(raw_support, list):
                 raise SessionProtocolError("pristine reference support evidence is malformed")
             support_map: dict[int, float] = {}
@@ -718,18 +698,12 @@ def _reference_role_evidence(
             if tuple(sorted(support_map)) != tuple(requested):
                 raise SessionProtocolError("pristine reference support coverage differs")
             requested_position = getattr(role, "supports")[position]
-            if expected in support_map and not math.isclose(
-                support_map[expected], target_logprob, rel_tol=1e-4, abs_tol=1e-4
-            ):
+            if expected in support_map and not math.isclose(support_map[expected], target_logprob, rel_tol=1e-4, abs_tol=1e-4):
                 raise SessionProtocolError("pristine reference target/support logprobs disagree")
-            if argmax_id in support_map and not math.isclose(
-                support_map[argmax_id], argmax_logprob, rel_tol=1e-4, abs_tol=1e-4
-            ):
+            if argmax_id in support_map and not math.isclose(support_map[argmax_id], argmax_logprob, rel_tol=1e-4, abs_tol=1e-4):
                 raise SessionProtocolError("pristine reference argmax/support logprobs disagree")
             tokens.append(ReferenceTokenEvidence(
-                target_logprob,
-                argmax_id,
-                tuple(support_map[token] for token in requested_position),
+                target_logprob, argmax_id, tuple(support_map[token] for token in requested_position), teacher_entropy,
             ))
         result.append(ReferenceRoleEvidence(tuple(tokens)))
     return result
@@ -737,21 +711,21 @@ def _reference_role_evidence(
 
 def _reference_evidence(engine: object, request: object) -> object:
     from cacheon.eval.reference_protocol import (
-        ReferenceEvidence,
-        ReferencePromptEvidence,
-        request_sha256,
+        ENTROPY_EVIDENCE_MAGIC, ReferenceEvidence, ReferencePromptEvidence, request_sha256,
     )
 
     prompt_ids = [_canonical_prompt_ids(engine, item.input_ids or item.prompt) for item in request.prompts]
     vocab_size = _tokenizer_vocab_size(engine)
+    include_entropy = request.evidence_magic == ENTROPY_EVIDENCE_MAGIC
     roles = [
         _reference_role_evidence(
             engine,
-            prompt_ids,
-            [prompt.roles[index] for prompt in request.prompts],
-            vocab_size=vocab_size,
+            [_canonical_prompt_ids(engine, p.roles[i].input_ids) if p.roles[i].input_ids else pids
+             for p, pids in zip(request.prompts, prompt_ids, strict=True)],
+            [prompt.roles[i] for prompt in request.prompts],
+            vocab_size=vocab_size, include_entropy=include_entropy,
         )
-        for index in range(3)
+        for i in range(3)
     ]
     prompts = []
     for index, (prompt, ids) in enumerate(zip(request.prompts, prompt_ids, strict=True)):
@@ -763,15 +737,8 @@ def _reference_evidence(engine: object, request: object) -> object:
             tuple(role[index] for role in roles),
         ))
     return ReferenceEvidence(
-        request.session_id,
-        request.launch_digest,
-        request.plan_digest,
-        request_sha256(request),
-        request.request_id,
-        request.nonce,
-        request.request_index,
-        vocab_size,
-        tuple(prompts),
+        request.session_id, request.launch_digest, request.plan_digest, request_sha256(request),
+        request.request_id, request.nonce, request.request_index, vocab_size, tuple(prompts),
     )
 
 
@@ -862,6 +829,8 @@ def run_session(*, input_fd: int = 0, output_fd: int | None = None) -> int:
             raise SessionProtocolError(
                 "reference trees must contain no contribution manifest"
             )
+        if session_protocol == "reference":
+            os.environ["CACHEON_TEACHER_ENTROPY"] = "1"
         engine_context = (
             _engine_session(config, tree)
             if audit_policy is None

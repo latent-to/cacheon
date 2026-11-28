@@ -58,11 +58,26 @@ _BANNED_CACHEON_IMPORTS = (
     "cacheon.seam",
 )
 
+# Non-slot SGLang engine control planes (audit #3/#5): a bundle replaces only its
+# registered slot through the declared ABI and may not import or patch scheduler
+# lifecycle, speculative verification, sampling, ServerArgs, or graph runners.
+_BANNED_SGLANG_IMPORTS = (
+    "sglang.srt.managers.scheduler",
+    "sglang.srt.managers.tokenizer_manager",
+    "sglang.srt.managers.detokenizer_manager",
+    "sglang.srt.speculative",
+    "sglang.srt.sampling",
+    "sglang.srt.layers.sampler",
+    "sglang.srt.server_args",
+    "sglang.srt.model_executor.model_runner",
+    "sglang.srt.model_executor.cuda_graph_runner",
+)
+
 
 def _banned_cacheon_import(name: str) -> bool:
     return name == "cacheon" or any(
         name == prefix or name.startswith(prefix + ".")
-        for prefix in _BANNED_CACHEON_IMPORTS
+        for prefix in (*_BANNED_CACHEON_IMPORTS, *_BANNED_SGLANG_IMPORTS)
     )
 
 # Attribute calls that indicate egress / process control / dlopen. Kept narrow

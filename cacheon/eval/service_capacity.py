@@ -12,8 +12,15 @@ from __future__ import annotations
 import math
 from statistics import NormalDist
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from cacheon.eval.api_revenue import (
+    ApiPriceTable,
+    decode_p10,
+    effective_revenue_summary,
+    itl_p99_s,
+    ttft_p95_s,
+)
 from cacheon.eval.speed_verdict import SpeedStageDecision
 
 TURN_KINDS = frozenset({"main", "inner"})
@@ -26,18 +33,21 @@ class ServiceEvidenceError(ValueError):
 
 @dataclass(frozen=True)
 class ServiceContract:
-    """The promise a turn must meet: decode speed floor and a queue-inclusive TTFT bound."""
+    """The promise a turn must meet: decode speed floor, queue-inclusive TTFT, and optional ITL stall bound."""
 
     decode_floor_tps: float
     ttft_bound_s: float
     attainment: float
+    max_itl_s: float = field(default=0.0, metadata={"wire_optional": True})
 
     def __post_init__(self) -> None:
-        for field in ("decode_floor_tps", "ttft_bound_s"):
-            if not _finite_positive(getattr(self, field)):
-                raise ServiceEvidenceError(f"service contract {field} must be positive")
+        for name in ("decode_floor_tps", "ttft_bound_s"):
+            if not _finite_positive(getattr(self, name)):
+                raise ServiceEvidenceError(f"service contract {name} must be positive")
         if not _finite_positive(self.attainment) or self.attainment > 1.0:
             raise ServiceEvidenceError("service contract attainment must be in (0, 1]")
+        if isinstance(self.max_itl_s, bool) or not isinstance(self.max_itl_s, (int, float)) or not math.isfinite(float(self.max_itl_s)) or float(self.max_itl_s) < 0:
+            raise ServiceEvidenceError("service contract max_itl_s must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -60,6 +70,8 @@ class TurnRecord:
     output_tokens: int
     status: str
     cached_tokens: int | None = None
+    max_itl_ns: int | None = field(default=None, metadata={"wire_optional": True})
+    ideal_cached_tokens: int | None = field(default=None, metadata={"wire_optional": True})
 
     def __post_init__(self) -> None:
         if not self.root_session_id or self.kind not in TURN_KINDS or self.status not in TURN_STATUSES:
@@ -80,6 +92,12 @@ class TurnRecord:
             raise ServiceEvidenceError("turn record token counts must be non-negative ints")
         if self.status == "ok" and self.output_tokens == 0:
             raise ServiceEvidenceError("a completed turn delivered no tokens")
+        if self.max_itl_ns is not None and (type(self.max_itl_ns) is not int or self.max_itl_ns < 0):
+            raise ServiceEvidenceError("turn record max_itl_ns must be a non-negative int")
+        if self.ideal_cached_tokens is not None and (
+            type(self.ideal_cached_tokens) is not int or not 0 <= self.ideal_cached_tokens <= self.prompt_tokens
+        ):
+            raise ServiceEvidenceError("turn record ideal_cached_tokens is out of range")
 
     @property
     def ttft_s(self) -> float:
@@ -97,6 +115,10 @@ class TurnRecord:
 
     def meets(self, contract: ServiceContract) -> bool:
         if self.status != "ok" or self.ttft_s > contract.ttft_bound_s:
+            return False
+        if contract.max_itl_s > 0 and self.output_tokens > 1 and (
+            self.max_itl_ns is None or self.max_itl_ns / 1e9 > contract.max_itl_s
+        ):
             return False
         rate = self.decode_tps
         return rate is None or rate >= contract.decode_floor_tps
@@ -168,20 +190,17 @@ def fixed_work_rate(read: LoadRead, expected: dict[str, tuple[int, int]]) -> Wor
     return WorkRate(len(warm), latency, len(warm) / latency)
 
 
-def steady_span_cost(read: LoadRead, expected: dict[str, tuple[int, int]], share: float,
-                     from_cold_round: bool = False) -> float:
-    """Seconds per warm turn until active sessions fall below ``share`` of the load after the last session starts.
-
-    The fixed work must still complete. A closed loop holds the load until the slice runs out of sessions; the drain
-    after it runs on the longest few sessions, so their tails set the whole-span cost (four GLM stock lifetimes,
-    2026-11-12: per-lifetime geometric-mean spread 1.45% whole span, 0.58% at half the load).
-
-    ``from_cold_round`` starts the span at the host's release of the cold round and counts its turns. The first warm
-    credit is a candidate's: it exists once an opening finishes, so holding every opening kept the cold round off the
-    clock (slot audit #1, 2026-11-23)."""
+def _scored_span(read: LoadRead, expected: dict[str, tuple[int, int]], share: float,
+                 from_cold_round: bool = False) -> tuple[float, list[TurnRecord]]:
+    """Return ``(duration_s, scored_records)`` for one read under the sealed span policy."""
     fixed_work_rate(read, expected)
     cold = min(record.credit_issued_ns for record in read.records)
     warm = [record for record in read.records if record.credit_issued_ns != cold]
+    if not share:
+        scored = list(read.records) if from_cold_round else warm
+        start = cold if from_cold_round else min(r.credit_issued_ns for r in warm)
+        end = max(r.request_end_ns for r in scored)
+        return (end - start) / 1e9, scored
     sessions: dict[str, list[int]] = {}
     for record in read.records:
         span = sessions.setdefault(record.root_session_id, [record.credit_issued_ns, record.request_end_ns])
@@ -195,10 +214,37 @@ def steady_span_cost(read: LoadRead, expected: dict[str, tuple[int, int]], share
             end = time_ns
             break
     start = cold if from_cold_round else min(record.credit_issued_ns for record in warm)
-    turns = sum(record.request_end_ns <= end for record in (read.records if from_cold_round else warm))
-    if end <= start or not turns:
+    scored = [record for record in (read.records if from_cold_round else warm) if record.request_end_ns <= end]
+    if end <= start or not scored:
         raise ServiceEvidenceError("read has no steady warm turns")
-    return (end - start) / 1e9 / turns
+    return (end - start) / 1e9, scored
+
+
+def steady_span_cost(read: LoadRead, expected: dict[str, tuple[int, int]], share: float,
+                     from_cold_round: bool = False) -> float:
+    """Seconds per warm turn until active sessions fall below ``share`` of the load after the last session starts.
+
+    The fixed work must still complete. A closed loop holds the load until the slice runs out of sessions; the drain
+    after it runs on the longest few sessions, so their tails set the whole-span cost (four GLM stock lifetimes,
+    2026-11-12: per-lifetime geometric-mean spread 1.45% whole span, 0.58% at half the load).
+
+    ``from_cold_round`` starts the span at the host's release of the cold round and counts its turns. The first warm
+    credit is a candidate's: it exists once an opening finishes, so holding every opening kept the cold round off the
+    clock (slot audit #1, 2026-11-23)."""
+    duration_s, scored = _scored_span(read, expected, share, from_cold_round)
+    return duration_s / len(scored)
+
+
+def _read_cost(
+    read: LoadRead, expected: dict[str, tuple[int, int]], *,
+    steady_span: float, cold_span: bool, prices: ApiPriceTable | None, contract: ServiceContract,
+) -> float:
+    if prices is not None:
+        duration_s, scored = _scored_span(read, expected, steady_span, cold_span)
+        cost, _ = effective_revenue_summary(scored, duration_s, prices=prices, contract=contract)
+        return cost
+    return (steady_span_cost(read, expected, steady_span, cold_span) if steady_span
+            else fixed_work_rate(read, expected).elapsed_s)
 
 
 def attainment(read: LoadRead, contract: ServiceContract) -> float:
@@ -237,7 +283,8 @@ class ServiceVerdict:
 
 
 def _boot_costs(reads: Sequence[LoadRead], arm: str, expected: dict[int, dict[str, tuple[int, int]]],
-                steady_span: float = 0.0, cold_span: bool = False) -> list[dict[int, list[float]]]:
+                steady_span: float = 0.0, cold_span: bool = False, *,
+                prices: ApiPriceTable | None = None, contract: ServiceContract | None = None) -> list[dict[int, list[float]]]:
     """Split one arm's reads into engine lifetimes; a lifetime replays each load once, numbering its windows from 1."""
     boots: list[dict[int, list[float]]] = []
     for read in reads:
@@ -249,8 +296,10 @@ def _boot_costs(reads: Sequence[LoadRead], arm: str, expected: dict[int, dict[st
             if not boots or read.load in lifetime:
                 boots.append({})
             boots[-1][read.load] = []
-        boots[-1][read.load].append(steady_span_cost(read, expected[read.load], steady_span, cold_span) if steady_span
-                                    else fixed_work_rate(read, expected[read.load]).elapsed_s)
+        boots[-1][read.load].append(_read_cost(
+            read, expected[read.load], steady_span=steady_span, cold_span=cold_span,
+            prices=prices, contract=contract,
+        ))
     return boots
 
 
@@ -289,6 +338,7 @@ def reference_grade(
     attainment_tolerance: float, attainment_margin: float, futility_margin: float = 0.0,
     sentinel: Sequence[LoadRead] = (), decode_floors: dict[int, float] | None = None, reference_lane: str = "",
     load_margin: float = 0.0, steady_span: float = 0.0, futility_bar: float = 1.0, cold_span: bool = False,
+    prices: ApiPriceTable | None = None, itl_bound_s: float = 0.0, decode_p10_floors: dict[int, float] | None = None,
 ) -> ServiceVerdict:
     """Grade candidate engine lifetimes against a retained stock reference campaign on the same lane.
 
@@ -311,7 +361,9 @@ def reference_grade(
     ``decode_floors`` (version 20 on) also holds each load's pooled per-user decode p50 to its sealed floor at
     every look: a candidate below it fails, since served tokens bought by slowing every user are not
     revenue at the sealed price. A stock reference below it is a mis-sealed load that ``open_reference``
-    refuses before any candidate boot, never a candidate FAIL.
+    refuses before any candidate boot, never a candidate FAIL. When ``prices``, ``decode_p10_floors`` or
+    ``itl_bound_s`` are sealed (version 24), cost is inverse effective API revenue ($/GPU-hr at ideal cached
+    billing weighted by per-turn decode/TTFT/ITL attainment) and per-load p10 decode and p99 ITL are gated too.
     """
     if (not candidate or len(reference) < 2 or not 0 < error_rate < 0.5 or type(boots) is not int
         or not 2 <= boots <= 4 or any(not math.isfinite(v) or v < 0 for v in (window_noise, boot_noise))
@@ -326,10 +378,20 @@ def reference_grade(
             or len(set(starts)) != len(starts)
             or any(shapes.setdefault(read.load, shape) != shape for read in every for shape in (_work_shapes(read),))):
         raise ServiceEvidenceError("reference and candidate reads differ in lane, work or identity")
-    lifetimes = [_boot_costs(arm, role, expected, steady_span, cold_span)
+    lifetimes = [_boot_costs(arm, role, expected, steady_span, cold_span, prices=prices, contract=contract)
                  for arm, role in ((reference, "incumbent"), (candidate, "candidate"), (sentinel, "incumbent"))]
     if any(list(lifetime) != list(lifetimes[0][0]) for rows in lifetimes for lifetime in rows):
         raise ServiceEvidenceError("reference and candidate lifetimes replay different loads")
+    if any(not math.isfinite(cost) for rows in (lifetimes[0], lifetimes[2]) for lt in rows for cs in lt.values() for cost in cs):
+        raise ServiceEvidenceError("stock reference earned zero effective API revenue")
+    cand_zero = any(not math.isfinite(cost) for lt in lifetimes[1] for cs in lt.values() for cost in cs)
+    if cand_zero:
+        if sentinel:
+            raise ServiceEvidenceError("a stock sentinel follows only a passing reference comparison")
+        return ServiceVerdict(
+            SpeedStageDecision.FAIL, 0.0, 1.0,
+            "service_revenue_zero: candidate earned zero effective API revenue under the sealed promise",
+        )
     stock, terms, bracket = ([_boot_term(costs, window_noise, boot_noise) for costs in rows] for rows in lifetimes)
     look = len(terms)
     if len(stock) < 2 or look > boots or len(bracket) > 1:
@@ -353,12 +415,43 @@ def reference_grade(
     floors = decode_floors or {}
     below = [(load, rate, floor) for load, floor in sorted(floors.items())
              if (rate := decode_p50([read for read in candidate if read.load == load])) < floor]
+    p10_floors = decode_p10_floors or {}
+    below_p10 = [(load, rate, floor) for load, floor in sorted(p10_floors.items())
+                 if (rate := decode_p10([read for read in candidate if read.load == load])) < floor]
+    itl_breach = []
+    if itl_bound_s > 0.0:
+        for load in sorted(lifetimes[0][0]):
+            gap = itl_p99_s([read for read in candidate if read.load == load])
+            if gap is None or gap > itl_bound_s:
+                itl_breach.append((load, gap))
+    ttft_breach = []
+    if prices is not None:
+        for load in sorted(lifetimes[0][0]):
+            t95 = ttft_p95_s([read for read in candidate if read.load == load])
+            if t95 > contract.ttft_bound_s:
+                ttft_breach.append((load, t95))
     if below:
         load, rate, floor = below[0]
         # One load keeps the detail its historical verdicts were sealed with.
         decision, detail = SpeedStageDecision.FAIL, (
             f"service_floor_not_met: candidate decode p50 {rate:.1f} tok/s"
             f"{f' at {load} sessions' if len(floors) > 1 else ''} is below the sealed floor {floor:.4g}")
+    elif below_p10:
+        load, rate, floor = below_p10[0]
+        decision, detail = SpeedStageDecision.FAIL, (
+            f"service_tail_floor_not_met: candidate decode p10 {rate:.1f} tok/s at {load} sessions "
+            f"is below the sealed tail floor {floor:.4g}")
+    elif ttft_breach:
+        load, t95 = ttft_breach[0]
+        decision, detail = SpeedStageDecision.FAIL, (
+            f"service_ttft_not_met: candidate TTFT p95 {t95:.3f} s at {load} sessions "
+            f"exceeds the sealed bound {contract.ttft_bound_s:.4g} s")
+    elif itl_breach:
+        load, gap = itl_breach[0]
+        observed = "missing" if gap is None else f"{gap:.3f} s"
+        decision, detail = SpeedStageDecision.FAIL, (
+            f"service_itl_not_met: candidate streaming ITL p99 {observed} at {load} sessions "
+            f"exceeds the sealed bound {itl_bound_s:.4g} s")
     elif look >= 2 and a_cand - a_ref - attainment_margin < -attainment_tolerance:
         decision, detail = SpeedStageDecision.FAIL, (
             f"service_contract_not_met: pooled attainment {a_cand:.4f} against the reference's {a_ref:.4f} "

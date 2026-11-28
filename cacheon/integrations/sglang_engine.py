@@ -56,14 +56,37 @@ def _resolve(address: str):
     _refuse(address, "names no module of this engine", LookupError)
 
 
+_SAMPLING_GUARD_ATTRS = ("temperature", "top_p", "top_k", "min_p", "ignore_eos")
+
+
+def _snapshot_sampling_params(args, kwargs) -> list[tuple[object, tuple[object, ...]]]:
+    """Capture sampling_params on live requests entering an ENGINE_OBJECTS call."""
+    snaps: list[tuple[object, tuple[object, ...]]] = []
+    for obj in (*args, *kwargs.values()):
+        sp = getattr(obj, "sampling_params", None)
+        if sp is not None:
+            snaps.append((sp, tuple(getattr(sp, a, None) for a in _SAMPLING_GUARD_ATTRS)))
+        reqs = getattr(obj, "reqs", None)
+        if isinstance(reqs, list):
+            for req in reqs:
+                rsp = getattr(req, "sampling_params", None)
+                if rsp is not None:
+                    snaps.append((rsp, tuple(getattr(rsp, a, None) for a in _SAMPLING_GUARD_ATTRS)))
+    return snaps
+
+
 def _receipted(address: str, function):
     """Run a replacement so its raise is the candidate's. The candidate flag stays clear: a replaced
     scheduler method encloses forward passes, and a flagged call would serve every node inside it stock."""
 
     @functools.wraps(function)
     def call(*args, **kwargs):
+        snaps = _snapshot_sampling_params(args, kwargs)
         try:
             result = function(*args, **kwargs)
+            for sp, before in snaps:
+                if tuple(getattr(sp, a, None) for a in _SAMPLING_GUARD_ATTRS) != before:
+                    raise PermissionError(f"{address}: candidate mutated request sampling_params")
         except BaseException as exc:
             _receipts.failed(address, exc, entry=function)
             raise

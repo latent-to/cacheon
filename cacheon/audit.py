@@ -54,6 +54,7 @@ from cacheon.audit_gate import gate as gate
 logger = logging.getLogger("cacheon.audit")
 
 _state: dict = {"rate": None, "rng": None}
+_first_block: dict[str, tuple[int, int]] = {}
 _stats: dict[str, dict] = {}
 _diagnostic_bytes = 0
 _diagnostic_limit_reported = False
@@ -75,10 +76,28 @@ def _rate() -> float:
     return _state["rate"]
 
 
-def sampled() -> bool:
-    """Decide (per dispatcher call) whether this call is audited."""
+def sampled(key: str | None = None) -> bool:
+    """Decide (per dispatcher call) whether this call is audited.
+
+    When ``key`` (the bound node name) is supplied at a sub-100% rate, draw one
+    uniformly random offset in the node's first ``round(1 / rate)`` visits so
+    concrete per-layer bundles never end ``NO_DECISION`` from binomial misses
+    (observed on 44-slot bundle ``f4239908`` at 25%), then fall through to
+    memoryless Bernoulli sampling for all later visits.
+    """
     r = _rate()
-    return r > 0.0 and _state["rng"].random() < r
+    if r <= 0.0:
+        return False
+    if r >= 1.0 or key is None:
+        return r >= 1.0 or _state["rng"].random() < r
+    stride = max(1, round(1.0 / r))
+    seen, pick = _first_block.get(key, (0, -1))
+    if seen == 0:
+        pick = _state["rng"].randrange(stride)
+    _first_block[key] = (seen + 1, pick)
+    if seen < stride:
+        return seen == pick
+    return _state["rng"].random() < r
 
 
 def _slot_stats(slot: str) -> dict:

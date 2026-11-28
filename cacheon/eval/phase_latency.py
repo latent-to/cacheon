@@ -41,7 +41,8 @@ def _cache_report(meta: dict) -> dict:
 
 
 def token_boundary(
-    request: BatchRequest, index: int, boundary: str, token: int, cache: dict | None = None
+    request: BatchRequest, index: int, boundary: str, token: int, cache: dict | None = None,
+    *, completion_tokens: int | None = None,
 ) -> bytes:
     """Frame one token boundary under the existing batch identity."""
     return frame_message(
@@ -52,6 +53,7 @@ def token_boundary(
             "prompt_index": index,
             "boundary": boundary,
             "token_id": token,
+            **({"completion_tokens": completion_tokens} if completion_tokens is not None else {}),
             **(cache or {}),
         },
         max_bytes=MAX_CONTROL_BYTES,
@@ -85,6 +87,7 @@ async def generate_outputs(
     if emit is None:
         raise SessionProtocolError("phase measurement lacks its output transport")
     first: dict[int, int] = {}
+    last_step: dict[int, int] = {}
     final: dict[int, dict] = {}
     async for row in await generate(**kwargs, stream=True):
         if type(row) is not dict:
@@ -122,6 +125,7 @@ async def generate_outputs(
             raise SessionProtocolError("stream repeated a completed prompt")
         if index not in first:
             first[index] = ids[0]
+            last_step[index] = 1
             await emit(token_boundary(request, index, "first", ids[0]))
         elif ids[0] != first[index]:
             raise SessionProtocolError("stream changed its first token")
@@ -132,6 +136,14 @@ async def generate_outputs(
                 )
             final[index] = row
             await emit(token_boundary(request, index, "last", ids[-1], _cache_report(meta)))
+        elif 1 < reported < request.max_new_tokens and reported > last_step[index]:
+            # Emit token-bound intermediate ticks so the host clock observes mid-stream
+            # decode stalls (e.g. oversized prefill chunks) without trusting worker clocks.
+            step_token = ids[reported - 1]
+            if type(step_token) is not int:
+                raise SessionProtocolError("stream step lacks token ID")
+            last_step[index] = reported
+            await emit(token_boundary(request, index, "step", step_token, completion_tokens=reported))
     if len(final) != request.prompt_count:
         raise SessionProtocolError("stream ended without every prompt's final output")
     return [final[index] for index in range(request.prompt_count)]
@@ -200,16 +212,20 @@ class HostTokenClock:
         self.request, self.clock, self.started = request, clock, started
         self.previous = started
         self.events: dict[tuple[int, str], tuple[float, int]] = {}
+        self._last_at: dict[int, float] = {}
+        self._max_gap: dict[int, float] = {}
+        self._steps: dict[int, list[tuple[int, int]]] = {}
 
     def observe(self, message: dict) -> None:
-        """Accept one first/final token event in this batch's host clock domain."""
+        """Accept one first/step/final token event in this batch's host clock domain."""
         now = float(self.clock())
         if not math.isfinite(now) or now < self.previous:
             raise SessionProtocolError("host token clock moved backwards")
         cache = {key: message[key] for key in _CACHE_FIELDS if key in message} if type(message) is dict else {}
+        step_extra = {"completion_tokens"} if type(message) is dict and message.get("boundary") == "step" else set()
         if (
             type(message) is not dict
-            or set(message) - cache.keys() != _FIELDS
+            or set(message) - cache.keys() - step_extra != _FIELDS
             or (cache and (message.get("boundary") != "last" or _cache_report(cache) != cache))
             or message["schema"] != SESSION_SCHEMA
             or message["type"] != "token_boundary"
@@ -226,15 +242,38 @@ class HostTokenClock:
         if (
             type(index) is not int
             or not 0 <= index < self.request.prompt_count
-            or boundary not in ("first", "last")
+            or boundary not in ("first", "step", "last")
             or type(message["token_id"]) is not int
         ):
             raise SessionProtocolError("token boundary is malformed")
+        if boundary == "step":
+            count = message.get("completion_tokens")
+            seen = self._steps.get(index)
+            if (
+                (index, "first") not in self.events
+                or (index, "last") in self.events
+                or type(count) is not int
+                or not 1 < count < self.request.max_new_tokens
+                or (seen and count <= seen[-1][0])
+            ):
+                raise SessionProtocolError("token boundary is duplicate or out of order")
+            self._max_gap[index] = max(self._max_gap[index], now - self._last_at[index])
+            self._last_at[index] = now
+            self._steps[index].append((count, message["token_id"]))
+            self.previous = now
+            return
         key = index, boundary
         if key in self.events or (
             boundary == "last" and (index, "first") not in self.events
         ):
             raise SessionProtocolError("token boundary is duplicate or out of order")
+        if boundary == "first":
+            self._last_at[index] = now
+            self._max_gap[index] = 0.0
+            self._steps[index] = []
+        else:
+            self._max_gap[index] = max(self._max_gap[index], now - self._last_at[index])
+            self._last_at[index] = now
         self.events[key] = (now - self.started, message["token_id"])
         self.previous = now
 
@@ -248,7 +287,14 @@ class HostTokenClock:
         for index, prompt in enumerate(evidence.prompts):
             first, token = self.events[index, "first"]
             last, final_token = self.events[index, "last"]
-            if token != prompt.output_ids[0] or final_token != prompt.output_ids[-1]:
+            if (
+                token != prompt.output_ids[0]
+                or final_token != prompt.output_ids[-1]
+                or any(
+                    count >= len(prompt.output_ids) or tok != prompt.output_ids[count - 1]
+                    for count, tok in self._steps.get(index, ())
+                )
+            ):
                 raise SessionProtocolError(
                     "token boundaries disagree with final evidence"
                 )
@@ -260,6 +306,13 @@ class HostTokenClock:
                 )
             rows.append((first, last))
         return tuple(rows)
+
+    def max_gaps(self, evidence: BatchEvidence) -> tuple[float, ...]:
+        """Maximum host-observed inter-chunk gap (seconds) for each prompt after first token."""
+        return tuple(
+            self._max_gap.get(index, 0.0) if len(prompt.output_ids) > 1 else 0.0
+            for index, prompt in enumerate(evidence.prompts)
+        )
 
 
 def parse_batch_request(message: object, *, fields: frozenset[str]) -> BatchRequest:

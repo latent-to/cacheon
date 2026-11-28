@@ -23,6 +23,7 @@ from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal
 from pathlib import Path
 
+from cacheon.eval.api_revenue import ApiPriceTable, decode_p10, itl_p99_s, ttft_p95_s
 from cacheon.eval.continuation_codec import ContinuationCodec
 from cacheon.eval.service_capacity import LoadRead, ServiceContract, ServiceVerdict, fixed_work_rate
 from cacheon.eval.scoring import CrossoverRuntimeError, SpeedupVerdict, marginal_workload_digest
@@ -84,12 +85,20 @@ class GoodputPolicy:
     # candidate sets that credit by when it finishes an opening, so holding every opening hid the cold round from
     # the clock (slot audit #1, 2026-11-23; owner 2026-11-24). Sealed with steady_span.
     cold_span: float = field(default=0.0, metadata={"wire_optional": True})
+    # Commercial API list prices (USD/1M tokens): when sealed (policy 24+), score effective API $/GPU-hr
+    # using validator-sealed ideal cached input and per-turn decode/TTFT/ITL quality weights.
+    api_prices: ApiPriceTable | None = field(default=None, metadata={"wire_optional": True})
+    # Hard per-load streaming stall bound (host-observed max inter-token gap p99 in seconds; 0 = off).
+    itl_bound_s: float = field(default=0.0, metadata={"wire_optional": True})
+    # Per-load 10th-percentile per-user decode floor (tok/s keyed by session count; empty = off).
+    decode_p10_floors: tuple[tuple[int, float], ...] = field(default=(), metadata={"wire_optional": True})
 
     def __post_init__(self):
         values = (self.required, self.null_noise, self.attainment_tolerance, self.attainment_margin,
                   self.error_rate, self.boot_noise, self.futility_margin, self.attainment_pooled,
-                  self.decode_floor, self.load_margin, self.steady_span, self.bar_futility, self.cold_span)
-        floors = self.decode_floors
+                  self.decode_floor, self.load_margin, self.steady_span, self.bar_futility, self.cold_span,
+                  self.itl_bound_s)
+        floors, p10_floors = self.decode_floors, self.decode_p10_floors
         if (type(self.contract) is not ServiceContract
             or any(type(v) not in (int, float) or not math.isfinite(v) for v in values)
             or not (self.required == 1.0 if self.error_rate else 1 < self.required < 2)
@@ -102,17 +111,23 @@ class GoodputPolicy:
             or self.attainment_pooled not in (0, 1) or self.decode_floor not in (0, 1)
             or self.bar_futility not in (0, 1) or (self.bar_futility and not self.futility_margin)
             or self.cold_span not in (0, 1) or (self.cold_span and not self.steady_span)
+            or self.itl_bound_s < 0
+            or (self.api_prices is not None and type(self.api_prices) is not ApiPriceTable)
             or type(floors) is not tuple or (floors and not self.decode_floor)
+            or type(p10_floors) is not tuple
             or any(type(row) is not tuple or len(row) != 2 or type(row[0]) is not int or row[0] < 1
-                   or type(row[1]) not in (int, float) or not 0 < row[1] < math.inf for row in floors)
-            or [row[0] for row in floors] != sorted({row[0] for row in floors})):
+                   or type(row[1]) not in (int, float) or not 0 < row[1] < math.inf
+                   for table in (floors, p10_floors) for row in table)
+            or [row[0] for row in floors] != sorted({row[0] for row in floors})
+            or [row[0] for row in p10_floors] != sorted({row[0] for row in p10_floors})):
             raise ValueError("goodput calibration inputs are invalid")
         object.__setattr__(self, "contract", ServiceContract(**{
             name: float(value) for name, value in asdict(self.contract).items()
         }))
         object.__setattr__(self, "decode_floors", tuple((load, float(floor)) for load, floor in floors))
+        object.__setattr__(self, "decode_p10_floors", tuple((load, float(floor)) for load, floor in p10_floors))
         for name in self.__dataclass_fields__:
-            if name not in ("contract", "decode_floors"):
+            if name not in ("contract", "decode_floors", "decode_p10_floors", "api_prices"):
                 object.__setattr__(self, name, float(getattr(self, name)))
 
     def floors(self, loads) -> dict[int, float]:
@@ -124,15 +139,33 @@ class GoodputPolicy:
             raise ValueError("sealed decode floors name other loads than the replay")
         return floors
 
+    def p10_floors(self, loads) -> dict[int, float]:
+        """Each replayed load's per-user decode p10 floor; empty when unset."""
+        if not self.decode_p10_floors:
+            return {}
+        floors = dict(self.decode_p10_floors)
+        if set(floors) != set(loads):
+            raise ValueError("sealed decode p10 floors name other loads than the replay")
+        return floors
+
     def to_dict(self):
         """Seal contract and calibration values as canonical decimal strings."""
-        return {"contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
+        contract_dict = {
+            key: format(value, ".17g")
+            for key, value in asdict(self.contract).items()
+            if key != "max_itl_s" or value
+        }
+        return {"contract": contract_dict,
                 **{key: format(getattr(self, key), ".17g") for key in self.__dataclass_fields__
-                   if key not in ("contract", "decode_floors") and (self.error_rate or key not in ("error_rate", "boot_noise"))
+                   if key not in ("contract", "decode_floors", "decode_p10_floors", "api_prices")
+                   and (self.error_rate or key not in ("error_rate", "boot_noise"))
                    and (key not in ("futility_margin", "attainment_pooled", "decode_floor", "load_margin", "steady_span",
-                                    "bar_futility", "cold_span") or getattr(self, key))},
+                                    "bar_futility", "cold_span", "itl_bound_s") or getattr(self, key))},
                 **({"decode_floors": {str(load): format(floor, ".17g") for load, floor in self.decode_floors}}
-                   if self.decode_floors else {})}
+                   if self.decode_floors else {}),
+                **({"decode_p10_floors": {str(load): format(floor, ".17g") for load, floor in self.decode_p10_floors}}
+                   if self.decode_p10_floors else {}),
+                **({"api_prices": self.api_prices.to_dict()} if self.api_prices is not None else {})}
 
     @classmethod
     def from_dict(cls, value):
@@ -141,16 +174,23 @@ class GoodputPolicy:
         if type(value) is dict and "error_rate" not in value:
             fields -= {"error_rate", "boot_noise"}
         for optional in ("futility_margin", "attainment_pooled", "decode_floor", "decode_floors", "load_margin",
-                         "steady_span", "bar_futility", "cold_span"):
+                         "steady_span", "bar_futility", "cold_span", "api_prices", "itl_bound_s",
+                         "decode_p10_floors"):
             if type(value) is dict and optional not in value:
                 fields -= {optional}
         if (type(value) is not dict or set(value) != fields or type(value["contract"]) is not dict
-                or type(value.get("decode_floors", {})) is not dict):
+                or type(value.get("decode_floors", {})) is not dict
+                or type(value.get("decode_p10_floors", {})) is not dict):
             raise ValueError("goodput policy fields differ")
+        prices = ApiPriceTable.from_dict(value["api_prices"]) if "api_prices" in value else None
         result = cls(ServiceContract(**{key: float(v) for key, v in value["contract"].items()}),
-                     **{key: float(v) for key, v in value.items() if key not in ("contract", "decode_floors")},
+                     **{key: float(v) for key, v in value.items()
+                        if key not in ("contract", "decode_floors", "decode_p10_floors", "api_prices")},
                      decode_floors=tuple(sorted((int(load), float(floor))
-                                                for load, floor in value.get("decode_floors", {}).items())))
+                                                for load, floor in value.get("decode_floors", {}).items())),
+                     decode_p10_floors=tuple(sorted((int(load), float(floor))
+                                                    for load, floor in value.get("decode_p10_floors", {}).items())),
+                     api_prices=prices)
         if result.to_dict() != value:
             raise ValueError("goodput policy is not canonical")
         return result
@@ -182,10 +222,11 @@ class GoodputReadSet:
     load_roots: tuple[tuple[int, tuple[str, ...]], ...] = field(default=(), metadata={"wire_optional": True})
 
     def __post_init__(self):
+        root_loads = tuple(load for load, _ in self.load_roots)
         if (not self.incumbent or not self.candidate
             or tuple(sorted(set(self.expected))) != self.expected
             or len({row[0] for row in self.expected}) != len(self.expected)
-            or tuple(load for load, _ in self.load_roots) != self.loads[1:]
+            or root_loads not in (self.loads[1:], self.loads)
             or any(not roots or tuple(sorted(set(roots))) != roots or not set(roots) <= {row[0] for row in self.expected}
                    for _, roots in self.load_roots)):
             raise ValueError("goodput reads or fixed-work authority are incomplete")
@@ -234,6 +275,8 @@ class GoodputReadSet:
             attainment_margin=policy.attainment_margin, reference_lane=self.reference_lane,
             load_margin=policy.load_margin, steady_span=policy.steady_span, cold_span=bool(policy.cold_span),
             futility_bar=float(self.payment_bar) if policy.bar_futility and self.payment_bar else 1.0,
+            prices=policy.api_prices, itl_bound_s=policy.itl_bound_s,
+            decode_p10_floors=policy.p10_floors(self.loads),
         )
         if type(result) is not ServiceVerdict or not math.isfinite(result.ratio) or result.ratio <= 0:
             raise ValueError("service scorer returned another policy or result type")
@@ -433,21 +476,53 @@ def open_reference(plan, *, executor, model_mount, evidence_root, deadline):
         raise CrossoverRuntimeError("stock reference pair retained; candidates are read in a fresh evaluator process")
     from cacheon.eval.service_capacity import decode_p50
 
-    for load, floor in plan.policy.goodput.floors(plan.baseline.session_plan.replay.loads).items():
-        stock = decode_p50(tuple(read for row in executions for read in row.session.replay_reads if read.load == load))
+    loads = plan.baseline.session_plan.replay.loads
+    for load, floor in plan.policy.goodput.floors(loads).items():
+        load_reads = tuple(read for row in executions for read in row.session.replay_reads if read.load == load)
+        stock = decode_p50(load_reads)
         if stock < floor:
             # Stock under the floor means the arena sealed too many sessions; no candidate can be graded against it,
             # so the stage ends before spending candidate boots, and every later reopen fails the same way.
             raise CrossoverRuntimeError(f"stock reference decode p50 {stock:.1f} tok/s at {load} sessions is below "
                                         f"the sealed floor {floor:.4g}: the arena's session count is mis-sealed")
+    for load, floor in plan.policy.goodput.p10_floors(loads).items():
+        load_reads = tuple(read for row in executions for read in row.session.replay_reads if read.load == load)
+        stock_p10 = decode_p10(load_reads)
+        if stock_p10 < floor:
+            raise CrossoverRuntimeError(f"stock reference decode p10 {stock_p10:.1f} tok/s at {load} sessions is below "
+                                        f"the sealed tail floor {floor:.4g}: the arena's session count is mis-sealed")
+    if plan.policy.goodput.itl_bound_s > 0.0:
+        for load in loads:
+            load_reads = tuple(read for row in executions for read in row.session.replay_reads if read.load == load)
+            gap = itl_p99_s(load_reads)
+            if gap is None or gap > plan.policy.goodput.itl_bound_s:
+                raise CrossoverRuntimeError(
+                    f"stock reference streaming ITL p99 {gap} s at {load} sessions exceeds sealed bound "
+                    f"{plan.policy.goodput.itl_bound_s:.4g} s"
+                )
+    if plan.policy.goodput.api_prices is not None:
+        bound = plan.policy.goodput.contract.ttft_bound_s
+        for load in loads:
+            load_reads = tuple(read for row in executions for read in row.session.replay_reads if read.load == load)
+            t95 = ttft_p95_s(load_reads)
+            if t95 > bound:
+                raise CrossoverRuntimeError(
+                    f"stock reference TTFT p95 {t95:.3f} s at {load} sessions exceeds sealed bound {bound:.4g} s"
+                )
     return executions
 
 
 def _work(replay):
-    """The read set's fixed work: the first load's sessions, and the prefix each lower load replays."""
-    expected = tuple(sorted((root, main, inner) for root, (main, inner) in replay.slice.expected_work(replay.sessions).items()))
-    return dict(expected=expected, load_roots=tuple(
-        (load, tuple(sorted(replay.slice.expected_work(replay.sessions_at(load))))) for load in replay.loads[1:]))
+    """The read set's fixed work across every sealed load (supports decoupled per-load session counts)."""
+    max_sessions = max(replay.sessions_at(load) for load in replay.loads)
+    expected = tuple(sorted((root, main, inner) for root, (main, inner) in replay.slice.expected_work(max_sessions).items()))
+    if replay.sessions_at(replay.loads[0]) == max_sessions:
+        roots = tuple((load, tuple(sorted(replay.slice.expected_work(replay.sessions_at(load)))))
+                      for load in replay.loads[1:])
+    else:
+        roots = tuple((load, tuple(sorted(replay.slice.expected_work(replay.sessions_at(load)))))
+                      for load in replay.loads)
+    return dict(expected=expected, load_roots=roots)
 
 
 def run_reference_speed(plan, *, executor, model_mount, reference, evidence_root, deadline, clock,
@@ -635,9 +710,11 @@ def _validate_replay_sessions(sessions, replay):
                 if len(row.evidence.prompts) != 1 or len(row.prompt_latencies) != 1 or row.audit_receipts:
                     raise CrossoverRuntimeError("goodput request lacks its canonical token and timing evidence")
                 prompt = row.evidence.prompts[0]
+                expected_itl = round(row.prompt_max_itl_s[0] * 1e9) if row.prompt_max_itl_s else None
                 if (record.request_start_ns != offset + round(row.request_started_at * 1e9)
                     or record.first_token_ns != offset + round((row.request_started_at + row.prompt_latencies[0][0]) * 1e9)
                     or record.request_end_ns != offset + round(row.response_completed_at * 1e9)
+                    or (record.max_itl_ns is not None and record.max_itl_ns != expected_itl)
                     or (record.prompt_tokens, record.output_tokens) != (prompt.prompt_tokens, len(prompt.output_ids))
                     or row.token_numerator != record.output_tokens
                     or row.response_completed_at > session.session_completed_at):

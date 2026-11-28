@@ -384,13 +384,16 @@ class _Guard:
         self.publish()
 
     def finished(self, req) -> None:
-        """Forget the request; on an audited one, wait for its verdict and receipt it."""
+        """Forget the request; when auditing is armed, wait for its verdict and receipt it."""
 
         from cacheon import audit
 
         self.held.pop(req.rid, None)
         _receipts.completed(ADDRESS)
-        if audit.sampled():
+        # The GPU content check already runs on 100% of requests; recording every finished
+        # request when auditing is armed avoids Binomial under-coverage on small audit batches
+        # without extra GPU work (Inkling pc-1 under-coverage, 2026-11-23).
+        if audit._rate() > 0:
             self.poll(block=True)
             # The worker's typed receipt rejects the old "kv_content" mode (2026-09-29).
             audit.record_fraction(ADDRESS, 1.0, 1.0, "matched_ratio")

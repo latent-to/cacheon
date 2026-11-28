@@ -237,12 +237,24 @@
 # paragraph deleted), tests +23, scripts +14 (renderer, quality sealer, these notes). No unreferenced definition found.
 # A failing bundle review may name repackaged_upstream_pr (owner ruling 11-12; slot audit #11): cacheon +9, docs +4,
 # tests +20, scripts +2 (this note).
+# Eval real-world parity & overhead cuts (speed policy 24, direct multi-turn feedback replay with speed-invariant
+# staggered openings, ideal-cached API revenue $/GPU-hr, host-clocked streaming ITL, ORQ4 Light Pristine T with
+# 0.80 mem cap & per-role input_ids, two-sided T=1 mean_nll gate, Per-Visit compact Audit A, Audit #5 non-slot import
+# ban + post-load integrity + live sampling_params invariance, Inkling operator.json): cacheon +1,277/-318 (+959;
+# deletes read_current_weight_offer, _REPLAY_INPUTS; restores qualification_recovery & SealedTokenizerDecoder for
+# retained mainnet audit_recovery/commissioning packets; shrinks 4 oversized files and drops oci_outer_session &
+# calibration below 900L; next casualty: ~650L AIPerf/ReplayBridge once all arenas move to multi_turn_tokens),
+# docs +46/-15 (+31), examples +81/-1 (+80), scripts +93/-28 (+65), tests +473/-2 (+471).
+# Eval parity follow-up: unweighted ideal-cached list revenue + hard ttft_p95 SLA gate (-31L quality weights);
+# ORE3 fp32 teacher Shannon entropy martingale D_t=-log p_t(y_t)-H(p_t) via logprob_processor hook; Policy 24
+# crossover_runtime >=23 fix; Inkling L=6:48/L=8:115, chunk=32768, ORE3 limits: cacheon +42 (oci_session_worker
+# 930->905, reference_quality 895<900), examples -1 (649), scripts +13 (sealer + these notes), tests +170.
 (root) 1164
 .github 338
-cacheon 93104
+cacheon 94105
 cacheon_kernels 936
 dashboard 4421
-docs 13667
-examples 570
-scripts 4788
-tests 14582
+docs 13698
+examples 649
+scripts 4865
+tests 15223

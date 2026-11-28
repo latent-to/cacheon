@@ -664,10 +664,9 @@ def isolated_engine_session(
         with _environment(**{**session_environment, **placement}):
             import sglang as sgl
 
-            if audit_policy is not None:
-                # This is a separate, untimed fidelity role.  Timed B/C/B' plans
-                # carry no audit policy and therefore retain their sealed graph
-                # configuration and zero audit overhead.
+            if audit_policy is not None or (not install_seams and kwargs.get("disable_cuda_graph")):
+                # Untimed fidelity roles (eager audit A and graph-off pristine T) turn off
+                # prefill graphs too; timed B/C/B' plans retain their sealed graph config.
                 _eager_audit_engine(kwargs)
             # Emitted for the stock arm too, which has no receipt directory, so
             # this cannot ride on the receipts. Without it the settings that

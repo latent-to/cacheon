@@ -41,7 +41,7 @@ class ResidentSpeedPolicy:
     def __post_init__(self) -> None:
         if (
             type(self.version) is not int
-            or self.version not in (20, 21, 22, 23)
+            or self.version not in (20, 21, 22, 23, 24)
             or type(self.max_stage_seconds) is not int
             or not 60 <= self.max_stage_seconds <= 7_200
             or type(self.max_qualification_seconds) is not int
@@ -97,14 +97,24 @@ class ResidentSpeedPolicy:
 
     @property
     def digest(self) -> str:
+        aggregation = (
+            "log_mean_effective_api_revenue_cost_per_boot"
+            if self.version >= 24 and self.goodput.api_prices is not None
+            else "log_mean_elapsed_serving_time_per_boot"
+        )
+        gate = (
+            "pooled_decode_p50_p10_and_itl_at_every_look"
+            if self.version >= 24 and (self.goodput.itl_bound_s or self.goodput.decode_p10_floors)
+            else "pooled_decode_p50_at_every_look"
+        )
         return canonical_digest("cacheon.qualification.goodput-speed-policy.v1", {
             **self.to_dict(), "timing": "fixed_work_host_time", "repeat_limit": 0,
-            "topology": "one_engine_owns_the_lane" if self.version == 23 else "pd_prefill_decode_on_one_node",
+            "topology": "one_engine_owns_the_lane" if self.version >= 23 else "pd_prefill_decode_on_one_node",
             "reference_boots": self.reference_boots,
-            "candidate_boots": CANDIDATE_BOOTS, "aggregation": "log_mean_elapsed_serving_time_per_boot",
+            "candidate_boots": CANDIDATE_BOOTS, "aggregation": aggregation,
             "eligibility": "alpha_spending_0.05_0.05_0.10_0.80_at_boot_boundaries",
             "sentinel": "stock_bracket_after_pass_one_sided_0.01", "continuation": "completed_stage",
-            "arrival": "closed_loop_after_cold_round", "gate": "pooled_decode_p50_at_every_look",
+            "arrival": "closed_loop_after_cold_round", "gate": gate,
             **({"reference_pair_boots": CANDIDATE_BOOTS,
                 "reference_pair_process": "first_lifetimes_of_a_fresh_evaluator"} if self.version >= 21 else {}),
         })

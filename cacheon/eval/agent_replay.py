@@ -63,6 +63,13 @@ class AgentReplayPlan:
     # top load's first sessions, so a turn nothing graded could be answered with any tokens of the right length,
     # skipping its work on two of three equally weighted loads (slot audit #2, 2026-11-23; owner 2026-11-24).
     quality_every_load: bool = False
+    # Flush device and host prefix cache before every load, eliminating cross-load cache contamination.
+    flush_each_load: bool = False
+    # Optional per-load resident session counts ``((load, sessions), ...)`` decoupling active concurrency L from
+    # resident KV pressure S (e.g. L=10 active streams across S=60 paused sessions past the device KV pool).
+    load_sessions: tuple[tuple[int, int], ...] = ()
+    # Append each completed turn's actual generated output into turn t+1 (closes finish-checkpoint skip exploits).
+    feedback_turns: bool = False
     slice: SliceManifest = field(init=False, repr=False)
 
     def __post_init__(self):
@@ -71,18 +78,29 @@ class AgentReplayPlan:
         # warm-up and request indexing read them unchanged, as do quality controls not drawn from every load.
         if type(self.loads) is not tuple or not self.loads or list(self.loads) != sorted(set(self.loads), reverse=True):
             raise ValueError("replay needs descending distinct sealed loads")
+        if manifest.loader not in ("weka_trace", "multi_turn_tokens"):
+            raise ValueError("agent replay requires a supported sealed slice loader")
+        if self.feedback_turns and manifest.loader != "multi_turn_tokens":
+            raise ValueError("feedback_turns requires the multi_turn_tokens slice loader")
+        if self.load_sessions:
+            if (type(self.load_sessions) is not tuple
+                or any(type(row) is not tuple or len(row) != 2 or type(row[0]) is not int
+                       or type(row[1]) is not int or row[1] < row[0] for row in self.load_sessions)
+                or set(row[0] for row in self.load_sessions) != set(self.loads)
+                or len(self.load_sessions) != len(self.loads)):
+                raise ValueError("load_sessions must map each sealed load to resident sessions >= load")
         for load in self.loads:
-            manifest.expected_work(load)
-        if manifest.loader != "weka_trace":
-            raise ValueError("agent replay requires the sealed Weka loader")
+            manifest.expected_work(dict(self.load_sessions).get(load, load))
         if self.arm not in ("incumbent", "candidate") or not self.lane or self.window < 1:
             raise ValueError("agent replay read identity is invalid")
         if type(self.windows) is not int or self.windows < 1:
             raise ValueError("agent replay needs at least one sealed window")
         if type(self.warm_windows) is not int or not 0 <= self.warm_windows <= 2:
             raise ValueError("agent replay warm windows are outside their bound")
-        if type(self.pause_order) is not bool or type(self.quality_every_load) is not bool:
-            raise ValueError("replay release order and quality loads must be boolean")
+        if any(type(v) is not bool for v in (
+            self.pause_order, self.quality_every_load, self.flush_each_load, self.feedback_turns,
+        )):
+            raise ValueError("replay policy flags must be boolean")
         if type(self.max_work_seconds) is not int or not 0 <= self.max_work_seconds <= 7200:
             raise ValueError("replay work deadline is outside its bound")
         object.__setattr__(self, "slice", manifest)
@@ -97,11 +115,19 @@ class AgentReplayPlan:
         finished session handing its slot to the next: replaying only ``load`` sessions drained the window to its
         longest one (output per session spans 4.5x on the Weka slice, so mean concurrency fell to ~N/4.5). A lower
         load replays the slice's first sessions in proportion, so every load turns its slots over equally and a
-        window lasts about as long at each load (Shiv 2026-11-11: the battery must not lengthen a bundle's wall)."""
+        window lasts about as long at each load (Shiv 2026-11-11: the battery must not lengthen a bundle's wall).
+        When ``load_sessions`` is sealed, each load uses its explicit resident session count ``S >= L``."""
+        if self.load_sessions:
+            return dict(self.load_sessions)[load]
         return max(load, self.slice.max_load * load // self.loads[0])
 
     def workload_identity(self) -> dict:
         """Bind the consumed bytes, root accounting and replay policy, not local paths."""
+        contract_dict = {
+            key: format(value, ".17g")
+            for key, value in asdict(self.contract).items()
+            if key != "max_itl_s" or value
+        }
         return {
             "time_accounting": "elapsed-serving-span",
             **({"max_work_seconds": self.max_work_seconds} if self.max_work_seconds else {}),
@@ -110,15 +136,19 @@ class AgentReplayPlan:
             "rules_json": json.dumps(self.slice.rules, sort_keys=True, separators=(",", ":"), allow_nan=False),
             "expected_work": {str(load): self.slice.expected_work(self.sessions_at(load)) for load in self.loads},
             "loads": list(self.loads),
+            **({"load_sessions": {str(l): s for l, s in self.load_sessions}} if self.load_sessions else {}),
             "windows": self.windows,
             **({"warm_windows": self.warm_windows} if self.warm_windows else {}),
             "arrival": "closed-loop-after-cold-round",
             **({"release_order": "recorded-pause"} if self.pause_order else {}),
             **({"quality_loads": "every"} if self.quality_every_load else {}),
-            "contract": {key: format(value, ".17g") for key, value in asdict(self.contract).items()},
-            "client": "aiperf-0.13.0", "scenario": None, "ignore_trace_delays": True,
+            **({"feedback_turns": True} if self.feedback_turns else {}),
+            "contract": contract_dict,
+            "client": ("cacheon-multiturn-v1" if self.slice.loader == "multi_turn_tokens" else "aiperf-0.13.0"),
+            "scenario": None, "ignore_trace_delays": True,
             "cache_bust_identity": "sealed-slice-digest",
-            "cache_boundary": ("flush_device_and_host_before_each_load" if len(self.loads) == 1
+            "cache_boundary": ("flush_device_and_host_before_each_load"
+                               if len(self.loads) == 1 or self.flush_each_load
                                else "flush_device_and_host_before_top_load_windows"),
         }
 
@@ -274,8 +304,10 @@ class _Arrival:
     client's milliseconds; requests held behind a turn that never arrives fail after ``first_wait_s``.
     """
 
-    def __init__(self, openings: int, clock, limit: int | None = None, first_wait_s: float = _FIRST_ROUND_WAIT_S):
+    def __init__(self, openings: int, clock, limit: int | None = None, first_wait_s: float = _FIRST_ROUND_WAIT_S,
+                 open_stagger_s: float = 0.0):
         self.openings, self.clock, self.limit, self.first_wait_s = openings, clock, limit, first_wait_s
+        self.open_stagger_s = float(open_stagger_s)
         self.released = 0
         self._timer = None
         self.places: dict[str, _Place] = {}
@@ -286,20 +318,25 @@ class _Arrival:
         self.active: dict[int, int] = defaultdict(int)
         self.pauses: dict[int, float] = {}
         self.expected: dict[int, float] = {}
+        # Purely trace-derived virtual due times when open_stagger_s > 0 so release order and KV
+        # residency pressure are invariant to engine speed (never mixing fixed grid with engine clock).
+        self._v_due: dict[int, float] = {}
 
     async def hold(self, request_id: str, place: _Place) -> tuple[float, int]:
         """Wait for release; return the release time on the session clock and dispatch ordinal."""
         if self.limit is None and self.released:
             self.released += 1
             return self.clock(), self.released - 1
-        order, turn, _pause = self.places[request_id] = place
+        order, turn, _pause = place[:3]
+        self.places[request_id] = place
         self.active[order] += 1
         future = asyncio.get_running_loop().create_future()
         if self.released:
             due = self.expected.pop(order, None)
             if turn is not None:
                 self.pauses.pop(order, None)
-            self.waiting[request_id] = (self.clock() if due is None or turn is None else due, order, future)
+            fallback = self._v_due.get(order, 0.0) if self.open_stagger_s > 0.0 else self.clock()
+            self.waiting[request_id] = (fallback if due is None or turn is None else due, order, future)
             self._grant()
             return await future
         self.waiting[request_id] = (0.0, order, future)
@@ -315,13 +352,17 @@ class _Arrival:
         place = self.places.pop(request_id, None)
         if place is None:
             return
-        order, _turn, pause = place
+        order, _turn, pause = place[:3]
+        est_turn_s = place[3] if len(place) > 3 else 0.0
         if request_id in self.inflight and pause is not None:
             self.pauses[order] = pause
         self.inflight.discard(request_id)
         self.active[order] -= 1
         if not self.active[order] and order in self.pauses:
-            self.expected[order] = self.clock() + self.pauses[order]
+            if self.open_stagger_s > 0.0:
+                self.expected[order] = self._v_due.get(order, order * self.open_stagger_s) + est_turn_s + self.pauses[order]
+            else:
+                self.expected[order] = self.clock() + self.pauses[order]
         if self.limit is not None and self.released:
             self._grant()
 
@@ -332,13 +373,20 @@ class _Arrival:
 
     def _grant(self) -> None:
         stamp = self.clock()
+        if not self.released and self.open_stagger_s > 0.0:
+            self.waiting = {
+                rid: (order * self.open_stagger_s, order, future)
+                for rid, (_due, order, future) in self.waiting.items()
+            }
         free = float("inf") if self.limit is None else self.limit - len(self.inflight)
-        for request_id, (due, _order, future) in sorted(self.waiting.items(), key=lambda item: item[1][:2]):
+        for request_id, (due, order, future) in sorted(self.waiting.items(), key=lambda item: item[1][:2]):
             if free <= sum(1 for expected in self.expected.values() if expected < due):
                 break
             del self.waiting[request_id]
             if not future.done():
                 self.inflight.add(request_id)
+                if self.open_stagger_s > 0.0:
+                    self._v_due[order] = due
                 future.set_result((stamp, self.released))
                 self.released += 1
                 free -= 1
@@ -478,6 +526,31 @@ class ReplayBridge:
                 self.placement.release(rank)
 
 
+def _record_load_read(
+    session, plan: AgentReplayPlan, current: SliceManifest, load: int,
+    records: list[TurnRecord], rows: list[object],
+) -> LoadRead:
+    """Persist one completed load read and attach its batch rows to the session."""
+    ordered = sorted(rows, key=lambda row: row.batch_index)
+    session.batch_rows.extend(ordered)
+    if session.first_timed_completed_at is None and ordered:
+        session.first_timed_completed_at = min(row.response_completed_at for row in ordered)
+    if ordered:
+        session.last_host_time = max(row.response_completed_at for row in ordered)
+    read = LoadRead(plan.arm, plan.window, plan.lane, load, tuple(records))
+    rate = fixed_work_rate(read, current.expected_work(plan.sessions_at(load)))
+    output = plan.output_directory
+    with (output / "turns.jsonl").open("x") as f:
+        for record in records:
+            f.write(json.dumps({"arm": read.arm, "window": read.window, "lane": read.lane,
+                                "load": read.load, **asdict(record)}) + "\n")
+    (output / "read.json").write_text(json.dumps({
+        **asdict(rate), "attainment": attainment(read, plan.contract),
+        "workload": plan.workload_identity(),
+    }, indent=2) + "\n")
+    return read
+
+
 def collect_read(plan: AgentReplayPlan, bridge: ReplayBridge, load: int) -> LoadRead:
     """Join client credits and source coordinates to host-observed pipe evidence.
 
@@ -502,27 +575,17 @@ def collect_read(plan: AgentReplayPlan, bridge: ReplayBridge, load: int) -> Load
         kind = "inner" if meta.get("source_inner_idx") is not None else "main"
         key = root, kind
         prompt = row.evidence.prompts[0]
+        max_itl_ns = round(row.prompt_max_itl_s[0] * 1e9) if row.prompt_max_itl_s else None
         records.append(TurnRecord(
             root, kind, ordinals[key], bridge.stamps[external_id], bridge._ns(row.request_started_at),
             bridge._ns(row.request_started_at + row.prompt_latencies[0][0]),
             bridge._ns(row.response_completed_at), prompt.prompt_tokens, len(prompt.output_ids), "ok",
-            bridge.cached[external_id],
+            bridge.cached[external_id], max_itl_ns,
         ))
         ordinals[key] += 1
     if seen != set(bridge.rows):
         raise ServiceEvidenceError("bridge has requests absent from the retained AIPerf export")
-    read = LoadRead(plan.arm, plan.window, plan.lane, load, tuple(records))
-    rate = fixed_work_rate(read, plan.slice.expected_work(plan.sessions_at(load)))
-    output = plan.output_directory
-    with (output / "turns.jsonl").open("x") as f:
-        for record in records:
-            f.write(json.dumps({"arm": read.arm, "window": read.window, "lane": read.lane,
-                                "load": read.load, **asdict(record)}) + "\n")
-    (output / "read.json").write_text(json.dumps({
-        **asdict(rate), "attainment": attainment(read, plan.contract),
-        "workload": plan.workload_identity(),
-    }, indent=2) + "\n")
-    return read
+    return _record_load_read(bridge.session, plan, plan.slice, load, records, list(bridge.rows.values()))
 
 
 def _current_slice(plan: AgentReplayPlan) -> SliceManifest:
@@ -569,8 +632,10 @@ def prime_replay(plan: AgentReplayPlan, *, context_length: int | None) -> None:
     """Tokenize every body of the sealed slice once in this evaluator process, before its first engine lifetime.
 
     AIPerf replays the slice exactly as a window does, against a responder that answers each request at once with no
-    engine and no clock, so timed windows only look IDs up.
+    engine and no clock, so timed windows only look IDs up. Pre-tokenized ``multi_turn_tokens`` slices need no prime.
     """
+    if plan.slice.loader == "multi_turn_tokens":
+        return
     for load in plan.loads:
         identity = json.dumps([plan.slice.digest, str(plan.tokenizer_path), plan.sessions_at(load), [load],
                                context_length])
@@ -649,9 +714,12 @@ async def _prime(plan: AgentReplayPlan, context_length: int | None, load: int) -
 
 async def _run_load_read(session, plan: AgentReplayPlan, load: int, *, tokenizer) -> LoadRead:
     """Drain one sealed load on the opened engine and retain the scorer's input."""
+    current = _current_slice(plan)
+    if current.loader == "multi_turn_tokens":
+        from cacheon.eval.multiturn_replay import run_multiturn_load_read
+        return await run_multiturn_load_read(session, plan, current, load)
     from aiohttp import web
 
-    current = _current_slice(plan)
     output = plan.output_directory
     output.mkdir(parents=True, exist_ok=False)
     pool = _slice_pool(current, output, plan.sessions_at(load))
@@ -691,13 +759,7 @@ async def _run_load_read(session, plan: AgentReplayPlan, load: int, *, tokenizer
             code = waiters[0].result()
             if code:
                 raise OuterSessionInfrastructureError(f"AIPerf exited {code}; see {output / 'aiperf.log'}")
-            read = collect_read(plan, bridge, load)
-            rows = sorted(bridge.rows.values(), key=lambda row: row.batch_index)
-            session.batch_rows.extend(rows)
-            if session.first_timed_completed_at is None:
-                session.first_timed_completed_at = min(row.response_completed_at for row in rows)
-            session.last_host_time = max(row.response_completed_at for row in rows)
-            return read
+            return collect_read(plan, bridge, load)
         finally:
             for waiter in waiters:
                 waiter.cancel()
@@ -736,7 +798,7 @@ async def run_replay(session, plan: AgentReplayPlan, *, tokenizer=None) -> tuple
     for load in plan.loads:
         directory = plan.output_directory / ("" if load == top else f"load{load}")
         for window in range(1, plan.windows + 1):
-            if load == top:
+            if load == top or plan.flush_each_load:
                 await flush_cache(session)
             read_plan = replace(plan, window=window, output_directory=directory / f"window{window}")
             read = await _run_load_read(session, read_plan, load, tokenizer=tokenizer)

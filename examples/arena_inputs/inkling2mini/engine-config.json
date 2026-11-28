@@ -14,7 +14,11 @@
   "bf16_gemm_backend": "torch",
   "speculative_algorithm": "DSPARK",
   "swa_full_tokens_ratio": 0.05,
+  "chunked_prefill_size": 32768,
+  "max_prefill_tokens": 32768,
   "enable_hierarchical_cache": true,
-  "hicache_ratio": 2,
-  "engine_env": {}
+  "hicache_ratio": 1,
+  "engine_env": {
+    "SGLANG_HICACHE_HOST_PARALLEL_ALLOC_THREADS": "6"
+  }
 }

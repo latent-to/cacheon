@@ -1389,40 +1389,23 @@ def _selected_frames(
     return tuple(result)
 
 def _reference_request(
-    lifecycle: ResidentMarginalLifecycleEvidence,
-    authority: CandidateAuthority,
-    selection: SelectionReceipt,
-    *,
-    session_id: str,
-    plan_digest: str,
-    request_id: str,
-    nonce: str,
-    index: int,
+    lifecycle: ResidentMarginalLifecycleEvidence, authority: CandidateAuthority, selection: SelectionReceipt,
+    *, session_id: str, plan_digest: str, request_id: str, nonce: str, index: int,
 ) -> ReferenceRequest:
+    role_inputs = {row.prompt_digest: tuple(r.input_ids for r in row.roles) for row in lifecycle.crossover.reference_inputs}
     prompts = []
-    for prompt_digest, prompt_text, frames in _selected_frames(
-        lifecycle,
-        authority.selected_delta_digest,
-        selection.selected_prompt_digests,
-    ):
+    for prompt_digest, prompt_text, frames in _selected_frames(lifecycle, authority.selected_delta_digest, selection.selected_prompt_digests):
+        per_role_ids = role_inputs.get(prompt_digest, ((), (), ()))
         roles = tuple(ReferenceRoleInput(
-            tuple(frame["output_ids"]),
-            tuple(tuple(sorted(row[1] for row in position)) for position in frame["top_logprobs"]),
-        ) for frame in frames)
+            tuple(frame["output_ids"]), tuple(tuple(sorted(row[1] for row in pos)) for pos in frame["top_logprobs"]), ids,
+        ) for frame, ids in zip(frames, per_role_ids, strict=True))
         prompts.append(ReferencePromptInput(
-            prompt_digest, prompt_text if isinstance(prompt_text, str) else "", tuple(roles),
+            prompt_digest, prompt_text if isinstance(prompt_text, str) else "", roles,
             () if isinstance(prompt_text, str) else prompt_text,
         ))
     return ReferenceRequest(
-        session_id,
-        authority.profile.reference.pristine_launch_digest,
-        plan_digest,
-        request_id,
-        nonce,
-        index,
-        max(len(prompt.roles[0].output_ids) for prompt in prompts),
-        authority.profile.topk_width,
-        tuple(prompts),
+        session_id, authority.profile.reference.pristine_launch_digest, plan_digest, request_id, nonce, index,
+        max(len(prompt.roles[0].output_ids) for prompt in prompts), authority.profile.topk_width, tuple(prompts),
     )
 
 def _hidden_judge_binding(
