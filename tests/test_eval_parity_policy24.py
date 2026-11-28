@@ -228,27 +228,29 @@ def test_arrival_open_stagger_weaves_warm_turns_before_later_cold_openings():
     import asyncio
     from cacheon.eval.agent_replay import _Arrival
 
-    async def _run():
+    async def _run(speed_scale: float):
         now = [1000.0]
         arr = _Arrival(4, lambda: now[0], limit=2, open_stagger_s=10.0)
         order = []
 
         async def sess(idx: int):
-            await arr.hold(f"s{idx}-0", (idx, 0, 1.0))
+            await arr.hold(f"s{idx}-0", (idx, 0, 1.0, 2.0))
             order.append((idx, 0))
             await asyncio.sleep(0)
-            now[0] += 2.0
+            now[0] += 2.0 * speed_scale
             arr.done(f"s{idx}-0")
-            await arr.hold(f"s{idx}-1", (idx, 1, None))
+            await arr.hold(f"s{idx}-1", (idx, 1, None, 2.0))
             order.append((idx, 1))
             arr.done(f"s{idx}-1")
 
         await asyncio.gather(*(sess(i) for i in range(4)))
         return order
 
-    seq = asyncio.run(_run())
-    # Sessions 0 and 1 open first; session 0's turn 1 (due ~1003s) must beat session 2's cold opening (due 1020s).
-    assert seq.index((0, 1)) < seq.index((2, 0))
+    slow = asyncio.run(_run(3.0))
+    fast = asyncio.run(_run(1.0))
+    # Pure trace-derived virtual timeline: slow and fast engines see identical admission order.
+    assert slow == fast
+    assert slow.index((0, 1)) < slow.index((2, 0))
 
 
 def test_two_sided_mean_nll_blocks_greedy_sharpening_under_t1():
@@ -306,3 +308,164 @@ def test_two_sided_mean_nll_blocks_greedy_sharpening_under_t1():
     assert bad_up.decision == "FAIL" and "mean_nll" in bad_up.failed_metrics
     greedy_cheat = score_reference_quality(_ev("0.12"), calibration=manifest, expected_context=ctx)
     assert greedy_cheat.decision == "FAIL" and "mean_nll.lower_bound" in greedy_cheat.failed_metrics
+
+
+def test_audit5_banned_sglang_imports_and_post_load_integrity(monkeypatch):
+    import sys
+    from types import ModuleType
+    from cacheon.sandbox import scan_source
+    from cacheon.seam import _snapshot_sealed_attrs, _verify_sealed_attrs
+
+    for bad in (
+        "import sglang.srt.speculative.eagle_worker",
+        "from sglang.srt.managers import scheduler",
+        "from sglang.srt.sampling.sampling_params import SamplingParams",
+        "from sglang.srt.layers.sampler import Sampler",
+        "from sglang.srt.server_args import ServerArgs",
+        "from sglang.srt.model_executor.model_runner import ModelRunner",
+        "from sglang.srt.model_executor.cuda_graph_runner import CudaGraphRunner",
+    ):
+        assert not scan_source(bad).ok, f"expected violation for {bad}"
+
+    for ok in (
+        "from sglang.kernels.ops.moe import inkling2_route",
+        "from sglang.srt.layers.logits_processor import should_apply_lm_head_quant_method",
+        "from sglang.srt.model_executor.forward_context import get_attn_backend",
+        "from sglang.srt.models.inkling_common.inkling2_moe import Inkling2MoE",
+    ):
+        assert scan_source(ok).ok, f"unexpected violation for {ok}"
+
+    fake = ModuleType("sglang.srt.managers.scheduler")
+
+    class _FakeSched:
+        def __init__(self): ...
+        def flush_cache(self): ...
+
+    fake.Scheduler = _FakeSched
+    monkeypatch.setitem(sys.modules, "sglang.srt.managers.scheduler", fake)
+    snap = _snapshot_sealed_attrs()
+    _verify_sealed_attrs(snap)
+    _FakeSched.flush_cache = lambda self: None
+    with pytest.raises(RuntimeError, match="candidate mutated non-slot engine object"):
+        _verify_sealed_attrs(snap)
+
+    from types import SimpleNamespace
+    from cacheon.integrations.sglang_engine import _receipted
+
+    def cheat_adder(req):
+        req.sampling_params.temperature = 0.0
+
+    wrapped = _receipted("sglang.srt.managers.schedule_policy.PrefillAdder", cheat_adder)
+    req = SimpleNamespace(sampling_params=SimpleNamespace(temperature=1.0, top_p=1.0, top_k=-1, min_p=0.0, ignore_eos=True))
+    with pytest.raises(PermissionError, match="mutated request sampling_params"):
+        wrapped(req)
+
+
+def test_policy24_seal_quality_noise_and_render_operator_rewrites(tmp_path: Path):
+    import importlib.util
+    from cacheon.eval.goodput_runtime import GoodputReadSet
+    from cacheon.eval.tokenizer_identity import SealedTokenizerDecoder
+
+    assert SealedTokenizerDecoder is not None
+    spec = importlib.util.spec_from_file_location("seal_qc", Path("scripts/arena/seal_quality_controls.py"))
+    seal_qc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(seal_qc)
+
+    prices = ApiPriceTable(0.15, 0.015, 0.50)
+    contract = ServiceContract(100.0, 2.0, 0.8, max_itl_s=0.5)
+    policy = GoodputPolicy(contract, 1.0, 0.01, 1.0, 0.0, error_rate=0.125, boot_noise=0.01,
+                           attainment_pooled=1.0, decode_floor=1.0, decode_floors=((4, 80.0),),
+                           steady_span=0.5, cold_span=1.0, api_prices=prices, itl_bound_s=2.0,
+                           decode_p10_floors=((4, 60.0),))
+
+    def _read(arm: str, idx: int, dur_ns: int):
+        b0 = (idx + 1) * 100_000_000_000
+        recs = tuple(
+            TurnRecord(f"s{i}", "main", ord_, b0 + ord_ * 5_000_000_000, b0 + ord_ * 5_000_000_000,
+                       b0 + ord_ * 5_000_000_000 + 200_000_000, b0 + ord_ * 5_000_000_000 + dur_ns,
+                       1000, 100, "ok", 0, 100_000_000, 0 if ord_ == 0 else 800)
+            for i in range(4) for ord_ in (0, 1)
+        )
+        return LoadRead(arm, 1, "lane0", 4, recs)
+
+    reads = GoodputReadSet(
+        (_read("incumbent", 0, 1_000_000_000), _read("incumbent", 1, 1_020_000_000)),
+        (_read("candidate", 2, 900_000_000), _read("candidate", 3, 910_000_000)),
+        tuple((f"s{i}", 2, 0) for i in range(4)), window_limit=1, boots=2, reference_boots=2,
+    )
+    witness_path = tmp_path / "witness.json"
+    witness_path.write_text(json.dumps({
+        "speed_witness": {"resident_policy": {"goodput": policy.to_dict()}, "goodput": reads.to_dict()}
+    }))
+    sha, sd = seal_qc._stock_speed_noise(witness_path)
+    assert len(sha) == 64 and sd > 0.0
+
+    ro_spec = importlib.util.spec_from_file_location("render_op", Path("scripts/arena/render_operator.py"))
+    ro = importlib.util.module_from_spec(ro_spec)
+    ro_spec.loader.exec_module(ro)
+    op_path = tmp_path / "operator.json"
+    op_path.write_text(json.dumps({
+        "schema": "cacheon-arena-operator-v1", "arena_id": "inkling2mini-h200-node-v1", "slug": "inkling2mini",
+        "model_profile_key": "Inkling-2-Mini", "tensor_parallel_size": 2, "replay_load": [6, 12],
+        "decode_floors": {"6": "180", "12": "80"}, "decode_p10_floors": {"6": "130", "12": "60"},
+        "load_sessions": {"6": 18, "12": 115}, "flush_each_load": True, "feedback_turns": True,
+        "pause_order": True, "quality_every_load": True, "bar_futility": True, "cold_span": True,
+        "steady_span": "0.5", "load_margin": "0.03", "replay_windows": 1, "replay_warm_windows": 0,
+        "speed_policy_version": 24, "temperature": 1, "itl_bound_s": "2",
+        "api_prices": {"input_per_m": "0.15", "cached_input_per_m": "0.015", "output_per_m": "0.5"},
+        "service_contract": {"decode_floor_tps": "100", "ttft_bound_s": "2", "attainment": "0.8", "max_itl_s": "0.5"},
+        "tokens_per_prompt": 1024, "tokenizer_asset": "tokenizer-inkling2mini", "model_in_ram": False,
+        "owner": "inkling2mini-node", "audit_control_delta_digests": ["a" * 64],
+        "node": {"name": "8-GPU H200 pod", "architecture": "sm90", "topology_class": "nvlink-sxm5",
+                 "scheduler_starts": [32, 20, 3, 39, 87, 54, 77, 68],
+                 "helper_starts": [42, 41, 43, 37, 78, 80, 82, 86],
+                 "client_cpus": {"0,1": [2, 21], "2,3": [47, 40], "4,5": [85, 81], "6,7": [88, 89]}},
+    }))
+    loaded = ro.load_operator(op_path)
+    assert loaded["speed_policy_version"] == 24 and loaded["temperature"] == 1
+
+
+def test_reference_request_preserves_per_role_input_ids_orq4():
+    from types import SimpleNamespace
+    from cacheon.eval.qualification_runner import _reference_request
+    from cacheon.eval.reference_protocol import (
+        ROLE_TOKEN_REQUEST_MAGIC,
+        ReferencePromptInput,
+        ReferenceRoleInput,
+        decode_reference_request,
+        encode_reference_request,
+    )
+
+    d = "b" * 64
+    p_dig = "c" * 64
+    roles = (
+        ReferenceRoleInput((10, 11), ((), ()), (1, 2, 3)),
+        ReferenceRoleInput((12, 13), ((), ()), (1, 2, 4)),
+        ReferenceRoleInput((14, 15), ((), ()), (1, 2, 5)),
+    )
+    ref_in = ReferencePromptInput(p_dig, "", roles, (1, 2, 3))
+    frames = [{"output_ids": list(r.output_ids), "top_logprobs": [[], []]} for r in roles]
+
+    # Build minimal duck-typed lifecycle/authority/selection accepted by _reference_request
+    import cacheon.eval.qualification_runner as qr
+
+    orig = qr._selected_frames
+    try:
+        qr._selected_frames = lambda _lc, _sel, _prompts: ((p_dig, (1, 2, 3), tuple(frames)),)
+        lifecycle = SimpleNamespace(crossover=SimpleNamespace(reference_inputs=(ref_in,)))
+        authority = SimpleNamespace(
+            selected_delta_digest=d,
+            profile=SimpleNamespace(reference=SimpleNamespace(pristine_launch_digest=d), topk_width=0),
+        )
+        selection = SimpleNamespace(selected_prompt_digests=(p_dig,))
+        req = _reference_request(
+            lifecycle, authority, selection,
+            session_id="1" * 32, plan_digest=d, request_id="2" * 32, nonce="3" * 32, index=0,
+        )
+    finally:
+        qr._selected_frames = orig
+
+    assert req.request_magic == ROLE_TOKEN_REQUEST_MAGIC
+    assert tuple(r.input_ids for r in req.prompts[0].roles) == ((1, 2, 3), (1, 2, 4), (1, 2, 5))
+    decoded = decode_reference_request(encode_reference_request(req))
+    assert decoded == req

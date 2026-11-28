@@ -15,10 +15,12 @@ The arena serves each pair of GPUs as one engine, so an eight-GPU node holds fou
 TP2 with expert parallelism 2 and DSpark speculative decoding. There is no
 prefill/decode split, because SGLang's Inkling 2 DSpark worker refuses disaggregation.
 `engine-config.json` seals FA4 attention, torch BF16 GEMMs, 128-token pages, a
-300K-token context, 64 running requests, 93% of device memory for weights and cache,
-and a sliding-window pool at 5% of the full-attention pool's tokens (Inkling's default
-is 10%). It also sizes the hierarchical cache at twice the device pool: 149 GB of
-full-attention, 37 GB of sliding-window and 8.9 GB of Mamba-pool host memory per rank.
+300K-token context, 64 running requests, 32,768-token prefill chunks
+(`chunked_prefill_size` and `max_prefill_tokens`), 93% of device memory for
+weights and cache, and a sliding-window pool at 5% of the full-attention pool's
+tokens (Inkling's default is 10%). It also sizes the hierarchical cache at 1×
+the device pool (~205 GiB per TP2 lane, 410 GiB per NUMA socket so all four
+lanes run concurrently on a 2 TiB host) with 6 parallel host-allocation threads.
 An explicit `hicache_ratio` also turns off SGLang's host-memory auto-sizing. Inkling 2's
 tensor-parallel MoE combine uses NVLink multicast, so unlike the prefill/decode arenas
 this configuration leaves multicast on and is not TEE-shaped.

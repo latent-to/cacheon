@@ -49,8 +49,8 @@ def _stock_speed_noise(path):
         for r in reads.incumbent[i * count:(i + 1) * count]:
             work = reads.work(r.load)
             cost = _read_cost(
-                r, work, policy.steady_span, bool(policy.cold_span),
-                policy.api_prices, policy.contract,
+                r, work, steady_span=policy.steady_span, cold_span=bool(policy.cold_span),
+                prices=policy.api_prices, contract=policy.contract,
             )
             costs.setdefault(r.load, []).append(cost)
         boots.append(statistics.mean(math.log(statistics.mean(v)) for v in costs.values()))

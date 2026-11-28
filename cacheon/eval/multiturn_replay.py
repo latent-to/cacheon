@@ -139,7 +139,8 @@ async def run_multiturn_load_read(session, plan, current: SliceManifest, load: i
                 req_id = secrets.token_hex(16)
                 rank = None
                 try:
-                    stamp, dispatch_ord = await rounds.hold(req_id, (sess_order, ordinal, pause_next))
+                    est_turn_s = out_len / max(1.0, plan.contract.decode_floor_tps)
+                    stamp, dispatch_ord = await rounds.hold(req_id, (sess_order, ordinal, pause_next, est_turn_s))
                     batch_index = first_batch_index + dispatch_ord
                     rank = placement.acquire(sess_order)
                     request = BatchRequest(

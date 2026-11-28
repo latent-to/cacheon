@@ -1193,6 +1193,7 @@ class CohortQualificationAttempt:
     teardown_after_t: OCIQuiescenceReceipt
     reports: tuple[CandidateQualificationReport, ...]
     operational_timing: QualificationTimingWitness
+    audit_recovery: EvidenceArtifactRef | None = None
     worker_recovery: EvidenceArtifactRef | None = None
 
     def __post_init__(self) -> None:
@@ -1210,6 +1211,8 @@ class CohortQualificationAttempt:
             or type(self.entropy_observed_monotonic_s) is not float
             or not math.isfinite(self.entropy_observed_monotonic_s)
             or type(self.operational_timing) is not QualificationTimingWitness
+            or (self.audit_recovery is not None
+                and type(self.audit_recovery) is not EvidenceArtifactRef)
             or (self.worker_recovery is not None
                 and type(self.worker_recovery) is not EvidenceArtifactRef)
             or bool(self.operational_timing.clock_domains) != (self.worker_recovery is not None)
@@ -1259,6 +1262,8 @@ class CohortQualificationAttempt:
 
     def to_dict(self) -> dict[str, object]:
         result = _record_dict(self)
+        if self.audit_recovery is None:
+            result.pop("audit_recovery")
         if self.worker_recovery is None:
             result.pop("worker_recovery")
         return result
@@ -1268,11 +1273,13 @@ class CohortQualificationAttempt:
         if type(value) is not dict:
             raise QualificationRunnerError("cohort attempt is not an object")
         raw = _strict(
-            {"worker_recovery": None, **value},
+            {"audit_recovery": None, "worker_recovery": None, **value},
             set(cls.__dataclass_fields__) - {"_domain"}, "cohort attempt"
         )
         return cls(**{
             **raw,
+            "audit_recovery": (None if raw["audit_recovery"] is None else
+                               EvidenceArtifactRef.from_dict(raw["audit_recovery"])),
             "worker_recovery": (None if raw["worker_recovery"] is None else
                                 EvidenceArtifactRef.from_dict(raw["worker_recovery"])),
             "commitment": SelectionCommitment.from_dict(raw["commitment"]),
@@ -1382,40 +1389,23 @@ def _selected_frames(
     return tuple(result)
 
 def _reference_request(
-    lifecycle: ResidentMarginalLifecycleEvidence,
-    authority: CandidateAuthority,
-    selection: SelectionReceipt,
-    *,
-    session_id: str,
-    plan_digest: str,
-    request_id: str,
-    nonce: str,
-    index: int,
+    lifecycle: ResidentMarginalLifecycleEvidence, authority: CandidateAuthority, selection: SelectionReceipt,
+    *, session_id: str, plan_digest: str, request_id: str, nonce: str, index: int,
 ) -> ReferenceRequest:
+    role_inputs = {row.prompt_digest: tuple(r.input_ids for r in row.roles) for row in lifecycle.crossover.reference_inputs}
     prompts = []
-    for prompt_digest, prompt_text, frames in _selected_frames(
-        lifecycle,
-        authority.selected_delta_digest,
-        selection.selected_prompt_digests,
-    ):
+    for prompt_digest, prompt_text, frames in _selected_frames(lifecycle, authority.selected_delta_digest, selection.selected_prompt_digests):
+        per_role_ids = role_inputs.get(prompt_digest, ((), (), ()))
         roles = tuple(ReferenceRoleInput(
-            tuple(frame["output_ids"]),
-            tuple(tuple(sorted(row[1] for row in position)) for position in frame["top_logprobs"]),
-        ) for frame in frames)
+            tuple(frame["output_ids"]), tuple(tuple(sorted(row[1] for row in pos)) for pos in frame["top_logprobs"]), ids,
+        ) for frame, ids in zip(frames, per_role_ids, strict=True))
         prompts.append(ReferencePromptInput(
-            prompt_digest, prompt_text if isinstance(prompt_text, str) else "", tuple(roles),
+            prompt_digest, prompt_text if isinstance(prompt_text, str) else "", roles,
             () if isinstance(prompt_text, str) else prompt_text,
         ))
     return ReferenceRequest(
-        session_id,
-        authority.profile.reference.pristine_launch_digest,
-        plan_digest,
-        request_id,
-        nonce,
-        index,
-        max(len(prompt.roles[0].output_ids) for prompt in prompts),
-        authority.profile.topk_width,
-        tuple(prompts),
+        session_id, authority.profile.reference.pristine_launch_digest, plan_digest, request_id, nonce, index,
+        max(len(prompt.roles[0].output_ids) for prompt in prompts), authority.profile.topk_width, tuple(prompts),
     )
 
 def _hidden_judge_binding(
@@ -1882,6 +1872,14 @@ def reopen_causal_qualification(
         attempt = CohortQualificationAttempt.from_dict(payload)
         if attempt.to_dict() != payload:
             raise QualificationRunnerError("qualification artifact is not semantically canonical")
+        corrected_audit = None
+        if attempt.audit_recovery is not None:
+            from cacheon.eval.qualification_recovery import reopen_audit_recovery
+            correction, corrected_audit, _ = reopen_audit_recovery(
+                root, attempt.audit_recovery, expected=expected,
+            )
+            if correction["speed"] != attempt.reports[0].speed_evidence_digest:
+                raise QualificationRunnerError("audit recovery changed retained speed")
         if attempt.authority_digest != qualification_authority_digest(expected):
             raise QualificationRunnerError("qualification authority digest differs")
         if _attempt_speed_policy(attempt.reports) != expected.speed_evidence_policy:
@@ -1955,13 +1953,16 @@ def reopen_causal_qualification(
             audit_grade, audit_detail = audit_witness.regrade()
             # A replacement audits under its own sealed seed and runtime policy.
             if (
-                audit_witness.policy != actual_audit.audit_policy
+                audit_witness.policy != (corrected_audit.policy if corrected_audit else actual_audit.audit_policy)
+                or (corrected_audit is not None and audit_witness != corrected_audit)
                 or audit_witness.selected_delta_digest
                 != authority.selected_delta_digest
                 or audit_witness.candidate_launch_digest
-                != actual_audit.launch.digest
+                != (corrected_audit.candidate_launch_digest if corrected_audit else
+                    actual_audit.launch.digest)
                 or audit_witness.runtime_resource_policy_digest
-                != actual_audit.runtime_resource_policy_digest
+                != (expected.expected_runtime_resource_policy_digest if corrected_audit
+                    else actual_audit.runtime_resource_policy_digest)
                 or audit_witness.decision is not audit_grade
                 or audit_witness.detail != audit_detail
                 or audit_witness.digest != report.audit_evidence_digest
@@ -2115,6 +2116,8 @@ def run_causal_qualification(
     assert value.resident_speed_plan is not None
     calibration = _validate_pre_execution(value)
     if continuation is not None:
+        from cacheon.eval.qualification_recovery import resolve_audit_recovery
+        continuation = resolve_audit_recovery(value, continuation)
         durable_final = continuation.load_final()
         if durable_final is not None:
             if durable_final.domain == STAGE_EXIT_DOMAIN:
@@ -2384,6 +2387,7 @@ def run_causal_qualification(
         )
         attempt = CohortQualificationAttempt(
             *attempt_args, timing,
+            None if continuation is None else continuation.recovery_reference,
             None if continuation is None else getattr(continuation, "worker_recovery_reference", None),
         )
     else:

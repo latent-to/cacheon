@@ -48,7 +48,7 @@ KEYS = {"schema", "arena_id", "slug", "model_profile_key", "tensor_parallel_size
 OPTIONAL_KEYS = {"decode_floors", "decode_p10_floors", "replay_windows", "audit_row_floor_ppm", "load_margin",
                  "replay_warm_windows", "steady_span", "quality", "speed_policy_version", "bar_futility",
                  "pause_order", "audit_sample_rate_ppm", "cold_span", "quality_every_load", "flush_each_load",
-                 "load_sessions", "feedback_turns", "itl_bound_s", "api_prices", "temperature"}
+                 "load_sessions", "feedback_turns", "itl_bound_s", "api_prices", "service_contract", "temperature"}
 # architecture and topology_class: the GPU's sm target and NVLink class the deployment profile seals (sm103 and
 # nvlink-sxm6 on the B300 pods, sm90 and nvlink-sxm5 on H200).
 NODE_KEYS = {"name", "scheduler_starts", "helper_starts", "client_cpus", "architecture", "topology_class"}
@@ -152,6 +152,13 @@ def load_operator(path: Path) -> dict:
             type(v) is not str for v in ap.values()
         ):
             raise SystemExit(f"{path}: api_prices must carry input_per_m, cached_input_per_m, output_per_m strings")
+    if "service_contract" in operator:
+        sc = operator["service_contract"]
+        if (type(sc) is not dict
+                or not {"decode_floor_tps", "ttft_bound_s", "attainment"} <= set(sc)
+                <= {"decode_floor_tps", "ttft_bound_s", "attainment", "max_itl_s"}
+                or any(type(v) is not str for v in sc.values())):
+            raise SystemExit(f"{path}: service_contract carries decode_floor_tps, ttft_bound_s, attainment[, max_itl_s] strings")
     if "speed_policy_version" in operator and (type(operator["speed_policy_version"]) is not int or operator["speed_policy_version"] not in (21, 22, 23, 24)):
         raise SystemExit(f"{path}: speed_policy_version must be 21, 22, 23 or 24")
     if "temperature" in operator and (type(operator["temperature"]) is not int or operator["temperature"] not in (0, 1)):
@@ -324,8 +331,15 @@ def main() -> None:
         warm = operator["replay_warm_windows"]
         rewrites.append((r'\n[ \t]*"warm_windows": \d+,' if not warm else r'"warm_windows": \d+',
                          (lambda _: "") if not warm else (lambda _: f'"warm_windows": {warm}')))
+    if "service_contract" in operator:
+        sc = operator["service_contract"]
+        itl = f', max_itl_s={sc["max_itl_s"]}' if "max_itl_s" in sc else ""
+        rewrites.append((
+            r"ServiceContract\([^)]+\)",
+            lambda _: f'ServiceContract({sc["decode_floor_tps"]}, {sc["ttft_bound_s"]}, {sc["attainment"]}{itl})',
+        ))
     if "temperature" in operator:
-        rewrites.append((r'"temperature": (?:\d+(?:\.\d+)?)', lambda _: f'"temperature": {operator["temperature"]}'))
+        rewrites.append((r'"temperature": (?:"\d+(?:\.\d+)?"|\d+(?:\.\d+)?)', lambda _: f'"temperature": "{operator["temperature"]}"'))
     for pattern, value in rewrites:
         text, count = re.subn(pattern, value, text)
         if count != 1:

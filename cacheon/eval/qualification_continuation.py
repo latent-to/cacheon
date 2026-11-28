@@ -174,6 +174,7 @@ class QualificationContinuation:
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.directory.chmod(0o700)
         self._codec = _codec()
+        self.recovery_reference: EvidenceArtifactRef | None = None
         self.worker_recovery_reference: EvidenceArtifactRef | None = None
         self.replacement_execution = getattr(store, "worker_replacements", {}).get(request_digest)
         self.checkpoint_root = getattr(store, "checkpoint_root", store.root / "checkpoints")

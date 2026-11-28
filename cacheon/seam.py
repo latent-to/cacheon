@@ -189,6 +189,39 @@ def load_candidate_bundle() -> None:
     _load_candidate_bundle_locked(bundle, REGISTRY, release_required)
 
 
+_SEALED_ENGINE_ATTRS = (
+    ("sglang.srt.managers.scheduler", "Scheduler", "__init__"),
+    ("sglang.srt.managers.scheduler", "Scheduler", "flush_cache"),
+    ("sglang.srt.server_args", "ServerArgs", None),
+    ("sglang.srt.model_executor.model_runner", "ModelRunner", "load_model"),
+    ("sglang.srt.model_executor.cuda_graph_runner", "CudaGraphRunner", "capture"),
+    ("sglang.srt.model_executor.cuda_graph_runner", "CudaGraphRunner", "replay"),
+    ("sglang.srt.layers.sampler", "Sampler", "forward"),
+)
+
+
+def _snapshot_sealed_attrs() -> dict[tuple[str, str, str | None], object]:
+    snap: dict[tuple[str, str, str | None], object] = {}
+    for mod_name, cls_name, attr_name in _SEALED_ENGINE_ATTRS:
+        mod = sys.modules.get(mod_name)
+        obj = getattr(mod, cls_name, None) if mod is not None else None
+        if obj is not None:
+            target = getattr(obj, attr_name, None) if attr_name else obj
+            if target is not None:
+                snap[(mod_name, cls_name, attr_name)] = target
+    return snap
+
+
+def _verify_sealed_attrs(before: dict[tuple[str, str, str | None], object]) -> None:
+    for (mod_name, cls_name, attr_name), expected in before.items():
+        mod = sys.modules.get(mod_name)
+        obj = getattr(mod, cls_name, None) if mod is not None else None
+        actual = getattr(obj, attr_name, None) if (obj is not None and attr_name) else obj
+        if actual is not expected:
+            label = f"{mod_name}.{cls_name}.{attr_name}" if attr_name else f"{mod_name}.{cls_name}"
+            raise RuntimeError(f"candidate mutated non-slot engine object {label}")
+
+
 def _load_candidate_bundle_locked(
     bundle,
     REGISTRY,
@@ -196,10 +229,12 @@ def _load_candidate_bundle_locked(
 ) -> None:
     global _bundle_loaded
     try:
+        sealed_before = _snapshot_sealed_attrs()
         if not _enable_loaded_bundle(bundle):
             if release_required:
                 _release_abort("bundle registered no slots")
             raise RuntimeError("bundle registered no slots")
+        _verify_sealed_attrs(sealed_before)
         # Retry adapters after bundle registration so any registry-conditional
         # integration sees the active slot set without relying on a later import.
         _install_adapters(release_required)

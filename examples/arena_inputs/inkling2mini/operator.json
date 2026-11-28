@@ -1,0 +1,74 @@
+{
+  "schema": "cacheon-arena-operator-v1",
+  "arena_id": "inkling2mini-h200-node-v1",
+  "slug": "inkling2mini",
+  "model_profile_key": "Inkling-2-Mini",
+  "tensor_parallel_size": 2,
+  "replay_load": [6, 8],
+  "load_sessions": {"6": 18, "8": 115},
+  "decode_floors": {"6": "150", "8": "120"},
+  "decode_p10_floors": {"6": "75", "8": "60"},
+  "itl_bound_s": "2.2",
+  "api_prices": {
+    "input_per_m": "0.075",
+    "cached_input_per_m": "0.015",
+    "output_per_m": "0.3"
+  },
+  "service_contract": {
+    "decode_floor_tps": "100",
+    "ttft_bound_s": "2",
+    "attainment": "0.8",
+    "max_itl_s": "0.5"
+  },
+  "load_margin": "0.03",
+  "steady_span": "0.5",
+  "cold_span": true,
+  "bar_futility": true,
+  "pause_order": true,
+  "flush_each_load": true,
+  "feedback_turns": true,
+  "quality_every_load": true,
+  "replay_windows": 1,
+  "replay_warm_windows": 0,
+  "speed_policy_version": 24,
+  "temperature": 1,
+  "quality": {
+    "algorithm_id": "teacher-familywise-upper-bound-v1",
+    "familywise_z": "2",
+    "select_count": 32,
+    "nll_tail_threshold": "5",
+    "limits": {
+      "mean_nll": {
+        "stock_envelope": "0.4",
+        "candidate_delta": "0.22",
+        "two_sided": true
+      },
+      "tail_excess_nll": {
+        "stock_envelope": "0.12",
+        "candidate_delta": "0.08"
+      }
+    }
+  },
+  "tokens_per_prompt": 768,
+  "tokenizer_asset": "tokenizer-inkling2mini",
+  "model_in_ram": false,
+  "owner": "inkling2mini-node",
+  "audit_row_floor_ppm": 150000,
+  "audit_sample_rate_ppm": 250000,
+  "audit_control_delta_digests": [
+    "329694a440fdc165b5f68c6829999000af353f52435662fb87fbdc29a1dafbe9"
+  ],
+  "node": {
+    "name": "8-GPU H200 pod",
+    "architecture": "sm90",
+    "topology_class": "nvlink-sxm5",
+    "scheduler_starts": [32, 20, 3, 39, 87, 54, 77, 68],
+    "helper_starts": [42, 41, 43, 37, 78, 80, 82, 86],
+    "client_cpus": {
+      "0,1": [8, 6, 18, 9],
+      "2,3": [12, 17, 21, 0],
+      "4,5": [67, 58, 59, 85],
+      "6,7": [55, 62, 64, 66]
+    }
+  }
+}

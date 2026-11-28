@@ -363,6 +363,8 @@ class B300MainnetWorker:
                 supporting_evidence_refs += tuple(
                     report.raw_quality_artifact for report in attempt.reports
                 )
+                if attempt.audit_recovery is not None:
+                    supporting_evidence_refs += (attempt.audit_recovery,)
                 if attempt.worker_recovery is not None:
                     supporting_evidence_refs += (attempt.worker_recovery, plan.calibration_artifact_ref)
             elif batch.attempt_ref is not None:

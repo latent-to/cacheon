@@ -318,20 +318,25 @@ class _Arrival:
         self.active: dict[int, int] = defaultdict(int)
         self.pauses: dict[int, float] = {}
         self.expected: dict[int, float] = {}
+        # Purely trace-derived virtual due times when open_stagger_s > 0 so release order and KV
+        # residency pressure are invariant to engine speed (never mixing fixed grid with engine clock).
+        self._v_due: dict[int, float] = {}
 
     async def hold(self, request_id: str, place: _Place) -> tuple[float, int]:
         """Wait for release; return the release time on the session clock and dispatch ordinal."""
         if self.limit is None and self.released:
             self.released += 1
             return self.clock(), self.released - 1
-        order, turn, _pause = self.places[request_id] = place
+        order, turn, _pause = place[:3]
+        self.places[request_id] = place
         self.active[order] += 1
         future = asyncio.get_running_loop().create_future()
         if self.released:
             due = self.expected.pop(order, None)
             if turn is not None:
                 self.pauses.pop(order, None)
-            self.waiting[request_id] = (self.clock() if due is None or turn is None else due, order, future)
+            fallback = self._v_due.get(order, 0.0) if self.open_stagger_s > 0.0 else self.clock()
+            self.waiting[request_id] = (fallback if due is None or turn is None else due, order, future)
             self._grant()
             return await future
         self.waiting[request_id] = (0.0, order, future)
@@ -347,13 +352,17 @@ class _Arrival:
         place = self.places.pop(request_id, None)
         if place is None:
             return
-        order, _turn, pause = place
+        order, _turn, pause = place[:3]
+        est_turn_s = place[3] if len(place) > 3 else 0.0
         if request_id in self.inflight and pause is not None:
             self.pauses[order] = pause
         self.inflight.discard(request_id)
         self.active[order] -= 1
         if not self.active[order] and order in self.pauses:
-            self.expected[order] = self.clock() + self.pauses[order]
+            if self.open_stagger_s > 0.0:
+                self.expected[order] = self._v_due.get(order, order * self.open_stagger_s) + est_turn_s + self.pauses[order]
+            else:
+                self.expected[order] = self.clock() + self.pauses[order]
         if self.limit is not None and self.released:
             self._grant()
 
@@ -366,16 +375,18 @@ class _Arrival:
         stamp = self.clock()
         if not self.released and self.open_stagger_s > 0.0:
             self.waiting = {
-                rid: (stamp + order * self.open_stagger_s, order, future)
+                rid: (order * self.open_stagger_s, order, future)
                 for rid, (_due, order, future) in self.waiting.items()
             }
         free = float("inf") if self.limit is None else self.limit - len(self.inflight)
-        for request_id, (due, _order, future) in sorted(self.waiting.items(), key=lambda item: item[1][:2]):
+        for request_id, (due, order, future) in sorted(self.waiting.items(), key=lambda item: item[1][:2]):
             if free <= sum(1 for expected in self.expected.values() if expected < due):
                 break
             del self.waiting[request_id]
             if not future.done():
                 self.inflight.add(request_id)
+                if self.open_stagger_s > 0.0:
+                    self._v_due[order] = due
                 future.set_result((stamp, self.released))
                 self.released += 1
                 free -= 1

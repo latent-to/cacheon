@@ -105,7 +105,9 @@ def _light_teacher_config(config):
         for key, value in config.engine_kwargs.items()
         if key not in _TEACHER_STRIPPED_KWARGS
     }
-    return replace(config, disable_cuda_graph=True, engine_kwargs=stripped)
+    # Leave CUDA driver headroom for symmetric-memory buffers (cuMemCreate) during 32K eager teacher prefill.
+    mem = min(config.mem_fraction_static, 0.80) if config.mem_fraction_static is not None else None
+    return replace(config, disable_cuda_graph=True, mem_fraction_static=mem, engine_kwargs=stripped)
 
 
 def _pristine_reference_authority(
